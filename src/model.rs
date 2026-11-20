@@ -95,6 +95,7 @@ pub struct Track {
 #[derive(Clone)]
 pub struct Player {
     pub id: String,
+    pub app_id: String,
     pub name: String,
     pub playback: Playback,
     pub track: Option<Track>,
@@ -164,6 +165,7 @@ pub struct VoiceMember {
 }
 
 pub enum DiscordAction {
+    Configure(Option<crate::config::DiscordCredentials>),
     Connect,
     Disconnect,
     ToggleMute,

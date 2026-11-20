@@ -3,6 +3,7 @@ use gpui::{Context, FontWeight, IntoElement, Styled, div, prelude::*};
 use super::{
     Dashboard,
     icons::{Icon, icon},
+    settings::Section,
     theme::*,
 };
 use crate::model::{DiscordAction, DiscordState, VoiceState};
@@ -37,10 +38,13 @@ impl Dashboard {
                 |_, cx| cx.open_url("discord://-/channels/@me"),
             ))
             .when(matches!(state, DiscordState::Unconfigured), |it| {
+                let view = cx.entity();
                 it.child(bind(
-                    button("rpc-setup", Some(VIOLET)).child("RPC documentation"),
-                    |_, cx| {
-                        cx.open_url("https://docs.discord.com/developers/topics/rpc");
+                    button("rpc-setup", Some(VIOLET)).child("Discord settings"),
+                    move |window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.open_settings(Section::Discord, window, cx)
+                        })
                     },
                 ))
             })
@@ -127,14 +131,15 @@ impl Dashboard {
                                 .map(|channel| channel.name.clone())
                                 .unwrap_or_else(|| "No active voice channel".into()),
                         )
-                        .truncate(),
+                        .w_full()
+                        .whitespace_nowrap(),
                     )
                     .child(
                         quiet(channel.map_or_else(
                             || "Join a call in Discord to see its participants here.".to_owned(),
                             |channel| format!("{} in voice", channel.members.len()),
                         ))
-                        .truncate(),
+                        .whitespace_nowrap(),
                     )
                     .child(
                         row()

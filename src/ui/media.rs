@@ -126,11 +126,17 @@ impl Dashboard {
                     BLUE,
                     if self.media.issue.is_some() {
                         "Media service unavailable"
+                    } else if !self.media.players.is_empty() {
+                        "All media apps are hidden"
                     } else {
                         "No media players"
                     },
                     self.media.issue.clone().unwrap_or_else(|| {
-                        "Play something in a desktop app or browser that supports MPRIS.".into()
+                        if self.media.players.is_empty() {
+                            "Play something in a desktop app or browser that supports MPRIS.".into()
+                        } else {
+                            "Choose apps in Settings → Media apps.".into()
+                        }
                     }),
                 ))
                 .into_any_element(),
@@ -350,7 +356,7 @@ impl Dashboard {
                     .overflow_y_scroll()
                     .p(r(10.))
                     .gap(r(6.))
-                    .children(self.media.players.iter().map(|player| {
+                    .children(self.visible_players().map(|player| {
                         let selected = player.id == active.id;
                         let id = player.id.clone();
                         let view = cx.entity();

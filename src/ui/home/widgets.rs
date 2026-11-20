@@ -9,6 +9,7 @@ use super::super::{
     media::album_art,
     monitor::{gib, graph, rate, storage_list},
     percent,
+    settings::Section,
     theme::*,
 };
 use super::layout::{Kind, Placement};
@@ -81,7 +82,7 @@ impl Dashboard {
             Kind::Discord => self.discord_widget(wide, tall, cx).into_any_element(),
             Kind::Memory => self.memory_widget(tall).into_any_element(),
             Kind::Network => self.network_widget(tall).into_any_element(),
-            Kind::Storage => storage_list("home-storage", &self.metrics.storage).into_any_element(),
+            Kind::Storage => storage_list("home-storage", self.visible_disks()).into_any_element(),
         }
     }
 
@@ -213,10 +214,16 @@ impl Dashboard {
             return message(
                 if self.media.issue.is_some() {
                     "Media service unavailable"
+                } else if !self.media.players.is_empty() {
+                    "All media apps are hidden"
                 } else {
                     "Nothing playing"
                 },
-                "Start playback in a compatible player.",
+                if self.media.players.is_empty() {
+                    "Start playback in a compatible player."
+                } else {
+                    "Choose apps in Settings → Media apps."
+                },
             )
             .into_any_element();
         };
@@ -279,32 +286,43 @@ impl Dashboard {
     }
 
     fn audio_widget(&self, tall: bool, cx: &Context<Self>) -> AnyElement {
-        let default = |kind| {
-            self.audio
-                .channels
-                .iter()
-                .find(|channel| channel.id.kind == kind)
-        };
-        let Some(output) = default(AudioKind::Output) else {
+        let devices: Vec<_> = [AudioKind::Output, AudioKind::Input]
+            .into_iter()
+            .flat_map(|kind| {
+                self.visible_audio_devices()
+                    .filter(move |channel| channel.id.kind == kind)
+            })
+            .take(if tall { usize::MAX } else { 1 })
+            .collect();
+        if devices.is_empty() {
             return message(
                 if self.audio.issue.is_some() {
                     "Audio server unavailable"
                 } else {
-                    "No output device"
+                    "No audio devices shown"
                 },
-                "Open Audio for device details.",
+                "Choose devices in Settings → Audio devices.",
             )
             .into_any_element();
-        };
+        }
 
         col()
+            .id("home-audio-devices")
             .flex_1()
-            .justify_center()
-            .gap(r(12.))
-            .child(self.audio_widget_device(output, "Output", cx))
-            .when_some(default(AudioKind::Input).filter(|_| tall), |it, input| {
-                it.child(self.audio_widget_device(input, "Microphone", cx))
-            })
+            .overflow_y_scroll()
+            .child(
+                col()
+                    .gap(r(12.))
+                    .flex_none()
+                    .children(devices.into_iter().map(|device| {
+                        let description = if device.id.kind == AudioKind::Output {
+                            "Output"
+                        } else {
+                            "Microphone"
+                        };
+                        self.audio_widget_device(device, description, cx)
+                    })),
+            )
             .into_any_element()
     }
 
@@ -414,10 +432,10 @@ impl Dashboard {
                             "Connect"
                         },
                     ),
-                    move |_, cx| {
+                    move |window, cx| {
                         view.update(cx, |this, cx| {
                             if matches!(this.discord, DiscordState::Unconfigured) {
-                                this.select(Page::Discord, cx);
+                                this.open_settings(Section::Discord, window, cx);
                             } else {
                                 this.send_discord(DiscordAction::Connect);
                             }

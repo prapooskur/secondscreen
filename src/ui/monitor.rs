@@ -1,14 +1,14 @@
 use std::collections::VecDeque;
 
 use gpui::{
-    Bounds, Div, FontWeight, IntoElement, PathBuilder, Styled, canvas, div, fill,
+    Bounds, Div, FontWeight, IntoElement, PathBuilder, SharedString, Styled, canvas, div, fill,
     linear_color_stop, linear_gradient, point, prelude::*, px, size,
 };
 
 use crate::model::DiskUsage;
 
 use super::{
-    Dashboard, HISTORY,
+    Dashboard, HISTORY, Tooltip,
     icons::{Icon, icon},
     percent,
     theme::*,
@@ -178,23 +178,24 @@ impl Dashboard {
                                     .child(icon_tile(Icon::Disk, BLUE, 30.))
                                     .child(label("Storage")),
                             )
-                            .child(storage_list("system-storage", &metrics.storage)),
+                            .child(storage_list("system-storage", self.visible_disks())),
                     ),
             )
     }
 }
 
-pub(super) fn storage_list(id: &'static str, disks: &[DiskUsage]) -> impl IntoElement {
+pub(super) fn storage_list(id: &'static str, disks: Vec<&DiskUsage>) -> impl IntoElement {
     col()
         .id(id)
         .flex_1()
         .overflow_y_scroll()
         .gap(r(11.))
         .when(disks.is_empty(), |it| {
-            it.child(quiet("No mounted volumes available."))
+            it.child(quiet("No mounted volumes shown."))
         })
-        .children(disks.iter().map(|disk| {
+        .children(disks.into_iter().map(|disk| {
             let load = percent(disk.used, disk.total).unwrap_or_default();
+            let mount = SharedString::from(disk.mount.clone());
             col()
                 .flex_none()
                 .gap(r(4.))
@@ -202,7 +203,14 @@ pub(super) fn storage_list(id: &'static str, disks: &[DiskUsage]) -> impl IntoEl
                     row()
                         .gap(r(6.))
                         .justify_between()
-                        .child(label(disk.mount.clone()).text_color(c(INK)).truncate())
+                        .child(
+                            label(mount.clone())
+                                .id(mount.clone())
+                                .flex_1()
+                                .text_color(c(INK))
+                                .truncate()
+                                .tooltip(move |_, cx| cx.new(|_| Tooltip(mount.clone())).into()),
+                        )
                         .child(
                             mono(format!("{load:.0}%"))
                                 .flex_none()
@@ -216,7 +224,7 @@ pub(super) fn storage_list(id: &'static str, disks: &[DiskUsage]) -> impl IntoEl
                         capacity(disk.used),
                         capacity(disk.total)
                     ))
-                    .truncate(),
+                    .whitespace_nowrap(),
                 )
                 .child(
                     div().h(r(4.)).rounded_full().bg(c(STROKE)).child(

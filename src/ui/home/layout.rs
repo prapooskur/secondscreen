@@ -1,12 +1,9 @@
-use std::{
-    env, fs,
-    io::{ErrorKind, Write},
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+
+use crate::config;
 
 pub(super) const MAX_COLUMNS: u8 = 4;
 pub(super) const MIN_ROWS: u8 = 2;
@@ -68,13 +65,7 @@ impl Default for Layout {
 
 impl Layout {
     pub fn read(path: &Path) -> Result<Self> {
-        let bytes = match fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Self::default()),
-            Err(error) => return Err(error).context("Could not read the Home layout"),
-        };
-        let mut layout: Self =
-            serde_json::from_slice(&bytes).context("Could not parse the Home layout")?;
+        let mut layout: Self = config::read_json(path).context("Could not read the Home layout")?;
         let mut seen = Vec::new();
         layout.widgets.retain_mut(|widget| {
             if seen.contains(&widget.kind) {
@@ -89,46 +80,8 @@ impl Layout {
     }
 
     pub fn write(&self, path: &Path) -> Result<()> {
-        static NEXT_SAVE: AtomicU64 = AtomicU64::new(0);
-
-        let dir = path
-            .parent()
-            .context("The Home layout has no configuration directory")?;
-        fs::create_dir_all(dir)?;
-        let staging = dir.join(format!(
-            ".home-{}-{}.tmp",
-            std::process::id(),
-            NEXT_SAVE.fetch_add(1, Ordering::Relaxed)
-        ));
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&staging)?;
-        let result = (|| -> Result<()> {
-            serde_json::to_writer_pretty(&mut file, self)?;
-            file.write_all(b"\n")?;
-            file.sync_all()?;
-            drop(file);
-            fs::rename(&staging, path)?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(staging);
-        }
-        result.context("Could not save the Home layout")
+        config::write_json(path, self).context("Could not save the Home layout")
     }
-}
-
-pub(super) fn config_path() -> Option<PathBuf> {
-    env::var_os("XDG_CONFIG_HOME")
-        .filter(|path| Path::new(path).is_absolute())
-        .map(PathBuf::from)
-        .or_else(|| {
-            env::var_os("HOME")
-                .filter(|path| Path::new(path).is_absolute())
-                .map(|home| PathBuf::from(home).join(".config"))
-        })
-        .map(|directory| directory.join("secondscreen").join("home.json"))
 }
 
 #[derive(Clone, Copy, Debug)]

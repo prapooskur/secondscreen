@@ -50,15 +50,13 @@ impl Dashboard {
                             .into_iter()
                             .map(|kind| {
                                 let channels: Vec<_> = self
-                                    .audio
-                                    .channels
-                                    .iter()
+                                    .visible_audio_devices()
                                     .filter(|channel| channel.id.kind == kind)
                                     .collect();
                                 let (title, empty) = if kind == AudioKind::Output {
-                                    ("Output", "No output device")
+                                    ("Output", "No outputs shown")
                                 } else {
-                                    ("Microphone", "No microphone detected")
+                                    ("Microphone", "No microphones shown")
                                 };
                                 col()
                                     .gap(r(4.))

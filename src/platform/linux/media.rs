@@ -10,6 +10,7 @@ use super::Integration;
 use crate::model::{Artwork, MediaAction, MediaState, Playback, Player, Track, Update};
 
 const PREFIX: &str = "org.mpris.MediaPlayer2.";
+const ROOT: &str = "org.mpris.MediaPlayer2";
 const PATH: &str = "/org/mpris/MediaPlayer2";
 const PLAYER: &str = "org.mpris.MediaPlayer2.Player";
 
@@ -76,11 +77,17 @@ impl Media {
 fn read_player(connection: &Connection, id: &str) -> Result<Player> {
     let properties = Proxy::new(connection, id, PATH, "org.freedesktop.DBus.Properties")?;
     let values: Properties = properties.call("GetAll", &(PLAYER,))?;
-    let name = properties
-        .call::<_, _, OwnedValue>("Get", &("org.mpris.MediaPlayer2", "Identity"))
-        .ok()
-        .and_then(|value| String::try_from(value).ok())
+    let root: Properties = properties.call("GetAll", &(ROOT,)).unwrap_or_default();
+    let name = string(&root, "Identity")
+        .map(str::to_owned)
+        .or_else(|| {
+            properties
+                .call::<_, _, OwnedValue>("Get", &(ROOT, "Identity"))
+                .ok()
+                .and_then(|value| String::try_from(value).ok())
+        })
         .unwrap_or_else(|| id.trim_start_matches(PREFIX).to_owned());
+    let app_id = application_id(id, string(&root, "DesktopEntry"));
     let playback = match string(&values, "PlaybackStatus") {
         Some("Playing") => Playback::Playing,
         Some("Paused") => Playback::Paused,
@@ -102,6 +109,7 @@ fn read_player(connection: &Connection, id: &str) -> Result<Player> {
 
     Ok(Player {
         id: id.to_owned(),
+        app_id,
         name,
         playback,
         track,
@@ -112,6 +120,44 @@ fn read_player(connection: &Connection, id: &str) -> Result<Player> {
         can_next: control && flag(&values, "CanGoNext"),
         can_seek: control && flag(&values, "CanSeek"),
     })
+}
+
+fn application_id(bus_name: &str, desktop_entry: Option<&str>) -> String {
+    if let Some(entry) = desktop_entry
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+    {
+        return entry.trim_end_matches(".desktop").to_owned();
+    }
+    let name = bus_name.trim_start_matches(PREFIX);
+    name.rsplit_once('.')
+        .filter(|(_, instance)| instance.starts_with("instance"))
+        .map_or(name, |(application, _)| application)
+        .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::application_id;
+
+    #[test]
+    fn application_visibility_uses_the_same_key_across_instances() {
+        assert_eq!(
+            application_id("org.mpris.MediaPlayer2.vlc.instance123", None),
+            application_id("org.mpris.MediaPlayer2.vlc.instance456", None)
+        );
+        assert_eq!(
+            application_id(
+                "org.mpris.MediaPlayer2.some_instance",
+                Some("example.Player.desktop")
+            ),
+            "example.Player"
+        );
+        assert_eq!(
+            application_id("org.mpris.MediaPlayer2.example.Player", None),
+            "example.Player"
+        );
+    }
 }
 
 fn metadata(values: Properties) -> Option<Track> {

@@ -12,7 +12,7 @@ use self::layout::{
     Kind, Layout, MAX_COLUMNS, MAX_ROWS, MIN_ROWS, Placement, Widget, shifted_span,
 };
 use super::{
-    Dashboard, Page, RailTooltip,
+    Dashboard, Page, Tooltip,
     icons::{Icon, icon},
     theme::*,
 };
@@ -66,7 +66,7 @@ impl Grid {
 
 impl Home {
     pub(super) fn load() -> Self {
-        let path = layout::config_path();
+        let path = crate::config::path("home.json");
         let layout = path
             .as_deref()
             .map(Layout::read)
@@ -90,6 +90,10 @@ impl Home {
             .widgets
             .iter()
             .any(|widget| widget.kind.page() == page)
+    }
+
+    pub(super) fn edit(&mut self) {
+        self.editing = true;
     }
 
     pub(super) fn leave(&mut self) {
@@ -389,7 +393,7 @@ impl Dashboard {
                     Icon::Chevron,
                     MUTED,
                 ),
-                move |_, cx| view.update(cx, |this, cx| this.select(kind.page(), cx)),
+                move |window, cx| view.update(cx, |this, cx| this.select(kind.page(), window, cx)),
             )
             .into_any_element()
         };
@@ -667,5 +671,5 @@ fn tile_button(
         .h(r(28.))
         .px_0()
         .child(icon(symbol, c(color), 14.))
-        .tooltip(move |_, cx| cx.new(|_| RailTooltip(description)).into())
+        .tooltip(move |_, cx| cx.new(|_| Tooltip(description.into())).into())
 }

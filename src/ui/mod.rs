@@ -1,9 +1,11 @@
 mod audio;
+mod credential_input;
 mod discord;
 mod home;
 mod icons;
 mod media;
 mod monitor;
+mod settings;
 mod slider;
 mod theme;
 
@@ -17,13 +19,14 @@ use std::{
 use async_channel::Receiver;
 use gpui::{
     AnyElement, Context, FocusHandle, FontWeight, IntoElement, KeyDownEvent, MouseButton, Render,
-    Window, div, linear_color_stop, linear_gradient, prelude::*, px,
+    SharedString, Window, div, linear_color_stop, linear_gradient, prelude::*, px,
 };
 
 use crate::{
+    config::Preferences,
     model::{
-        AudioAction, AudioId, AudioKind, AudioState, DiscordAction, DiscordState, MediaAction,
-        MediaState, Metrics, Player, Update,
+        AudioAction, AudioChannel, AudioId, AudioKind, AudioState, DiscordAction, DiscordState,
+        DiskUsage, MediaAction, MediaState, Metrics, Player, Update,
     },
     platform::Controls,
 };
@@ -42,15 +45,17 @@ enum Page {
     Audio,
     Media,
     Discord,
+    Settings,
 }
 
 impl Page {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Home,
         Self::System,
         Self::Audio,
         Self::Media,
         Self::Discord,
+        Self::Settings,
     ];
 
     fn label(self) -> &'static str {
@@ -60,6 +65,7 @@ impl Page {
             Self::Audio => "Audio",
             Self::Media => "Media",
             Self::Discord => "Discord",
+            Self::Settings => "Settings",
         }
     }
 
@@ -70,6 +76,7 @@ impl Page {
             Self::Audio => Icon::Audio,
             Self::Media => Icon::Music,
             Self::Discord => Icon::Discord,
+            Self::Settings => Icon::Settings,
         }
     }
 
@@ -80,6 +87,7 @@ impl Page {
             Self::Audio => (0xffbc65, 0xdb7624, 0x291b0e),
             Self::Media => (0xf25e84, 0xbf2b54, 0xfff6fa),
             Self::Discord => (0x828cff, 0x4b54d0, 0xffffff),
+            Self::Settings => (0x879ab1, 0x516579, 0xffffff),
         }
     }
 }
@@ -107,6 +115,8 @@ fn append(series: &mut VecDeque<f32>, value: Option<f32>) {
 pub struct Dashboard {
     page: Page,
     home: home::Home,
+    preferences: Preferences,
+    settings: settings::SettingsView,
     metrics: Metrics,
     history: History,
     audio: AudioState,
@@ -126,6 +136,7 @@ impl Dashboard {
     pub fn new(
         controls: Controls,
         updates: Receiver<Update>,
+        preferences: Preferences,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -153,6 +164,8 @@ impl Dashboard {
         Self {
             page: Page::Home,
             home: home::Home::load(),
+            preferences,
+            settings: settings::SettingsView::default(),
             metrics: Metrics::default(),
             history: History::default(),
             audio: AudioState::default(),
@@ -249,29 +262,59 @@ impl Dashboard {
     fn current_player(&self) -> Option<&Player> {
         self.player
             .as_deref()
-            .and_then(|id| self.media.players.iter().find(|player| player.id == id))
+            .and_then(|id| self.visible_players().find(|player| player.id == id))
             .or_else(|| {
-                self.media
-                    .players
-                    .iter()
+                self.visible_players()
                     .find(|player| player.playback == crate::model::Playback::Playing)
             })
-            .or_else(|| self.media.players.first())
+            .or_else(|| self.visible_players().next())
+    }
+
+    fn visible_players(&self) -> impl Iterator<Item = &Player> {
+        self.media
+            .players
+            .iter()
+            .filter(|player| !self.preferences.hidden_media.contains_key(&player.app_id))
+    }
+
+    fn visible_audio_devices(&self) -> impl Iterator<Item = &AudioChannel> {
+        self.audio.channels.iter().filter(|channel| {
+            settings::audio_device_key(channel)
+                .is_some_and(|key| !self.preferences.hidden_audio.contains_key(&key))
+        })
+    }
+
+    fn visible_disks(&self) -> Vec<&DiskUsage> {
+        self.metrics
+            .storage
+            .iter()
+            .filter(|disk| !self.preferences.hidden_disks.contains_key(&disk.mount))
+            .collect()
     }
 
     fn shows(&self, page: Page) -> bool {
-        self.page == page || (self.page == Page::Home && self.home.includes(page))
+        self.page == page
+            || self.page == Page::Settings
+            || (self.page == Page::Home && self.home.includes(page))
     }
 
-    fn select(&mut self, page: Page, cx: &mut Context<Self>) {
+    fn select(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         if self.page != page {
             self.home.leave();
             self.page = page;
             self.routing = None;
             self.error = None;
             self.gesture.borrow_mut().take();
+            self.focus_dashboard(window, cx);
             cx.notify();
         }
+    }
+
+    fn focus_dashboard(&self, window: &mut Window, _cx: &mut Context<Self>) {
+        #[cfg(feature = "ui-gpui")]
+        window.focus(&self.focus);
+        #[cfg(not(feature = "ui-gpui"))]
+        window.focus(&self.focus, _cx);
     }
 
     fn send_audio(&self, action: AudioAction) {
@@ -316,11 +359,12 @@ impl Dashboard {
                     window.focus_next(cx);
                 }
             }
-            "0" => self.select(Page::Home, cx),
-            "1" => self.select(Page::System, cx),
-            "2" => self.select(Page::Audio, cx),
-            "3" => self.select(Page::Media, cx),
-            "4" => self.select(Page::Discord, cx),
+            "0" => self.select(Page::Home, window, cx),
+            "1" => self.select(Page::System, window, cx),
+            "2" => self.select(Page::Audio, window, cx),
+            "3" => self.select(Page::Media, window, cx),
+            "4" => self.select(Page::Discord, window, cx),
+            "5" => self.select(Page::Settings, window, cx),
             _ => return,
         };
         cx.stop_propagation();
@@ -328,8 +372,13 @@ impl Dashboard {
 
     fn navigation(&self, window: &Window, height: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let fullscreen = window.is_fullscreen();
-        let tile_size = if height < 412. { 46. } else { 54. };
-        let tile_gap = if height < 412. { 6. } else { 8. };
+        let (tile_size, tile_gap) = if height < 412. {
+            (39., 5.)
+        } else if height < 486. {
+            (46., 6.)
+        } else {
+            (54., 8.)
+        };
         let view = cx.entity();
         let drag_space = || {
             div().flex_1().w_full().when(!fullscreen, |space| {
@@ -376,9 +425,9 @@ impl Dashboard {
                                     ))
                                     .child(icon(page.icon(), c(foreground), tile_size * 0.46)),
                             )
-                            .tooltip(move |_, cx| cx.new(|_| RailTooltip(page.label())).into()),
-                        move |_, cx| {
-                            view.update(cx, |this, cx| this.select(page, cx));
+                            .tooltip(move |_, cx| cx.new(|_| Tooltip(page.label().into())).into()),
+                        move |window, cx| {
+                            view.update(cx, |this, cx| this.select(page, window, cx));
                         },
                     )
                 }));
@@ -476,6 +525,7 @@ impl Render for Dashboard {
             Page::Audio => self.audio_page(cx).into_any_element(),
             Page::Media => self.media_page(cx).into_any_element(),
             Page::Discord => self.discord_page(cx).into_any_element(),
+            Page::Settings => self.settings_page(cx).into_any_element(),
         };
 
         split()
@@ -501,11 +551,11 @@ impl Render for Dashboard {
     }
 }
 
-struct RailTooltip(&'static str);
+struct Tooltip(SharedString);
 
-impl Render for RailTooltip {
+impl Render for Tooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        label(self.0)
+        label(self.0.clone())
             .text_color(c(INK))
             .font_weight(FontWeight::MEDIUM)
             .px(r(9.))
@@ -529,7 +579,7 @@ fn window_control(
             .h(r(27.))
             .px_0()
             .child(icon(symbol, c(TEXT), 15.))
-            .tooltip(move |_, cx| cx.new(|_| RailTooltip(description)).into()),
+            .tooltip(move |_, cx| cx.new(|_| Tooltip(description.into())).into()),
         move |window, _| action(window),
     )
 }

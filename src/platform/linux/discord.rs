@@ -11,18 +11,15 @@ use std::{
 };
 
 use super::Integration;
-use crate::model::{DiscordAction, DiscordState, Update, VoiceChannel, VoiceMember, VoiceState};
+use crate::{
+    config::DiscordCredentials as Credentials,
+    model::{DiscordAction, DiscordState, Update, VoiceChannel, VoiceMember, VoiceState},
+};
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(2);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(90);
 const SCOPES: &[&str] = &["identify", "rpc", "rpc.voice.read", "rpc.voice.write"];
 const TOKEN_URL: &str = "https://discord.com/api/oauth2/token";
-
-struct Credentials {
-    client_id: String,
-    secret: Option<String>,
-    access_token: Option<String>,
-}
 
 pub(super) struct Discord {
     credentials: Option<Credentials>,
@@ -36,23 +33,11 @@ struct Session {
 }
 
 impl Discord {
-    pub fn new() -> Self {
-        let credentials = setting("SECONDSCREEN_DISCORD_CLIENT_ID").and_then(|client_id| {
-            let secret = setting("SECONDSCREEN_DISCORD_CLIENT_SECRET");
-            let access_token = setting("SECONDSCREEN_DISCORD_ACCESS_TOKEN");
-            if !client_id.bytes().all(|byte| byte.is_ascii_digit())
-                || (secret.is_none() && access_token.is_none())
-            {
-                return None;
-            }
-            Some(Credentials {
-                client_id,
-                secret,
-                access_token,
-            })
-        });
+    pub fn new(credentials: Option<Credentials>) -> Self {
         Self {
-            credentials,
+            credentials: credentials
+                .or_else(Credentials::from_env)
+                .filter(Credentials::valid),
             session: None,
             error: None,
         }
@@ -107,13 +92,6 @@ impl Credentials {
         self.access_token = Some(token);
         Ok(Session { rpc, account })
     }
-}
-
-fn setting(name: &str) -> Option<String> {
-    env::var(name)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
 }
 
 fn exchange_code(
@@ -243,6 +221,7 @@ impl Integration for Discord {
 
     fn handle(&mut self, action: DiscordAction, updates: &Sender<Update>) -> Result<()> {
         match action {
+            DiscordAction::Configure(credentials) => *self = Self::new(credentials),
             DiscordAction::Connect => {
                 if self.session.is_none() {
                     let _ = updates.send_blocking(Update::Discord(DiscordState::Authorizing));

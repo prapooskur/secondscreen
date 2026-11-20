@@ -9,9 +9,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{model::Update, monitor::Monitor, platform::Controls};
+use crate::{config::DiscordCredentials, model::Update, monitor::Monitor, platform::Controls};
 
-pub fn start(updates: Sender<Update>) -> std::io::Result<Controls> {
+pub fn start(
+    updates: Sender<Update>,
+    discord_credentials: Option<DiscordCredentials>,
+) -> std::io::Result<Controls> {
     let monitor_tx = updates.clone();
     let monitor_thread = thread::Builder::new().name("system-monitor".into());
     monitor_thread.spawn(move || {
@@ -48,12 +51,9 @@ pub fn start(updates: Sender<Update>) -> std::io::Result<Controls> {
         media::Media::default,
     )?;
 
-    let discord = worker(
-        "discord-rpc",
-        Duration::from_secs(2),
-        updates,
-        discord::Discord::new,
-    )?;
+    let discord = worker("discord-rpc", Duration::from_secs(2), updates, move || {
+        discord::Discord::new(discord_credentials)
+    })?;
     Ok(Controls {
         audio,
         media,

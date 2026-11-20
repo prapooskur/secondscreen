@@ -7,6 +7,7 @@ Second Screen is a Rust and GPUI dashboard for ultrawide secondary monitors. It 
 - **Audio** adjusts volume and mute for outputs, microphones, playback streams, and recording streams. Volume adjustments preserve the balance of channels with existing levels. You can change the default devices and route individual streams.
 - **Media** controls MPRIS players on the desktop session, with track details, album art, player selection, play/pause, previous/next, and seeking when supported by the player.
 - **Discord** shows the current voice channel and participants, with mute, deafen, and leave-call controls through the Discord desktop client.
+- **Settings** configures startup fullscreen, Discord credentials, and which media apps, audio devices, and mounted volumes appear.
 
 ## Run on Linux
 
@@ -20,7 +21,7 @@ cargo run --release --locked
 
 The Wayland session needs a working Vulkan driver. The audio mixer uses `pactl` with a PipeWire PulseAudio server or PulseAudio 15+. Media discovery uses the session D-Bus and works with players that advertise MPRIS.
 
-Use the icons in the left rail or keys **0–4** to switch pages. Drag an empty area of the rail to move the window to your bar monitor. Press **F11** or use the fullscreen button at the bottom of the rail. **Esc** closes Home editing first and can then restore the window. **Tab** moves between controls, **Enter** activates buttons, and arrow keys adjust a focused slider. `--fullscreen` opens the window fullscreen on the compositor’s chosen output. The window’s Wayland app ID is `io.github.secondscreen`, which you can use in compositor window rules.
+Use the icons in the left rail or keys **0–5** to switch pages. Drag an empty area of the rail to move the window to your bar monitor. Press **F11** or use the fullscreen button at the bottom of the rail. **Esc** closes Home editing first and can then restore the window. **Tab** moves between controls, **Enter** activates buttons, and arrow keys adjust a focused slider. Enable **Start fullscreen** in Settings or pass `--fullscreen` to open fullscreen on the compositor’s chosen output. The window’s Wayland app ID is `io.github.secondscreen`, which you can use in compositor window rules.
 
 The same app can also be built with GPUI Fast:
 
@@ -36,7 +37,9 @@ Home wraps widgets into fewer columns on narrower windows. Scroll down when the 
 
 ## Discord setup
 
-Discord voice RPC requires an approved Discord application or access as an authorized tester of the application. Open Discord desktop with the authorized account and launch Second Screen with `SECONDSCREEN_DISCORD_CLIENT_ID` and `SECONDSCREEN_DISCORD_CLIENT_SECRET` in its environment. Select **Discord → Connect** and approve access in Discord. Second Screen keeps the exchanged token in memory. Discord can restore prior voice settings when the RPC connection closes. If your deployment already supplies a Discord OAuth access token with the `identify`, `rpc`, `rpc.voice.read`, and `rpc.voice.write` scopes, set `SECONDSCREEN_DISCORD_ACCESS_TOKEN` in place of the client secret. [Discord RPC documentation](https://docs.discord.com/developers/topics/rpc)
+Discord voice RPC requires an approved Discord application or access as an authorized tester of the application. Open Discord desktop with the authorized account. In **Settings → Discord**, enter your application ID and its client secret, then save and select **Discord → Connect** to authorize access. You can supply a Discord OAuth access token with the `identify`, `rpc`, `rpc.voice.read`, and `rpc.voice.write` scopes in place of the client secret. Second Screen keeps tokens obtained during authorization in memory. Discord can restore prior voice settings when the RPC connection closes. [Discord RPC documentation](https://docs.discord.com/developers/topics/rpc)
+
+Settings saves credentials and visibility preferences to the user-only file `${XDG_CONFIG_HOME:-~/.config}/secondscreen/settings.json`. Existing deployments can still use `SECONDSCREEN_DISCORD_CLIENT_ID` with `SECONDSCREEN_DISCORD_CLIENT_SECRET` or `SECONDSCREEN_DISCORD_ACCESS_TOKEN`. Saved Discord credentials take precedence.
 
 ## Framework comparison
 

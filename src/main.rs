@@ -9,6 +9,11 @@ extern crate gpui_fast_backend as gpui;
     target_os = "linux",
     any(feature = "ui-gpui", feature = "ui-gpui-fast")
 ))]
+mod config;
+#[cfg(all(
+    target_os = "linux",
+    any(feature = "ui-gpui", feature = "ui-gpui-fast")
+))]
 mod model;
 #[cfg(all(
     target_os = "linux",
@@ -43,7 +48,7 @@ fn main() -> anyhow::Result<()> {
             "--fullscreen" => fullscreen = true,
             "--help" | "-h" => {
                 println!(
-                    "Second Screen\n\nUsage: secondscreen [--fullscreen]\n\nF11 toggles fullscreen. Escape restores the window.\nKey 0 opens Home. Keys 1–4 open System, Audio, Media, and Discord."
+                    "Second Screen\n\nUsage: secondscreen [--fullscreen]\n\nF11 toggles fullscreen. Escape restores the window.\nKey 0 opens Home. Keys 1–5 open System, Audio, Media, Discord, and Settings."
                 );
                 return Ok(());
             }
@@ -63,8 +68,11 @@ fn main() -> anyhow::Result<()> {
         "Second Screen could not select the Wayland backend."
     );
 
+    let preferences = config::Preferences::load();
+    fullscreen |= preferences.start_fullscreen;
     let (updates, receiver) = async_channel::unbounded();
-    let controls = platform::start(updates).context("Could not start desktop services")?;
+    let controls = platform::start(updates, preferences.discord.clone())
+        .context("Could not start desktop services")?;
     #[cfg(feature = "ui-gpui")]
     let app = gpui::Application::new();
     #[cfg(not(feature = "ui-gpui"))]
@@ -93,7 +101,7 @@ fn main() -> anyhow::Result<()> {
             },
             |window, cx| {
                 window.set_window_title("Second Screen");
-                cx.new(|cx| ui::Dashboard::new(controls, receiver, window, cx))
+                cx.new(|cx| ui::Dashboard::new(controls, receiver, preferences, window, cx))
             },
         );
         match result {
