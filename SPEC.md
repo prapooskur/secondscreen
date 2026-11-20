@@ -1,0 +1,1 @@
+build native windows & linux (wayland) application that replicates system monitoring, audio mixing, media playback, and discord integration of corsair xeneon edge display, targeted towards aftermarket bar monitors (ie AUO C145HAX01.1). 

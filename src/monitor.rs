@@ -1,0 +1,148 @@
+use std::time::Instant;
+use sysinfo::{Components, Gpus, Networks, System};
+
+use crate::model::{Gpu, Metrics};
+
+pub struct Monitor {
+    system: System,
+    components: Option<Components>,
+    gpus: Option<Gpus>,
+    networks: Option<Networks>,
+    last_sample: Option<Instant>,
+    host: Option<String>,
+}
+
+impl Monitor {
+    pub fn new() -> Result<Self, sysinfo::Error> {
+        Ok(Self {
+            system: System::new()?,
+            components: Components::new().ok(),
+            gpus: Gpus::new().ok(),
+            networks: Networks::new().ok(),
+            last_sample: None,
+            host: None,
+        })
+    }
+
+    pub fn sample(&mut self) -> Metrics {
+        let now = Instant::now();
+        let elapsed = self
+            .last_sample
+            .replace(now)
+            .map(|then| (now - then).as_secs_f32());
+        self.system.refresh_cpu_usage();
+        self.system.refresh_memory();
+        if let Some(components) = &mut self.components {
+            components.refresh(true);
+        }
+        if let Some(networks) = &mut self.networks {
+            networks.refresh(true);
+        }
+        if let Some(gpus) = self.gpus.as_mut() {
+            gpus.refresh(true);
+        } else {
+            self.gpus = Gpus::new_with_refreshed_list().ok();
+        }
+
+        let gpu = self.gpus.as_ref().and_then(|gpus| {
+            let gpu = gpus
+                .iter()
+                .max_by_key(|gpu| (gpu.usage().is_some(), gpu.total_memory().unwrap_or(0)))?;
+            let name = gpu
+                .model()
+                .or_else(|| gpu.vendor())
+                .unwrap_or("Graphics adapter");
+            Some(Gpu {
+                name: name.to_owned(),
+                key: gpu.pci().to_string(),
+                load: gpu.usage().filter(|load| load.is_finite()),
+                vram: gpu
+                    .used_memory()
+                    .zip(gpu.total_memory())
+                    .filter(|(_, total)| *total > 0),
+            })
+        });
+
+        let interfaces = self
+            .networks
+            .iter()
+            .flat_map(|networks| networks.iter())
+            .filter(|(name, _)| *name != "lo" && !name.to_string_lossy().starts_with("Loopback"));
+        let mut network_available = false;
+        let (mut received, mut sent) = (0u64, 0u64);
+        for (_, network) in interfaces {
+            network_available = true;
+            received = received.saturating_add(network.received());
+            sent = sent.saturating_add(network.transmitted());
+        }
+
+        Metrics {
+            host: self
+                .host
+                .get_or_insert_with(|| {
+                    System::host_name().unwrap_or_else(|_| "Local system".into())
+                })
+                .clone(),
+            uptime: System::uptime().ok(),
+            cpu: elapsed
+                .filter(|_| !self.system.cpus().is_empty())
+                .map(|_| self.system.global_cpu_usage()),
+            cpu_name: self
+                .system
+                .cpus()
+                .first()
+                .map(|cpu| cpu.brand().to_owned())
+                .unwrap_or_default(),
+            threads: self.system.cpus().len(),
+            temperature: self.cpu_temperature(),
+            gpu,
+            memory_used: self.system.used_memory(),
+            memory_total: self.system.total_memory(),
+            download: elapsed.map_or(0.0, |seconds| received as f32 / seconds),
+            upload: elapsed.map_or(0.0, |seconds| sent as f32 / seconds),
+            network_available,
+            storage: system_storage(),
+        }
+    }
+
+    fn cpu_temperature(&self) -> Option<f32> {
+        self.components
+            .as_ref()?
+            .iter()
+            .filter_map(|sensor| {
+                let label = sensor.label().to_ascii_lowercase();
+                let priority = if ["package", "tctl", "tdie", "cpu"]
+                    .iter()
+                    .any(|name| label.contains(name))
+                {
+                    2
+                } else if label.contains("coretemp") || label.contains("core ") {
+                    1
+                } else {
+                    return None;
+                };
+                sensor
+                    .temperature()
+                    .filter(|value| value.is_finite())
+                    .map(|value| (priority, value))
+            })
+            .max_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)))
+            .map(|(_, value)| value)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn system_storage() -> Option<(u64, u64)> {
+    let info = rustix::fs::statvfs("/").ok()?;
+    let total = info.f_blocks.saturating_mul(info.f_frsize);
+    let available = info.f_bavail.saturating_mul(info.f_frsize);
+    (total > 0).then(|| (total.saturating_sub(available), total))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn system_storage() -> Option<(u64, u64)> {
+    let disks = sysinfo::Disks::new_with_refreshed_list().ok()?;
+    let disk = disks.iter().max_by_key(|disk| disk.total_space())?;
+    let total = disk.total_space();
+    (total > 0).then(|| (total.saturating_sub(disk.available_space()), total))
+}
