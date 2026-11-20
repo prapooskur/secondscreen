@@ -218,7 +218,11 @@ impl Dashboard {
             })
     }
 
-    fn channel(&self, channel: &AudioChannel, cx: &Context<Self>) -> impl IntoElement {
+    pub(super) fn audio_levels(
+        &self,
+        channel: &AudioChannel,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
         const LIMIT: f32 = 150.;
         let view = cx.entity();
         let kind = channel.id.kind;
@@ -226,7 +230,6 @@ impl Dashboard {
         let scope =
             |control: &str| ElementId::Name(format!("{key}-{}-{control}", channel.id.index).into());
         let recording = matches!(kind, AudioKind::Input | AudioKind::Recording);
-        let device = matches!(kind, AudioKind::Input | AudioKind::Output);
         let accent = if recording { BLUE } else { TEAL };
         let mute_icon = match (recording, channel.muted) {
             (true, true) => Icon::MicOff,
@@ -275,6 +278,29 @@ impl Dashboard {
                 }
             },
         );
+        let percent = mono(shown_volume.map_or_else(|| "—".into(), |value| format!("{value}%")))
+            .w(r(38.))
+            .flex_none()
+            .text_right()
+            .text_size(r(12.))
+            .text_color(c(if muted { AMBER } else { TEXT }));
+        row()
+            .gap(r(6.))
+            .flex_1()
+            .child(mute_button)
+            .child(volume)
+            .child(percent)
+    }
+
+    fn channel(&self, channel: &AudioChannel, cx: &Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        let kind = channel.id.kind;
+        let key = kind_key(kind);
+        let scope =
+            |control: &str| ElementId::Name(format!("{key}-{}-{control}", channel.id.index).into());
+        let recording = matches!(kind, AudioKind::Input | AudioKind::Recording);
+        let device = matches!(kind, AudioKind::Input | AudioKind::Output);
+        let accent = if recording { BLUE } else { TEAL };
         let control: AnyElement = if device {
             if channel.is_default {
                 chip("Default", accent).into_any_element()
@@ -324,18 +350,7 @@ impl Dashboard {
         };
 
         let name = label(channel.label.clone()).truncate().text_color(c(INK));
-        let percent = mono(shown_volume.map_or_else(|| "—".into(), |value| format!("{value}%")))
-            .w(r(38.))
-            .flex_none()
-            .text_right()
-            .text_size(r(12.))
-            .text_color(c(if muted { AMBER } else { TEXT }));
-        let meter = row()
-            .gap(r(6.))
-            .flex_1()
-            .child(mute_button)
-            .child(volume)
-            .child(percent);
+        let meter = self.audio_levels(channel, cx);
         let surface = col()
             .flex_none()
             .bg(c(BACK).opacity(0.42))

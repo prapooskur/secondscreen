@@ -1,5 +1,6 @@
 mod audio;
 mod discord;
+mod home;
 mod icons;
 mod media;
 mod monitor;
@@ -30,9 +31,13 @@ use icons::{Icon, icon};
 use theme::*;
 
 const HISTORY: usize = 60;
+const RAIL_WIDTH: f32 = 78.;
+const CONTENT_X: f32 = 18.;
+const CONTENT_Y: f32 = 16.;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
+    Home,
     System,
     Audio,
     Media,
@@ -40,10 +45,17 @@ enum Page {
 }
 
 impl Page {
-    const ALL: [Self; 4] = [Self::System, Self::Audio, Self::Media, Self::Discord];
+    const ALL: [Self; 5] = [
+        Self::Home,
+        Self::System,
+        Self::Audio,
+        Self::Media,
+        Self::Discord,
+    ];
 
     fn label(self) -> &'static str {
         match self {
+            Self::Home => "Home",
             Self::System => "System",
             Self::Audio => "Audio",
             Self::Media => "Media",
@@ -53,6 +65,7 @@ impl Page {
 
     fn icon(self) -> Icon {
         match self {
+            Self::Home => Icon::Home,
             Self::System => Icon::Activity,
             Self::Audio => Icon::Audio,
             Self::Media => Icon::Music,
@@ -62,6 +75,7 @@ impl Page {
 
     fn palette(self) -> (u32, u32, u32) {
         match self {
+            Self::Home => (0x405972, 0x263749, 0xf2f7ff),
             Self::System => (0x31b987, 0x127453, 0xf3fff8),
             Self::Audio => (0xffbc65, 0xdb7624, 0x291b0e),
             Self::Media => (0xf25e84, 0xbf2b54, 0xfff6fa),
@@ -92,6 +106,7 @@ fn append(series: &mut VecDeque<f32>, value: Option<f32>) {
 
 pub struct Dashboard {
     page: Page,
+    home: home::Home,
     metrics: Metrics,
     history: History,
     audio: AudioState,
@@ -99,6 +114,7 @@ pub struct Dashboard {
     routing: Option<AudioId>,
     media: MediaState,
     player: Option<String>,
+    pending_seek: Option<media::PendingSeek>,
     discord: DiscordState,
     controls: Controls,
     focus: FocusHandle,
@@ -135,7 +151,8 @@ impl Dashboard {
         #[cfg(not(feature = "ui-gpui"))]
         window.focus(&focus, cx);
         Self {
-            page: Page::System,
+            page: Page::Home,
+            home: home::Home::load(),
             metrics: Metrics::default(),
             history: History::default(),
             audio: AudioState::default(),
@@ -143,6 +160,7 @@ impl Dashboard {
             routing: None,
             media: MediaState::default(),
             player: None,
+            pending_seek: None,
             discord: DiscordState::default(),
             controls,
             focus,
@@ -188,7 +206,7 @@ impl Dashboard {
                 {
                     self.routing = None;
                 }
-                self.page == Page::Audio
+                self.shows(Page::Audio)
             }
             Update::Media(state) => {
                 self.media = state;
@@ -199,11 +217,27 @@ impl Dashboard {
                 {
                     self.player = None;
                 }
-                self.page == Page::Media
+                self.update_seek();
+                self.shows(Page::Media)
+            }
+            Update::MediaSeekFailed {
+                requested_at,
+                error,
+            } => {
+                if self
+                    .pending_seek
+                    .as_ref()
+                    .is_none_or(|seek| seek.requested_at != requested_at)
+                {
+                    return false;
+                }
+                self.pending_seek = None;
+                self.error = Some((Instant::now(), error));
+                true
             }
             Update::Discord(state) => {
                 self.discord = state;
-                self.page == Page::Discord
+                self.shows(Page::Discord)
             }
             Update::ActionError(error) => {
                 self.error = Some((Instant::now(), error));
@@ -225,8 +259,13 @@ impl Dashboard {
             .or_else(|| self.media.players.first())
     }
 
+    fn shows(&self, page: Page) -> bool {
+        self.page == page || (self.page == Page::Home && self.home.includes(page))
+    }
+
     fn select(&mut self, page: Page, cx: &mut Context<Self>) {
         if self.page != page {
+            self.home.leave();
             self.page = page;
             self.routing = None;
             self.error = None;
@@ -260,6 +299,7 @@ impl Dashboard {
         }
         match key.key.as_str() {
             "f11" => window.toggle_fullscreen(),
+            "escape" if self.page == Page::Home && self.home.escape() => cx.notify(),
             "escape" if self.routing.take().is_some() => cx.notify(),
             "escape" if window.is_fullscreen() => window.toggle_fullscreen(),
             "tab" => {
@@ -276,6 +316,7 @@ impl Dashboard {
                     window.focus_next(cx);
                 }
             }
+            "0" => self.select(Page::Home, cx),
             "1" => self.select(Page::System, cx),
             "2" => self.select(Page::Audio, cx),
             "3" => self.select(Page::Media, cx),
@@ -285,8 +326,10 @@ impl Dashboard {
         cx.stop_propagation();
     }
 
-    fn navigation(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn navigation(&self, window: &Window, height: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let fullscreen = window.is_fullscreen();
+        let tile_size = if height < 412. { 46. } else { 54. };
+        let tile_gap = if height < 412. { 6. } else { 8. };
         let view = cx.entity();
         let drag_space = || {
             div().flex_1().w_full().when(!fullscreen, |space| {
@@ -306,7 +349,7 @@ impl Dashboard {
             col()
                 .items_center()
                 .flex_none()
-                .gap(r(8.))
+                .gap(r(tile_gap))
                 .children(Page::ALL.into_iter().map(|page| {
                     let selected = self.page == page;
                     let (light, dark, foreground) = page.palette();
@@ -314,7 +357,7 @@ impl Dashboard {
                     bind(
                         row()
                             .id(page.label())
-                            .size(r(54.))
+                            .size(r(tile_size))
                             .justify_center()
                             .rounded(r(16.))
                             .border_1()
@@ -323,7 +366,7 @@ impl Dashboard {
                             .hover(move |tile| tile.bg(c(light).opacity(0.22)))
                             .child(
                                 row()
-                                    .size(r(44.))
+                                    .size(r(tile_size - 10.))
                                     .justify_center()
                                     .rounded(r(12.))
                                     .bg(linear_gradient(
@@ -331,7 +374,7 @@ impl Dashboard {
                                         linear_color_stop(c(light), 0.),
                                         linear_color_stop(c(dark), 1.),
                                     ))
-                                    .child(icon(page.icon(), c(foreground), 25.)),
+                                    .child(icon(page.icon(), c(foreground), tile_size * 0.46)),
                             )
                             .tooltip(move |_, cx| cx.new(|_| RailTooltip(page.label())).into()),
                         move |_, cx| {
@@ -374,7 +417,7 @@ impl Dashboard {
             });
 
         col()
-            .w(r(78.))
+            .w(r(RAIL_WIDTH))
             .h_full()
             .flex_none()
             .items_center()
@@ -418,7 +461,17 @@ impl Render for Dashboard {
             .min(f32::from(size.height) / 430.)
             .clamp(0.79, 1.72);
         window.set_rem_size(px(16. * scale));
+        let width = f32::from(size.width) / scale;
+        let height = f32::from(size.height) / scale;
         let page: AnyElement = match self.page {
+            Page::Home => self
+                .home_page(
+                    width - RAIL_WIDTH - 2. * CONTENT_X,
+                    height - 2. * CONTENT_Y,
+                    scale,
+                    cx,
+                )
+                .into_any_element(),
             Page::System => self.system_page().into_any_element(),
             Page::Audio => self.audio_page(cx).into_any_element(),
             Page::Media => self.media_page(cx).into_any_element(),
@@ -435,13 +488,13 @@ impl Render for Dashboard {
             .size_full()
             .bg(c(BACK))
             .overflow_hidden()
-            .child(self.navigation(window, cx))
+            .child(self.navigation(window, height, cx))
             .child(
                 col()
                     .relative()
                     .flex_1()
-                    .px(r(18.))
-                    .py(r(16.))
+                    .px(r(CONTENT_X))
+                    .py(r(CONTENT_Y))
                     .child(page)
                     .children(self.notice()),
             )

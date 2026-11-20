@@ -59,13 +59,12 @@ pub fn slider(
                 let fraction = move |x: Pixels| ((x - left) / width).clamp(0., 1.);
                 let start = gesture.clone();
                 let start_id = track_id.clone();
-                window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                window.on_mouse_event(move |event: &MouseDownEvent, phase, window, _| {
                     if phase == DispatchPhase::Bubble
                         && event.button == MouseButton::Left
                         && hitbox.is_hovered(window)
                     {
                         *start.borrow_mut() = Some((start_id.clone(), fraction(event.position.x)));
-                        cx.stop_propagation();
                         window.refresh();
                     }
                 });
@@ -109,7 +108,7 @@ pub fn slider(
         .border_color(c(PANEL))
         .rounded(r(5.))
         .when(enabled, |it| {
-            it.tab_stop(true)
+            it.tab_index(0)
                 .focus(|it| it.border_color(c(TEAL)))
                 .on_key_down(move |event, _, cx| {
                     let next = match event.keystroke.key.as_str() {

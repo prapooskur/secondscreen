@@ -19,7 +19,7 @@ KEY_PRESS = re.compile(r"wl_keyboard[#@]\d+\.key\(\d+, \d+, \d+, 1\)")
 XDG_SURFACE = re.compile(r"\.get_xdg_surface\(new id xdg_surface[#@]\d+, wl_surface[#@](\d+)\)")
 TIMESTAMP = re.compile(r"^\[\s*([\d.]+)\]")
 TICKS = os.sysconf("SC_CLK_TCK")
-SWITCHES = "2341" * 20
+SWITCHES = "23410" * 16
 
 
 def sway(*args):

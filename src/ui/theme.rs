@@ -134,7 +134,7 @@ pub fn bind(
     let keyboard = action.clone();
     button
         .cursor_pointer()
-        .tab_stop(true)
+        .tab_index(0)
         .focus(|it| it.border_color(c(TEAL)))
         .on_click(move |_, window, cx| action(window, cx))
         .on_key_down(move |event, window, cx| {

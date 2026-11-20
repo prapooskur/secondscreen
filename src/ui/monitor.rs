@@ -1,9 +1,11 @@
 use std::collections::VecDeque;
 
 use gpui::{
-    Bounds, Div, FontWeight, IntoElement, PathBuilder, Styled, canvas, fill, linear_color_stop,
-    linear_gradient, point, prelude::*, px, size,
+    Bounds, Div, FontWeight, IntoElement, PathBuilder, Styled, canvas, div, fill,
+    linear_color_stop, linear_gradient, point, prelude::*, px, size,
 };
+
+use crate::model::DiskUsage;
 
 use super::{
     Dashboard, HISTORY,
@@ -103,12 +105,6 @@ impl Dashboard {
             metrics.network_available.then(|| "Download".to_owned()),
         );
 
-        let storage = if let Some((used, total)) = metrics.storage {
-            format!("{} of {} used", capacity(used), capacity(total))
-        } else {
-            "Unavailable".to_owned()
-        };
-
         col()
             .flex_1()
             .gap(r(12.))
@@ -134,7 +130,6 @@ impl Dashboard {
                                         .max_w(r(220.))
                                         .truncate(),
                                     )
-                                    .child(detail(Icon::Disk, "System storage", storage))
                                     .child(detail(
                                         Icon::Clock,
                                         "Uptime",
@@ -168,9 +163,71 @@ impl Dashboard {
                     .child(cpu)
                     .child(graphics)
                     .child(memory_card)
-                    .child(network),
+                    .child(network)
+                    .child(
+                        panel()
+                            .w(r(218.))
+                            .flex_none()
+                            .overflow_hidden()
+                            .p(r(12.))
+                            .gap(r(9.))
+                            .child(
+                                row()
+                                    .flex_none()
+                                    .gap(r(8.))
+                                    .child(icon_tile(Icon::Disk, BLUE, 30.))
+                                    .child(label("Storage")),
+                            )
+                            .child(storage_list("system-storage", &metrics.storage)),
+                    ),
             )
     }
+}
+
+pub(super) fn storage_list(id: &'static str, disks: &[DiskUsage]) -> impl IntoElement {
+    col()
+        .id(id)
+        .flex_1()
+        .overflow_y_scroll()
+        .gap(r(11.))
+        .when(disks.is_empty(), |it| {
+            it.child(quiet("No mounted volumes available."))
+        })
+        .children(disks.iter().map(|disk| {
+            let load = percent(disk.used, disk.total).unwrap_or_default();
+            col()
+                .flex_none()
+                .gap(r(4.))
+                .child(
+                    row()
+                        .gap(r(6.))
+                        .justify_between()
+                        .child(label(disk.mount.clone()).text_color(c(INK)).truncate())
+                        .child(
+                            mono(format!("{load:.0}%"))
+                                .flex_none()
+                                .text_size(r(11.))
+                                .text_color(c(BLUE)),
+                        ),
+                )
+                .child(
+                    quiet(format!(
+                        "{} of {} used",
+                        capacity(disk.used),
+                        capacity(disk.total)
+                    ))
+                    .truncate(),
+                )
+                .child(
+                    div().h(r(4.)).rounded_full().bg(c(STROKE)).child(
+                        div()
+                            .w(gpui::relative((load / 100.).clamp(0., 1.)))
+                            .h_full()
+                            .rounded_full()
+                            .bg(c(BLUE)),
+                    ),
+                )
+        }))
 }
 
 fn detail(symbol: Icon, heading: &str, value: String) -> Div {
@@ -256,7 +313,7 @@ fn card(
         )
 }
 
-fn graph(
+pub(super) fn graph(
     primary: VecDeque<f32>,
     secondary: Option<VecDeque<f32>>,
     maximum: f32,
@@ -330,11 +387,11 @@ fn graph(
     .min_h(r(14.))
 }
 
-fn gib(bytes: u64) -> f64 {
+pub(super) fn gib(bytes: u64) -> f64 {
     bytes as f64 / (1024. * 1024. * 1024.)
 }
 
-fn capacity(bytes: u64) -> String {
+pub(super) fn capacity(bytes: u64) -> String {
     let gib = gib(bytes);
     if gib >= 1024. {
         format!("{:.1} TiB", gib / 1024.)
@@ -345,7 +402,7 @@ fn capacity(bytes: u64) -> String {
     }
 }
 
-fn rate(bytes: f32) -> (String, &'static str) {
+pub(super) fn rate(bytes: f32) -> (String, &'static str) {
     if bytes >= 1024. * 1024. {
         (format!("{:.1}", bytes / (1024. * 1024.)), "MiB/s")
     } else {
@@ -353,7 +410,7 @@ fn rate(bytes: f32) -> (String, &'static str) {
     }
 }
 
-fn uptime(seconds: u64) -> String {
+pub(super) fn uptime(seconds: u64) -> String {
     let days = seconds / 86_400;
     let hours = seconds / 3600 % 24;
     let minutes = seconds / 60 % 60;

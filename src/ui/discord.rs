@@ -221,7 +221,7 @@ impl Dashboard {
     }
 }
 
-fn discord_button(
+pub(super) fn discord_button(
     id: &'static str,
     symbol: Icon,
     name: &'static str,

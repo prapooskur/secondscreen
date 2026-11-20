@@ -43,7 +43,7 @@ fn main() -> anyhow::Result<()> {
             "--fullscreen" => fullscreen = true,
             "--help" | "-h" => {
                 println!(
-                    "Second Screen\n\nUsage: secondscreen [--fullscreen]\n\nF11 toggles fullscreen. Escape restores the window.\nKeys 1–4 switch between System, Audio, Media, and Discord."
+                    "Second Screen\n\nUsage: secondscreen [--fullscreen]\n\nF11 toggles fullscreen. Escape restores the window.\nKey 0 opens Home. Keys 1–4 open System, Audio, Media, and Discord."
                 );
                 return Ok(());
             }

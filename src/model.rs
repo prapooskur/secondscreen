@@ -12,7 +12,14 @@ pub struct Metrics {
     pub download: f32,
     pub upload: f32,
     pub network_available: bool,
-    pub storage: Option<(u64, u64)>,
+    pub storage: Vec<DiskUsage>,
+}
+
+#[derive(Clone)]
+pub struct DiskUsage {
+    pub mount: String,
+    pub used: u64,
+    pub total: u64,
 }
 
 #[derive(Clone)]
@@ -118,7 +125,11 @@ pub enum MediaAction {
     Toggle,
     Previous,
     Next,
-    Seek { track: String, position: i64 },
+    Seek {
+        track: String,
+        position: i64,
+        requested_at: std::time::Instant,
+    },
 }
 
 #[derive(Default)]
@@ -164,6 +175,10 @@ pub enum Update {
     Metrics(Metrics),
     Audio(AudioState),
     Media(MediaState),
+    MediaSeekFailed {
+        requested_at: std::time::Instant,
+        error: String,
+    },
     Discord(DiscordState),
     ActionError(String),
 }

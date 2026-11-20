@@ -52,6 +52,25 @@ impl Media {
         });
         Ok(players)
     }
+
+    fn command(&mut self, id: &str, action: MediaAction) -> Result<()> {
+        ensure!(id.starts_with(PREFIX), "Invalid MPRIS player.");
+        let connection = self.connection()?;
+        let player = Proxy::new(connection, id, PATH, PLAYER)?;
+        match action {
+            MediaAction::Toggle => player.call("PlayPause", &())?,
+            MediaAction::Previous => player.call("Previous", &())?,
+            MediaAction::Next => player.call("Next", &())?,
+            MediaAction::Seek {
+                track, position, ..
+            } => {
+                let track = OwnedObjectPath::try_from(track)
+                    .context("This player did not provide a valid track ID.")?;
+                player.call("SetPosition", &(track, position))?
+            }
+        }
+        Ok(())
+    }
 }
 
 fn read_player(connection: &Connection, id: &str) -> Result<Player> {
@@ -173,19 +192,16 @@ impl Integration for Media {
         })
     }
 
-    fn handle(&mut self, (id, action): Self::Action, _: &Sender<Update>) -> Result<()> {
-        ensure!(id.starts_with(PREFIX), "Invalid MPRIS player.");
-        let connection = self.connection()?;
-        let player = Proxy::new(connection, id.as_str(), PATH, PLAYER)?;
-        match action {
-            MediaAction::Toggle => player.call("PlayPause", &())?,
-            MediaAction::Previous => player.call("Previous", &())?,
-            MediaAction::Next => player.call("Next", &())?,
-            MediaAction::Seek { track, position } => {
-                let track = OwnedObjectPath::try_from(track)
-                    .context("This player did not provide a valid track ID.")?;
-                player.call("SetPosition", &(track, position))?
-            }
+    fn handle(&mut self, (id, action): Self::Action, updates: &Sender<Update>) -> Result<()> {
+        let MediaAction::Seek { requested_at, .. } = &action else {
+            return self.command(&id, action);
+        };
+        let requested_at = *requested_at;
+        if let Err(error) = self.command(&id, action) {
+            let _ = updates.send_blocking(Update::MediaSeekFailed {
+                requested_at,
+                error: format!("Could not seek. {error:#}"),
+            });
         }
         Ok(())
     }
