@@ -16,7 +16,6 @@ use super::{
     Dashboard, Tooltip,
     icons::{Icon, icon},
     theme::*,
-    window_control,
 };
 
 const GAP: f32 = 12.;
@@ -24,8 +23,8 @@ const VISIBLE_ROWS: u8 = 4;
 const REFERENCE_ROWS: u8 = 3;
 const REFERENCE_COLUMNS: u8 = 4;
 const MIN_COLUMN_WIDTH: f32 = 232.;
-const HEADING_HEIGHT: f32 = 37.;
-const EDIT_HEADING_HEIGHT: f32 = 60.;
+const RAIL_WIDTH: f32 = 44.;
+const RAIL_BUTTON_SIZE: f32 = 34.;
 const WIDGET_HEADER_HEIGHT: f32 = 29.;
 const RESIZE_CONTROL_HEIGHT: f32 = 28.;
 
@@ -165,12 +164,7 @@ impl Dashboard {
         fullscreen: bool,
         cx: &Context<Self>,
     ) -> gpui::Div {
-        let heading_height = if self.home.editing && !self.home.catalog {
-            EDIT_HEADING_HEIGHT
-        } else {
-            HEADING_HEIGHT
-        };
-        let grid = Grid::new(width, height - heading_height - GAP);
+        let grid = Grid::new(width - RAIL_WIDTH - GAP, height);
         let content = if self.home.catalog {
             self.widget_catalog(grid, cx).into_any_element()
         } else {
@@ -203,151 +197,150 @@ impl Dashboard {
             }
         };
 
-        col()
+        split()
             .relative()
             .flex_1()
+            .min_h_0()
             .gap(r(GAP))
-            .child(self.home_heading(heading_height, fullscreen, cx))
             .child(content)
+            .child(self.control_rail(fullscreen, cx))
             .when(self.home.resizing.is_some(), |it| {
                 it.child(self.track_resize(cx))
             })
     }
 
-    fn home_heading(&self, height: f32, fullscreen: bool, cx: &Context<Self>) -> impl IntoElement {
-        let view = cx.entity();
+    fn control_rail(&self, fullscreen: bool, cx: &Context<Self>) -> impl IntoElement {
         let editing = self.home.editing;
         let catalog = self.home.catalog;
-        let toggle = bind(
-            button("edit-home", editing.then_some(TEAL))
-                .child(icon(
-                    if editing { Icon::Check } else { Icon::Edit },
-                    c(if editing { TEAL } else { TEXT }),
-                    15.,
-                ))
-                .child(if editing { "Done" } else { "Edit layout" }),
-            move |window, cx| {
-                view.update(cx, |this, cx| {
-                    this.close_settings(window, cx);
-                    if this.home.editing {
-                        this.home.leave();
-                    } else {
-                        this.home.editing = true;
-                    }
-                    cx.notify();
-                });
-            },
-        );
+        let edit_view = cx.entity();
+        let settings_view = cx.entity();
+        let fullscreen_view = cx.entity();
 
-        row()
-            .h(r(height))
+        panel()
+            .w(r(RAIL_WIDTH))
+            .h_full()
             .flex_none()
-            .justify_between()
-            .gap(r(12.))
+            .items_center()
+            .gap(r(5.))
+            .py(r(5.))
+            .child(rail_control(
+                "edit-home",
+                if editing {
+                    "Done editing"
+                } else {
+                    "Edit layout"
+                },
+                if editing { Icon::Check } else { Icon::Edit },
+                editing,
+                move |window, cx| {
+                    edit_view.update(cx, |this, cx| {
+                        this.close_settings(window, cx);
+                        if this.home.editing {
+                            this.home.leave();
+                        } else {
+                            this.home.editing = true;
+                        }
+                        cx.notify();
+                    });
+                },
+            ))
+            .when(editing, |it| {
+                let view = cx.entity();
+                it.child(rail_control(
+                    "widget-catalog",
+                    if catalog {
+                        "Back to layout"
+                    } else {
+                        "Add widget"
+                    },
+                    if catalog { Icon::Left } else { Icon::Plus },
+                    catalog,
+                    move |_, cx| {
+                        view.update(cx, |this, cx| {
+                            this.home.catalog = !this.home.catalog;
+                            this.home.resizing = None;
+                            cx.notify();
+                        })
+                    },
+                ))
+            })
+            .child(rail_control(
+                "settings",
+                "Settings",
+                Icon::Settings,
+                self.settings.open,
+                move |window, cx| {
+                    settings_view.update(cx, |this, cx| {
+                        if this.settings.open {
+                            this.close_settings(window, cx);
+                        } else {
+                            this.open_settings(this.settings.section, window, cx);
+                        }
+                    })
+                },
+            ))
             .child(
                 col()
                     .flex_1()
+                    .w_full()
                     .justify_center()
-                    .h_full()
-                    .gap(r(3.))
+                    .items_center()
                     .when(!fullscreen, |it| {
-                        it.cursor_move()
-                            .on_mouse_down(MouseButton::Left, |event, window, _| {
-                                if event.click_count == 2 {
-                                    window.zoom_window();
-                                } else {
-                                    window.start_window_move();
-                                }
-                            })
-                    })
-                    .child(title(if catalog {
-                        "Add widgets"
-                    } else {
-                        "Second Screen"
-                    }))
-                    .when(editing && !catalog, |it| {
-                        it.child(quiet("Drag a corner or use the size controls.").truncate())
-                    }),
-            )
-            .child(
-                row()
-                    .flex_none()
-                    .gap(r(8.))
-                    .when(editing, |it| {
-                        let view = cx.entity();
-                        it.child(bind(
-                            button("widget-catalog", None)
-                                .child(icon(
-                                    if catalog { Icon::Left } else { Icon::Plus },
-                                    c(TEXT),
-                                    15.,
-                                ))
-                                .child(if catalog {
-                                    "Back to layout"
-                                } else {
-                                    "Add widget"
-                                }),
-                            move |_, cx| {
-                                view.update(cx, |this, cx| {
-                                    this.home.catalog = !this.home.catalog;
-                                    this.home.resizing = None;
-                                    cx.notify();
+                        it.child(
+                            row()
+                                .id("move-window")
+                                .size(r(RAIL_BUTTON_SIZE))
+                                .justify_center()
+                                .rounded(r(8.))
+                                .cursor_move()
+                                .hover(|it| it.bg(c(HOVER)))
+                                .child(icon(Icon::Grip, c(MUTED), 16.))
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| Tooltip("Drag to move window".into())).into()
                                 })
-                            },
-                        ))
-                    })
-                    .child(toggle)
-                    .child(bind(
-                        button("settings", self.settings.open.then_some(TEAL))
-                            .child(icon(Icon::Settings, c(TEXT), 15.))
-                            .child("Settings"),
-                        {
-                            let view = cx.entity();
-                            move |window, cx| {
-                                view.update(cx, |this, cx| {
-                                    if this.settings.open {
-                                        this.close_settings(window, cx);
+                                .on_mouse_down(MouseButton::Left, |event, window, _| {
+                                    if event.click_count == 2 {
+                                        window.zoom_window();
                                     } else {
-                                        this.open_settings(this.settings.section, window, cx);
+                                        window.start_window_move();
                                     }
-                                })
-                            }
-                        },
-                    ))
-                    .child(window_control(
-                        if fullscreen {
-                            "Exit fullscreen (F11)"
-                        } else {
-                            "Fullscreen (F11)"
-                        },
-                        if fullscreen {
-                            Icon::Restore
-                        } else {
-                            Icon::Fullscreen
-                        },
-                        30.,
-                        {
-                            let view = cx.entity();
-                            move |window, cx| {
-                                view.update(cx, |this, _| this.toggle_fullscreen(window))
-                            }
-                        },
-                    ))
-                    .when(!fullscreen, |it| {
-                        it.child(window_control(
-                            "Minimize",
-                            Icon::Minimize,
-                            28.,
-                            |window, _| window.minimize_window(),
-                        ))
-                        .child(window_control(
-                            "Close",
-                            Icon::Close,
-                            28.,
-                            |window, _| window.remove_window(),
-                        ))
+                                }),
+                        )
                     }),
             )
+            .child(rail_control(
+                "fullscreen",
+                if fullscreen {
+                    "Exit fullscreen (F11)"
+                } else {
+                    "Fullscreen (F11)"
+                },
+                if fullscreen {
+                    Icon::Restore
+                } else {
+                    Icon::Fullscreen
+                },
+                false,
+                move |window, cx| {
+                    fullscreen_view.update(cx, |this, _| this.toggle_fullscreen(window))
+                },
+            ))
+            .when(!fullscreen, |it| {
+                it.child(rail_control(
+                    "minimize",
+                    "Minimize",
+                    Icon::Minimize,
+                    false,
+                    |window, _| window.minimize_window(),
+                ))
+                .child(rail_control(
+                    "close",
+                    "Close",
+                    Icon::Close,
+                    false,
+                    |window, _| window.remove_window(),
+                ))
+            })
     }
 
     fn empty_home(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -785,6 +778,23 @@ fn adjusted(widget: Widget, columns: u8, (horizontal, vertical): (i32, i32)) -> 
         rows: shifted_span(widget.rows, vertical, MIN_ROWS, MAX_ROWS),
         ..widget
     }
+}
+
+fn rail_control(
+    id: &'static str,
+    description: &'static str,
+    symbol: Icon,
+    active: bool,
+    action: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
+) -> impl IntoElement {
+    bind(
+        button(id, active.then_some(TEAL))
+            .size(r(RAIL_BUTTON_SIZE))
+            .px_0()
+            .child(icon(symbol, c(if active { TEAL } else { TEXT }), 17.))
+            .tooltip(move |_, cx| cx.new(|_| Tooltip(description.into())).into()),
+        action,
+    )
 }
 
 fn tile_button(

@@ -32,7 +32,6 @@ use crate::{
     },
     platform::Controls,
 };
-use icons::{Icon, icon};
 use theme::*;
 
 const HISTORY: usize = 60;
@@ -378,23 +377,6 @@ impl Render for Tooltip {
             .border_color(c(STROKE))
             .bg(c(PANEL))
     }
-}
-
-fn window_control(
-    description: &'static str,
-    symbol: Icon,
-    width: f32,
-    action: impl Fn(&mut Window, &mut gpui::App) + 'static,
-) -> impl IntoElement {
-    bind(
-        button(description, None)
-            .w(r(width))
-            .h(r(27.))
-            .px_0()
-            .child(icon(symbol, c(TEXT), 15.))
-            .tooltip(move |_, cx| cx.new(|_| Tooltip(description.into())).into()),
-        action,
-    )
 }
 
 fn percent(used: u64, total: u64) -> Option<f32> {
