@@ -26,10 +26,15 @@ pub(in crate::ui) enum Kind {
     Storage,
     Mixer,
     Viewer,
+    WorldClock,
+    Calendar,
+    Weather,
+    Notifications,
+    Fps,
 }
 
 impl Kind {
-    pub(super) const ALL: [Self; 9] = [
+    pub(super) const ALL: [Self; 14] = [
         Self::Performance,
         Self::Media,
         Self::Audio,
@@ -39,6 +44,11 @@ impl Kind {
         Self::Storage,
         Self::Mixer,
         Self::Viewer,
+        Self::WorldClock,
+        Self::Calendar,
+        Self::Weather,
+        Self::Notifications,
+        Self::Fps,
     ];
 
     pub(super) fn repeatable(self) -> bool {

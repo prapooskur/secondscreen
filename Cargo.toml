@@ -22,6 +22,8 @@ gpui = { version = "0.2.2", optional = true, default-features = false, features 
 gpui-fast-backend = { package = "gpui-fast", version = "0.1.17", optional = true, default-features = false, features = ["wayland", "font-kit"] }
 gpui-fast-platform = { version = "0.1.17", optional = true, default-features = false, features = ["wayland"] }
 blocking = "1"
+futures-lite = "2"
+jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 freedesktop-icons = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 rustix = { version = "1", features = ["fs"] }

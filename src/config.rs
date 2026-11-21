@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct Preferences {
     pub start_fullscreen: bool,
+    pub clock_zones: Option<Vec<String>>,
+    pub weather_location: String,
+    pub fahrenheit: bool,
     pub hidden_media: BTreeMap<String, String>,
     pub hidden_audio: BTreeMap<String, String>,
     pub hidden_drives: BTreeMap<String, String>,

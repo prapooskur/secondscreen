@@ -3984,6 +3984,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -6414,11 +6415,13 @@ dependencies = [
  "cc",
  "env_logger",
  "freedesktop-icons",
+ "futures-lite 2.6.1",
  "gpui",
  "gpui-fast",
  "gpui-fast-platform",
  "html5ever",
  "image",
+ "jiff",
  "log",
  "pkg-config",
  "reqwest",

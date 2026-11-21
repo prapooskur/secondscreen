@@ -64,3 +64,17 @@ Storage lists whole drives exposed by Linux, including unmounted drives. It show
 ## Framework comparison
 
 See [BENCHMARK.md](BENCHMARK.md) for the performance results and reproduction steps.
+
+## Clock, calendar, weather, notifications, and FPS
+
+Add these tiles from **Edit layout → Add widget**. Open **Settings → Widgets** to change time zones, weather location, or temperature units.
+
+- **World clock** shows local time and your chosen IANA time zones. Enter names such as `America/New_York, Asia/Kolkata`. Each clock follows its zone’s daylight-saving rules.
+- **Calendar** shows the local month and highlights today. Use the arrows to browse months. Click the month name to return to today.
+- **Weather / AQI** shows current conditions, temperature, and the US Air Quality Index for one location. Enter a city name or exact latitude and longitude. City search uses the first matching location. The widget refreshes every 15 minutes and retries after five minutes when data is unavailable. [Open-Meteo weather](https://open-meteo.com/) · [Air quality data from CAMS via Open-Meteo](https://open-meteo.com/en/docs/air-quality-api)
+- **Notifications** shows the latest 30 incoming Freedesktop desktop notifications while the tile is on Home. The history stays in memory. **Clear** clears the tile’s history. The desktop session bus must allow notification monitoring.
+- **FPS** displays the Gamescope session’s reported frame rate and a 60-second graph. Add the tile, then launch a game through Gamescope with the Steam launch options below. For a standalone game, replace `%command%` with its executable. Gamescope writes a sample every 300 frames.
+
+```sh
+gamescope --stats-path "$XDG_RUNTIME_DIR/secondscreen-fps" -- %command%
+```

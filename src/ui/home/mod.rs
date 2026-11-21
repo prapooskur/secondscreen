@@ -497,6 +497,28 @@ impl Dashboard {
                     .when(!editing && kind == Kind::Performance, |it| {
                         it.child(self.sensor_button(tile.widget.id, cx))
                     })
+                    .when(
+                        !editing && matches!(kind, Kind::WorldClock | Kind::Weather | Kind::Fps),
+                        |it| {
+                            let view = cx.entity();
+                            let name = match kind {
+                                Kind::WorldClock => "Zones",
+                                Kind::Weather => "Location",
+                                _ => "Setup",
+                            };
+                            it.child(bind(
+                                button(name, None).h(r(26.)).px(r(7.)).child(name),
+                                move |win, cx| {
+                                    view.update(cx, |d, cx| {
+                                        d.open_settings(super::settings::Section::Widgets, win, cx)
+                                    })
+                                },
+                            ))
+                        },
+                    )
+                    .when(!editing && kind == Kind::Notifications, |it| {
+                        it.child(self.clear_notifications(cx))
+                    })
                     .when(!editing && kind == Kind::Viewer, |it| {
                         it.children(
                             self.viewers

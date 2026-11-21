@@ -22,7 +22,6 @@ unsafe extern "C" {
     fn ss_web_run(tile: *mut c_void);
     fn ss_web_has_discord() -> c_int;
     fn ss_web_pump();
-    fn ss_web_dirty(tile: *mut c_void) -> c_int;
     fn ss_web_resize(tile: *mut c_void, width: c_int, height: c_int);
     fn ss_web_frame(tile: *mut c_void, bgra: *mut u8, width: c_int, height: c_int) -> c_int;
     fn ss_web_pointer(
@@ -79,6 +78,7 @@ pub(super) fn standalone(source: &Source) -> Result<()> {
 pub(crate) struct WebTile {
     view: NonNull<c_void>,
     size: (i32, i32),
+    pixels: Vec<u8>,
     _main_thread: PhantomData<Rc<()>>,
 }
 
@@ -87,29 +87,42 @@ impl WebTile {
         Ok(Self {
             view: create(source, size, false)?,
             size,
+            pixels: Vec::new(),
             _main_thread: PhantomData,
         })
     }
 
-    pub fn update(&mut self, size: (i32, i32)) -> Option<Arc<RenderImage>> {
+    pub fn update(
+        &mut self,
+        size: (i32, i32),
+        previous: Option<&RenderImage>,
+        visible: bool,
+    ) -> Option<Arc<RenderImage>> {
+        unsafe { ss_web_pump() };
+        if !visible {
+            return None;
+        }
         let (w, h) = size;
-        if self.size != size {
+        let resized = self.size != size;
+        if resized {
             unsafe { ss_web_resize(self.view.as_ptr(), w, h) };
             self.size = size;
         }
-        unsafe { ss_web_pump() };
-        if unsafe { ss_web_dirty(self.view.as_ptr()) } == 0 {
-            return None;
-        }
-        let mut pixels = vec![0u8; w as usize * h as usize * 4];
-        if unsafe { ss_web_frame(self.view.as_ptr(), pixels.as_mut_ptr(), w, h) } == 0 {
+        // GTK suppresses damage notifications for an unmapped host, including
+        // changes from a cross-origin frame. Sample the actual web surface.
+        self.pixels.resize(w as usize * h as usize * 4, 0);
+        if unsafe { ss_web_frame(self.view.as_ptr(), self.pixels.as_mut_ptr(), w, h) } == 0 {
             return None;
         }
         #[cfg(target_endian = "big")]
-        for p in pixels.chunks_exact_mut(4) {
+        for p in self.pixels.chunks_exact_mut(4) {
             p.reverse();
         }
-        let frame = image::RgbaImage::from_raw(w as u32, h as u32, pixels)?;
+        if !resized && previous.and_then(|frame| frame.as_bytes(0)) == Some(self.pixels.as_slice())
+        {
+            return None;
+        }
+        let frame = image::RgbaImage::from_raw(w as u32, h as u32, self.pixels.clone())?;
         Some(Arc::new(RenderImage::new([image::Frame::new(frame)])))
     }
 
@@ -155,5 +168,71 @@ impl WebTile {
 impl Drop for WebTile {
     fn drop(&mut self) {
         unsafe { ss_web_free(self.view.as_ptr()) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::viewer::{ViewerMode, ViewerOptions};
+    use std::{
+        fs,
+        time::{Duration, Instant},
+    };
+
+    #[test]
+    #[ignore = "requires a graphical session with WebKitGTK"]
+    fn inline_slideshow_repaints_after_resize_and_accepts_clicks() {
+        let dir =
+            std::env::temp_dir().join(format!("secondscreen-inline-slides-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        for (name, color) in [("1.png", [255, 0, 0, 255]), ("2.png", [0, 0, 255, 255])] {
+            image::RgbaImage::from_pixel(8, 8, image::Rgba(color))
+                .save(dir.join(name))
+                .unwrap();
+        }
+        let source = ViewerOptions {
+            mode: ViewerMode::Slideshow,
+            source: dir.to_string_lossy().into_owned(),
+            interval: 3600,
+        }
+        .resolve()
+        .unwrap();
+        let mut tile = WebTile::new(&source, (320, 180)).unwrap();
+        let mut previous = None;
+        let red = [0, 0, 255, 255];
+        let blue = [255, 0, 0, 255];
+        for (size, expected, advance) in [
+            ((320, 180), red, true),
+            ((320, 180), blue, false),
+            ((280, 220), blue, true),
+            ((280, 220), red, false),
+        ] {
+            let deadline = Instant::now() + Duration::from_secs(12);
+            loop {
+                if let Some(frame) = tile.update(size, previous.as_deref(), true) {
+                    let center = ((size.1 / 2 * size.0 + size.0 / 2) * 4) as usize;
+                    let found = frame.as_bytes(0).unwrap()[center..center + 4] == expected;
+                    previous = Some(frame);
+                    if found {
+                        break;
+                    }
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "inline view did not display {expected:?} at {size:?}"
+                );
+                std::thread::sleep(Duration::from_millis(30));
+            }
+            if advance {
+                let next = (f64::from(size.0) - 15., 15.);
+                tile.focus(true);
+                tile.pointer(0, 0, next, (0., 0.), 0);
+                tile.pointer(1, 1, next, (0., 0.), 0);
+                tile.pointer(2, 1, next, (0., 0.), 1 << 8);
+            }
+        }
+        drop(tile);
+        fs::remove_dir_all(dir).unwrap();
     }
 }

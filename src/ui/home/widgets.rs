@@ -24,6 +24,11 @@ impl Kind {
             Self::Network => "Network",
             Self::Storage => "Storage",
             Self::Viewer => "Viewer",
+            Self::WorldClock => "World clock",
+            Self::Calendar => "Calendar",
+            Self::Weather => "Weather / AQI",
+            Self::Notifications => "Notifications",
+            Self::Fps => "FPS",
         }
     }
 
@@ -38,6 +43,11 @@ impl Kind {
             Self::Network => "Download and upload activity",
             Self::Storage => "Drive capacity and usage",
             Self::Viewer => "Web, video, Twitch, and slideshows",
+            Self::WorldClock => "Time and date across time zones",
+            Self::Calendar => "Monthly calendar and today’s date",
+            Self::Weather => "Local conditions and air quality",
+            Self::Notifications => "Recent desktop notifications",
+            Self::Fps => "Live Gamescope frame rate",
         }
     }
 
@@ -52,6 +62,11 @@ impl Kind {
             Self::Network => Icon::Network,
             Self::Storage => Icon::Disk,
             Self::Viewer => Icon::Play,
+            Self::WorldClock => Icon::Clock,
+            Self::Calendar => Icon::Calendar,
+            Self::Weather => Icon::Cloud,
+            Self::Notifications => Icon::Bell,
+            Self::Fps => Icon::Gauge,
         }
     }
 
@@ -62,6 +77,11 @@ impl Kind {
             Self::Mixer | Self::Audio | Self::Network => AMBER,
             Self::Discord | Self::Memory => VIOLET,
             Self::Storage | Self::Viewer => BLUE,
+            Self::WorldClock => TEAL,
+            Self::Calendar => VIOLET,
+            Self::Weather => AMBER,
+            Self::Notifications => BLUE,
+            Self::Fps => TEAL,
         }
     }
 }
@@ -83,6 +103,11 @@ impl Dashboard {
             Kind::Memory => self.memory_widget(height).into_any_element(),
             Kind::Network => self.network_widget(height).into_any_element(),
             Kind::Storage => storage_list("home-storage", self.visible_disks()).into_any_element(),
+            Kind::WorldClock => self.world_clock(height).into_any_element(),
+            Kind::Calendar => self.calendar(height, cx).into_any_element(),
+            Kind::Weather => self.weather_widget(height).into_any_element(),
+            Kind::Notifications => self.notification_widget().into_any_element(),
+            Kind::Fps => self.fps_widget(height).into_any_element(),
             Kind::Viewer => div()
                 .flex()
                 .flex_1()

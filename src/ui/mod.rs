@@ -8,6 +8,7 @@ mod settings;
 mod slider;
 mod text_input;
 mod theme;
+mod utilities;
 mod viewer;
 
 use std::{
@@ -59,6 +60,7 @@ fn append(series: &mut VecDeque<f32>, value: Option<f32>) {
 
 pub struct Dashboard {
     home: home::Home,
+    utilities: utilities::Utilities,
     preferences: Preferences,
     settings: settings::SettingsView,
     metrics: Metrics,
@@ -107,6 +109,7 @@ impl Dashboard {
         window.focus(&focus, cx);
         Self {
             home: home::Home::load(),
+            utilities: Default::default(),
             preferences,
             settings: settings::SettingsView::new(cx.focus_handle()),
             metrics: Metrics::default(),
@@ -324,6 +327,7 @@ impl Dashboard {
 impl Render for Dashboard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_viewers(cx);
+        self.sync_utilities(cx);
         let size = window.viewport_size();
         let scale = (f32::from(size.width) / 1400.)
             .min(f32::from(size.height) / 430.)

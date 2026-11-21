@@ -1,17 +1,10 @@
 #include <webkit2/webkit2.h>
 
-
 typedef struct {
     GtkWidget *window;
     GtkWidget *target;
     GtkWidget *web;
-    gboolean dirty;
 } TileView;
-
-static void invalidated(GdkWindow *surface, cairo_region_t *region G_GNUC_UNUSED) {
-    TileView *tile = g_object_get_data(G_OBJECT(surface), "tile-view");
-    tile->dirty = TRUE;
-}
 
 static void allocate_view(TileView *tile, int width, int height) {
     GtkAllocation bounds = {0, 0, width, height};
@@ -77,10 +70,6 @@ TileView *ss_web_new(const char *uri, const char *html, int width, int height, i
         gtk_widget_realize(tile->web);
         allocate_view(tile, width, height);
         gtk_widget_map(tile->web);
-        GdkWindow *child = gtk_widget_get_window(tile->web);
-        g_object_set_data(G_OBJECT(child), "tile-view", tile);
-        gdk_window_set_invalidate_handler(child, invalidated);
-        tile->dirty = TRUE;
     }
     gtk_widget_grab_focus(tile->web);
     if (html)
@@ -91,7 +80,6 @@ TileView *ss_web_new(const char *uri, const char *html, int width, int height, i
 }
 
 void ss_web_free(TileView *tile) {
-    gdk_window_set_invalidate_handler(gtk_widget_get_window(tile->web), NULL);
     gdk_offscreen_window_set_embedder(gtk_widget_get_window(tile->target), NULL);
     gtk_widget_destroy(tile->window);
     gtk_widget_destroy(tile->target);
@@ -120,22 +108,21 @@ void ss_web_pump(void) {
 void ss_web_resize(TileView *tile, int width, int height) {
     gtk_window_set_default_size(GTK_WINDOW(tile->target), width, height);
     allocate_view(tile, width, height);
-    tile->dirty = TRUE;
 }
-
-int ss_web_dirty(TileView *tile) { return tile->dirty; }
 
 int ss_web_frame(TileView *tile, unsigned char *bgra, int width, int height) {
     allocate_view(tile, width, height);
     cairo_surface_t *dst = cairo_image_surface_create_for_data(bgra, CAIRO_FORMAT_ARGB32,
                                                                width, height, width * 4);
     cairo_t *cr = cairo_create(dst);
+    cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+    cairo_paint(cr);
+    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
     gtk_widget_draw(tile->web, cr);
     cairo_destroy(cr);
     cairo_surface_flush(dst);
     gboolean ok = cairo_surface_status(dst) == CAIRO_STATUS_SUCCESS;
     cairo_surface_destroy(dst);
-    tile->dirty = FALSE;
     return ok;
 }
 
@@ -163,7 +150,12 @@ void ss_web_pointer(TileView *tile, int action, int button, double x, double y,
         e->button.x = x; e->button.y = y; e->button.time = time;
         e->button.state = state; e->button.button = button;
     }
-    gtk_widget_event(tile->web, e);
+    /* gtk_widget_event drops input to unmapped native windows. GPUI has
+       already hit-tested the on-screen tile, so dispatch to the web widget. */
+    const char *signals[] = {"motion-notify-event", "button-press-event", "button-release-event",
+                             "scroll-event", "button-press-event", "button-press-event"};
+    gboolean handled;
+    g_signal_emit_by_name(tile->web, signals[action], e, &handled);
     gdk_event_free(e);
 }
 
@@ -190,6 +182,7 @@ void ss_web_key(TileView *tile, const char *name, unsigned int unicode,
         e->key.group = keys[0].group;
         g_free(keys);
     }
-    gtk_widget_event(tile->web, e);
+    gboolean handled;
+    g_signal_emit_by_name(tile->web, press ? "key-press-event" : "key-release-event", e, &handled);
     gdk_event_free(e);
 }

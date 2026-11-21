@@ -99,7 +99,8 @@ impl Viewer {
                     .update(cx, |this, cx| {
                         let size = this.viewport();
                         if let Some(web) = &mut this.web
-                            && let Some(frame) = web.update(size)
+                            && let Some(frame) =
+                                web.update(size, this.frame.as_deref(), !this.editing)
                         {
                             this.clear_frame(cx);
                             this.frame = Some(frame);
@@ -371,17 +372,18 @@ impl Viewer {
                                 web.focus(true);
                                 v.focused = true;
                             }
-                            let p = v.event_point(e.position);
-                            web.pointer(1, number, p, (0., 0.), v.pressed | modifiers(e.modifiers));
-                            if e.click_count == 2 || e.click_count == 3 {
-                                web.pointer(
-                                    if e.click_count == 2 { 4 } else { 5 },
-                                    number,
-                                    p,
-                                    (0., 0.),
-                                    v.pressed | modifiers(e.modifiers),
-                                )
-                            }
+                            let action = match e.click_count {
+                                2 => 4,
+                                3 => 5,
+                                _ => 1,
+                            };
+                            web.pointer(
+                                action,
+                                number,
+                                v.event_point(e.position),
+                                (0., 0.),
+                                v.pressed | modifiers(e.modifiers),
+                            );
                         }
                         v.pressed |= mask;
                         cx.stop_propagation();

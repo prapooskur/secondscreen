@@ -21,6 +21,7 @@ use super::{
 pub(super) enum Section {
     #[default]
     General,
+    Widgets,
     Media,
     Audio,
     Storage,
@@ -28,8 +29,9 @@ pub(super) enum Section {
 }
 
 impl Section {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::General,
+        Self::Widgets,
         Self::Media,
         Self::Audio,
         Self::Storage,
@@ -39,6 +41,7 @@ impl Section {
     fn presentation(self) -> (&'static str, Icon, u32) {
         match self {
             Self::General => ("General", Icon::Settings, TEAL),
+            Self::Widgets => ("Widgets", Icon::Home, AMBER),
             Self::Media => ("Media apps", Icon::Music, 0xf2799c),
             Self::Audio => ("Audio devices", Icon::Speaker, AMBER),
             Self::Storage => ("Storage", Icon::Disk, BLUE),
@@ -63,6 +66,7 @@ pub(super) struct SettingsView {
     previous_focus: Option<FocusHandle>,
     discord_fields: Option<DiscordFields>,
     discord_saved: bool,
+    widget_fields: Option<(Entity<TextInput>, Entity<TextInput>)>,
 }
 
 impl SettingsView {
@@ -74,6 +78,7 @@ impl SettingsView {
             previous_focus: None,
             discord_fields: None,
             discord_saved: false,
+            widget_fields: None,
         }
     }
 }
@@ -134,6 +139,7 @@ impl Dashboard {
     pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings.open {
             self.settings.open = false;
+            self.settings.widget_fields = None;
             let previous = self
                 .settings
                 .previous_focus
@@ -193,6 +199,7 @@ impl Dashboard {
             }));
         let body = match section {
             Section::General => self.general_settings(cx).into_any_element(),
+            Section::Widgets => self.widget_settings(cx).into_any_element(),
             Section::Discord => self.discord_settings(cx).into_any_element(),
             _ => self.visibility_settings(section, cx).into_any_element(),
         };
@@ -228,6 +235,108 @@ impl Dashboard {
                     .overflow_y_scroll()
                     .child(body),
             )
+    }
+
+    fn widget_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        const LAUNCH: &str =
+            r#"gamescope --stats-path "$XDG_RUNTIME_DIR/secondscreen-fps" -- %command%"#;
+        let (zones, location) = self
+            .settings
+            .widget_fields
+            .get_or_insert_with(|| {
+                let input = |placeholder, value, cx: &mut Context<Self>| {
+                    cx.new(|cx| {
+                        let mut input = TextInput::with_placeholder(placeholder, cx);
+                        input.set_value(value, cx);
+                        input
+                    })
+                };
+                (
+                    input(
+                        "UTC, Europe/London",
+                        super::utilities::clock_zones(&self.preferences.clock_zones).join(", "),
+                        cx,
+                    ),
+                    input(
+                        "City name or latitude, longitude",
+                        self.preferences.weather_location.clone(),
+                        cx,
+                    ),
+                )
+            })
+            .clone();
+        let units = cx.entity();
+        let view = cx.entity();
+        let save = bind(
+            button("save-widget-settings", Some(TEAL)).child("Save locations"),
+            {
+                let (zones, location) = (zones.clone(), location.clone());
+                move |_, cx| {
+                    view.update(cx, |this, cx| {
+                        let location = location.read(cx).value.trim().to_owned();
+                        let result = super::utilities::parse_zones(&zones.read(cx).value).and_then(
+                            |zones| {
+                                super::utilities::coordinates(&location)?;
+                                Ok(zones)
+                            },
+                        );
+                        match result {
+                            Ok(zones) => {
+                                let mut prefs = this.preferences.clone();
+                                prefs.clock_zones = Some(zones);
+                                prefs.weather_location = location;
+                                if this.save_preferences(prefs, cx) {
+                                    this.settings.widget_fields = None;
+                                }
+                            }
+                            Err(err) => {
+                                this.error = Some((Instant::now(), err.to_string()));
+                                cx.notify();
+                            }
+                        }
+                    })
+                }
+            },
+        );
+        col()
+            .gap(r(9.))
+            .flex_none()
+            .child(field("World clock time zones", zones))
+            .child(quiet(
+                "Separate IANA time zones with commas. Local time is always shown.",
+            ))
+            .child(field("Weather and air quality location", location))
+            .child(row().gap(r(8.)).child(save).child(bind(
+                button("weather-units", None).child(if self.preferences.fahrenheit {
+                    "Temperature · °F"
+                } else {
+                    "Temperature · °C"
+                }),
+                move |_, cx| {
+                    units.update(cx, |this, cx| {
+                        let mut prefs = this.preferences.clone();
+                        prefs.fahrenheit = !prefs.fahrenheit;
+                        this.save_preferences(prefs, cx);
+                    })
+                },
+            )))
+            .child(
+                row()
+                    .justify_between()
+                    .child(label("Steam launch options for FPS"))
+                    .child(bind(
+                        button("copy-launch-options", None)
+                            .h(r(25.))
+                            .px(r(7.))
+                            .child("Copy"),
+                        |_, cx| {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                LAUNCH.to_owned(),
+                            ))
+                        },
+                    )),
+            )
+            .child(quiet(LAUNCH))
     }
 
     fn general_settings(&self, cx: &Context<Self>) -> impl IntoElement {
