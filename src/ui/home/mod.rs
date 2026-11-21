@@ -1,4 +1,6 @@
 mod layout;
+mod options;
+mod performance;
 mod widgets;
 
 use std::{path::PathBuf, time::Instant};
@@ -29,6 +31,7 @@ const RESIZE_CONTROL_HEIGHT: f32 = 28.;
 
 pub(super) struct Home {
     layout: Layout,
+    sensor_editor: Option<(u32, usize)>,
     path: Option<PathBuf>,
     editing: bool,
     catalog: bool,
@@ -93,6 +96,7 @@ impl Home {
             .unwrap_or_default();
         Self {
             layout,
+            sensor_editor: None,
             path,
             editing: false,
             catalog: false,
@@ -105,13 +109,14 @@ impl Home {
     }
 
     pub(super) fn leave(&mut self) {
+        self.sensor_editor = None;
         self.editing = false;
         self.catalog = false;
         self.resizing = None;
     }
 
     pub(super) fn escape(&mut self) -> bool {
-        if self.resizing.take().is_some() {
+        if self.sensor_editor.take().is_some() || self.resizing.take().is_some() {
             return true;
         }
         if self.catalog {
@@ -129,7 +134,7 @@ impl Home {
         self.layout.widgets.iter().map(|widget| {
             self.resizing
                 .as_ref()
-                .filter(|drag| drag.original.kind == widget.kind)
+                .filter(|drag| drag.original.id == widget.id)
                 .map_or(*widget, |drag| drag.preview)
         })
     }
@@ -139,7 +144,7 @@ impl Home {
             .layout
             .widgets
             .iter_mut()
-            .find(|widget| widget.kind == next.kind)
+            .find(|widget| widget.id == next.id)
         else {
             return false;
         };
@@ -213,7 +218,6 @@ impl Dashboard {
         let view = cx.entity();
         let editing = self.home.editing;
         let catalog = self.home.catalog;
-        let can_add = self.home.layout.widgets.len() < Kind::ALL.len();
         let toggle = bind(
             button("edit-home", editing.then_some(TEAL))
                 .child(icon(
@@ -269,7 +273,7 @@ impl Dashboard {
                 row()
                     .flex_none()
                     .gap(r(8.))
-                    .when(editing && (catalog || can_add), |it| {
+                    .when(editing, |it| {
                         let view = cx.entity();
                         it.child(bind(
                             button("widget-catalog", None)
@@ -322,17 +326,25 @@ impl Dashboard {
                             Icon::Fullscreen
                         },
                         30.,
-                        |window| window.toggle_fullscreen(),
+                        {
+                            let view = cx.entity();
+                            move |window, cx| {
+                                view.update(cx, |this, _| this.toggle_fullscreen(window))
+                            }
+                        },
                     ))
                     .when(!fullscreen, |it| {
-                        it.child(window_control("Minimize", Icon::Minimize, 28., |window| {
-                            window.minimize_window()
-                        }))
+                        it.child(window_control(
+                            "Minimize",
+                            Icon::Minimize,
+                            28.,
+                            |window, _| window.minimize_window(),
+                        ))
                         .child(window_control(
                             "Close",
                             Icon::Close,
                             28.,
-                            |window| window.remove_window(),
+                            |window, _| window.remove_window(),
                         ))
                     }),
             )
@@ -364,14 +376,7 @@ impl Dashboard {
     fn widget_catalog(&self, grid: Grid, cx: &Context<Self>) -> impl IntoElement {
         let available = Kind::ALL
             .into_iter()
-            .filter(|kind| {
-                !self
-                    .home
-                    .layout
-                    .widgets
-                    .iter()
-                    .any(|widget| widget.kind == *kind)
-            })
+            .filter(|kind| kind.repeatable() || !self.home.contains(*kind))
             .collect::<Vec<_>>();
 
         col()
@@ -406,17 +411,9 @@ impl Dashboard {
                                 .child(icon(Icon::Plus, c(kind.accent()), 15.)),
                             move |window, cx| {
                                 view.update(cx, |this, cx| {
-                                    if !this
-                                        .home
-                                        .layout
-                                        .widgets
-                                        .iter()
-                                        .any(|widget| widget.kind == kind)
-                                    {
-                                        this.focus_dashboard(window, cx);
-                                        this.home.layout.widgets.push(kind.widget());
-                                        this.save_home(cx);
-                                    }
+                                    this.focus_dashboard(window, cx);
+                                    this.home.layout.add(kind);
+                                    this.save_home(cx);
                                 })
                             },
                         )
@@ -445,11 +442,11 @@ impl Dashboard {
         let tools = editing.then(|| {
             row()
                 .gap(r(4.))
-                .child(self.widget_move(kind, -1, index > 0, cx))
-                .child(self.widget_move(kind, 1, index + 1 < count, cx))
+                .child(self.widget_move(tile.widget.id, -1, index > 0, cx))
+                .child(self.widget_move(tile.widget.id, 1, index + 1 < count, cx))
                 .child(bind(
                     tile_button(
-                        ("remove-widget", kind as usize),
+                        ("remove-widget", tile.widget.id as usize),
                         "Remove widget",
                         Icon::Close,
                         RED,
@@ -458,13 +455,14 @@ impl Dashboard {
                         view.update(cx, |this, cx| {
                             this.focus_dashboard(window, cx);
                             this.home.resizing = None;
-                            if kind == Kind::Mixer {
-                                this.routing = None;
-                            }
                             this.home
                                 .layout
                                 .widgets
-                                .retain(|widget| widget.kind != kind);
+                                .retain(|widget| widget.id != tile.widget.id);
+                            this.home.layout.sensors.remove(&tile.widget.id);
+                            this.home.layout.viewers.remove(&tile.widget.id);
+                            this.viewers.remove(&tile.widget.id);
+                            this.home.sensor_editor = None;
                             this.save_home(cx);
                         })
                     },
@@ -496,6 +494,16 @@ impl Dashboard {
                             .child(label(kind.name()).text_color(c(INK)).truncate()),
                     )
                     .children(tools)
+                    .when(!editing && kind == Kind::Performance, |it| {
+                        it.child(self.sensor_button(tile.widget.id, cx))
+                    })
+                    .when(!editing && kind == Kind::Viewer, |it| {
+                        it.children(
+                            self.viewers
+                                .get(&tile.widget.id)
+                                .map(|v| super::viewer::source_button(v.clone(), cx)),
+                        )
+                    })
                     .when(!editing && kind == Kind::Media, |it| {
                         it.children(self.player_control(cx))
                     }),
@@ -519,7 +527,7 @@ impl Dashboard {
 
     fn widget_move(
         &self,
-        kind: Kind,
+        id: u32,
         direction: isize,
         enabled: bool,
         cx: &Context<Self>,
@@ -529,7 +537,7 @@ impl Dashboard {
         } else {
             ("Move later", Icon::Chevron)
         };
-        let control = tile_button((name, kind as usize), name, symbol, TEXT);
+        let control = tile_button((name, id as usize), name, symbol, TEXT);
         if !enabled {
             return disabled(control);
         }
@@ -538,7 +546,7 @@ impl Dashboard {
             view.update(cx, |this, cx| {
                 this.home.resizing = None;
                 let widgets = &mut this.home.layout.widgets;
-                if let Some(index) = widgets.iter().position(|widget| widget.kind == kind)
+                if let Some(index) = widgets.iter().position(|widget| widget.id == id)
                     && let Some(next) = index
                         .checked_add_signed(direction)
                         .filter(|&next| next < widgets.len())
@@ -560,7 +568,7 @@ impl Dashboard {
         let pointer = cx.entity();
         let keyboard = pointer.clone();
         tile_button(
-            ("resize-widget", widget.kind as usize),
+            ("resize-widget", widget.id as usize),
             "Drag or use arrow keys to resize",
             Icon::Resize,
             TEAL,
@@ -590,7 +598,7 @@ impl Dashboard {
             };
             cx.stop_propagation();
             keyboard.update(cx, |this, cx| {
-                this.adjust_widget(widget.kind, grid.columns, (horizontal, vertical), cx);
+                this.adjust_widget(widget.id, grid.columns, (horizontal, vertical), cx);
             });
         })
     }
@@ -604,21 +612,16 @@ impl Dashboard {
         let widget = tile.widget;
         let step = |description: &'static str, symbol, horizontal, vertical| {
             let delta = (horizontal, vertical);
-            let control = tile_button(
-                (description, widget.kind as usize),
-                description,
-                symbol,
-                TEXT,
-            )
-            .w(r(23.))
-            .h(r(24.));
+            let control = tile_button((description, widget.id as usize), description, symbol, TEXT)
+                .w(r(23.))
+                .h(r(24.));
             if adjusted(widget, columns, delta) == widget {
                 return disabled(control);
             }
             let view = cx.entity();
             bind(control, move |_, cx| {
                 view.update(cx, |this, cx| {
-                    this.adjust_widget(widget.kind, columns, delta, cx)
+                    this.adjust_widget(widget.id, columns, delta, cx)
                 })
             })
         };
@@ -640,19 +643,8 @@ impl Dashboard {
             .child(step("Taller", Icon::Plus, 0, 1))
     }
 
-    fn adjust_widget(
-        &mut self,
-        kind: Kind,
-        columns: u8,
-        delta: (i32, i32),
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(current) = self
-            .home
-            .layout
-            .widgets
-            .iter()
-            .find(|item| item.kind == kind)
+    fn adjust_widget(&mut self, id: u32, columns: u8, delta: (i32, i32), cx: &mut Context<Self>) {
+        if let Some(current) = self.home.layout.widgets.iter().find(|item| item.id == id)
             && self.home.resize(adjusted(*current, columns, delta))
         {
             self.save_home(cx);
@@ -712,6 +704,39 @@ impl Dashboard {
         )
         .absolute()
         .inset_0()
+    }
+
+    pub(super) fn sync_viewers(&mut self, cx: &mut Context<Self>) {
+        for widget in self
+            .home
+            .layout
+            .widgets
+            .iter()
+            .filter(|w| w.kind == Kind::Viewer)
+        {
+            let id = widget.id;
+            self.viewers.entry(id).or_insert_with(|| {
+                let options = self
+                    .home
+                    .layout
+                    .viewers
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_default();
+                let dashboard = cx.weak_entity();
+                cx.new(|cx| super::viewer::Viewer::new(options, dashboard, id, cx))
+            });
+        }
+    }
+
+    pub(super) fn set_viewer_options(
+        &mut self,
+        id: u32,
+        options: crate::viewer::ViewerOptions,
+        cx: &mut Context<Self>,
+    ) {
+        self.home.layout.viewers.insert(id, options);
+        self.save_home(cx);
     }
 
     fn save_home(&mut self, cx: &mut Context<Self>) {

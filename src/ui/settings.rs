@@ -5,15 +5,15 @@ use gpui::{
 };
 
 use crate::{
-    config::{DiscordCredentials, Preferences},
+    config::{DISCORD_REDIRECT_URI, DiscordCredentials, Preferences},
     model::{AudioChannel, AudioKind, DiscordAction},
 };
 
 use super::{
     CONTENT_X, CONTENT_Y, Dashboard, Tooltip,
-    credential_input::CredentialInput,
     icons::{Icon, icon},
     monitor::capacity,
+    text_input::TextInput,
     theme::*,
 };
 
@@ -79,9 +79,9 @@ impl SettingsView {
 }
 
 struct DiscordFields {
-    id: Entity<CredentialInput>,
-    secret: Entity<CredentialInput>,
-    token: Entity<CredentialInput>,
+    id: Entity<TextInput>,
+    secret: Entity<TextInput>,
+    token: Entity<TextInput>,
 }
 
 struct Choice {
@@ -391,12 +391,10 @@ impl Dashboard {
                 .filter(DiscordCredentials::valid)
                 .unwrap_or_default();
             DiscordFields {
-                id: cx.new(|cx| CredentialInput::new(saved.client_id, false, cx)),
-                secret: cx
-                    .new(|cx| CredentialInput::new(saved.secret.unwrap_or_default(), true, cx)),
-                token: cx.new(|cx| {
-                    CredentialInput::new(saved.access_token.unwrap_or_default(), true, cx)
-                }),
+                id: cx.new(|cx| TextInput::new(saved.client_id, false, cx)),
+                secret: cx.new(|cx| TextInput::new(saved.secret.unwrap_or_default(), true, cx)),
+                token: cx
+                    .new(|cx| TextInput::new(saved.access_token.unwrap_or_default(), true, cx)),
             }
         });
         let (id, secret, token) = (
@@ -453,6 +451,9 @@ impl Dashboard {
                     .child(field("Client secret", secret))
                     .child(field("Access token", token)),
             )
+            .child(quiet(format!(
+                "For client-secret login, add {DISCORD_REDIRECT_URI} under OAuth2 → Redirects in the Discord Developer Portal."
+            )))
             .child(
                 row()
                     .gap(r(7.))
@@ -569,7 +570,7 @@ fn choice_button(
         }))
 }
 
-fn field(name: &'static str, input: Entity<CredentialInput>) -> impl IntoElement {
+fn field(name: &'static str, input: Entity<TextInput>) -> impl IntoElement {
     col()
         .id(name)
         .flex_1()

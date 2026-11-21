@@ -6,7 +6,7 @@ use std::{
 
 use crate::model::{Artwork, MediaAction, Playback, Player, Track};
 use gpui::{
-    AnyElement, App, Asset, Context, IntoElement, ObjectFit, RenderImage, Styled, div, img,
+    AnyElement, App, Asset, Context, Img, IntoElement, ObjectFit, RenderImage, Styled, div, img,
     prelude::*,
 };
 
@@ -298,9 +298,7 @@ pub(super) fn album_art(artwork: Option<Artwork>, side: f32) -> impl IntoElement
     let art = artwork.map(|artwork| {
         match artwork {
             Artwork::File(path) => img(path),
-            Artwork::Remote(url) => img(move |window: &mut gpui::Window, cx: &mut App| {
-                window.use_asset::<RemoteArt>(&url, cx).flatten().map(Ok)
-            }),
+            Artwork::Remote(url) => remote_image(url),
         }
         .absolute()
         .inset_0()
@@ -339,17 +337,23 @@ pub(super) fn album_art(artwork: Option<Artwork>, side: f32) -> impl IntoElement
         .children(art)
 }
 
-struct RemoteArt;
-impl Asset for RemoteArt {
+pub(super) fn remote_image(url: String) -> Img {
+    img(move |window: &mut gpui::Window, cx: &mut App| {
+        window.use_asset::<RemoteImage>(&url, cx).flatten().map(Ok)
+    })
+}
+
+struct RemoteImage;
+impl Asset for RemoteImage {
     type Source = String;
     type Output = Option<Arc<RenderImage>>;
 
     fn load(url: String, _: &mut App) -> impl Future<Output = Self::Output> + Send + 'static {
-        blocking::unblock(move || load_art(&url).ok().map(Arc::new))
+        blocking::unblock(move || load_image(&url).ok().map(Arc::new))
     }
 }
 
-fn load_art(url: &str) -> anyhow::Result<RenderImage> {
+fn load_image(url: &str) -> anyhow::Result<RenderImage> {
     const MAX: u64 = 8 * 1024 * 1024;
     let response = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(5))
@@ -359,7 +363,7 @@ fn load_art(url: &str) -> anyhow::Result<RenderImage> {
         .error_for_status()?;
     let mut bytes = Vec::new();
     response.take(MAX + 1).read_to_end(&mut bytes)?;
-    anyhow::ensure!(bytes.len() as u64 <= MAX, "Artwork download is too large.");
+    anyhow::ensure!(bytes.len() as u64 <= MAX, "Image download is too large.");
     let mut reader = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(4096);

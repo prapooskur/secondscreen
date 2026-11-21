@@ -2,11 +2,8 @@
 pub struct Metrics {
     pub host: String,
     pub uptime: Option<u64>,
-    pub cpu: Option<f32>,
     pub cpu_name: String,
-    pub threads: usize,
-    pub temperature: Option<f32>,
-    pub gpu: Option<Gpu>,
+    pub sensors: Vec<Sensor>,
     pub memory_used: u64,
     pub memory_total: u64,
     pub download: f32,
@@ -25,11 +22,27 @@ pub struct DiskUsage {
 }
 
 #[derive(Clone)]
-pub struct Gpu {
+pub struct Sensor {
+    pub id: String,
     pub name: String,
-    pub key: String,
-    pub load: Option<f32>,
-    pub vram: Option<(u64, u64)>,
+    pub unit: &'static str,
+    pub value: Option<f32>,
+}
+
+impl Sensor {
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        unit: &'static str,
+        value: Option<f32>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            unit,
+            value: value.filter(|v| v.is_finite()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,10 +65,10 @@ pub struct AudioChannel {
     pub id: AudioId,
     pub label: String,
     pub detail: String,
+    pub icon: Option<std::path::PathBuf>,
     pub volume: Option<u16>,
     pub muted: bool,
     pub is_default: bool,
-    pub device: Option<u32>,
 }
 
 #[derive(Default)]
@@ -68,7 +81,6 @@ pub enum AudioAction {
     Volume(AudioId, u16),
     Mute(AudioId, bool),
     Default(AudioId),
-    Route(AudioId, AudioId),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -162,6 +174,7 @@ pub struct VoiceChannel {
 #[derive(Clone)]
 pub struct VoiceMember {
     pub name: String,
+    pub avatar_url: Option<String>,
     pub muted: bool,
     pub deafened: bool,
 }
@@ -169,7 +182,6 @@ pub struct VoiceMember {
 pub enum DiscordAction {
     Configure(Option<crate::config::DiscordCredentials>),
     Connect,
-    Disconnect,
     ToggleMute,
     ToggleDeafen,
     Leave,

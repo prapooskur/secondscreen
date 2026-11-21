@@ -1,7 +1,7 @@
-use gpui::{AnyElement, Context, ElementId, IntoElement, Styled, div, prelude::*};
+use gpui::{Context, ElementId, IntoElement, ObjectFit, Styled, img, prelude::*};
 
 use super::{
-    Dashboard,
+    Dashboard, Tooltip,
     icons::{Icon, icon},
     slider::slider,
     theme::*,
@@ -14,84 +14,6 @@ impl Dashboard {
             return quiet(error.clone()).into_any_element();
         }
         let view = cx.entity();
-        if let Some(stream) = self
-            .routing
-            .as_ref()
-            .and_then(|id| self.audio.channels.iter().find(|channel| &channel.id == id))
-        {
-            let back = bind(
-                button("routing-back", None).h(r(28.)).child("Back"),
-                move |window, cx| {
-                    view.update(cx, |this, cx| {
-                        this.focus_dashboard(window, cx);
-                        this.routing = None;
-                        cx.notify();
-                    });
-                },
-            );
-            let device_kind = if stream.id.kind == AudioKind::Playback {
-                AudioKind::Output
-            } else {
-                AudioKind::Input
-            };
-            let devices: Vec<_> = self
-                .visible_audio_devices()
-                .filter(|channel| channel.id.kind == device_kind)
-                .collect();
-            return col()
-                .flex_1()
-                .overflow_hidden()
-                .child(
-                    row()
-                        .justify_between()
-                        .child(label("Route audio"))
-                        .child(back),
-                )
-                .child(
-                    col()
-                        .id("route-devices")
-                        .flex_1()
-                        .overflow_y_scroll()
-                        .py(r(4.))
-                        .gap(r(6.))
-                        .child(quiet(stream.label.clone()).w_full().flex_none().truncate())
-                        .when(devices.is_empty(), |it| {
-                            it.child(quiet("No compatible device available"))
-                        })
-                        .children(devices.into_iter().map(|device| {
-                            let view = cx.entity();
-                            let stream_id = stream.id.clone();
-                            let device_id = device.id.clone();
-                            let active = stream.device == Some(device.id.index);
-                            bind(
-                                button(
-                                    (kind_key(device.id.kind), device.id.index),
-                                    active.then_some(TEAL),
-                                )
-                                .justify_start()
-                                .child(icon(
-                                    if active { Icon::Check } else { Icon::Chevron },
-                                    c(if active { TEAL } else { MUTED }),
-                                    13.,
-                                ))
-                                .child(div().truncate().child(device.label.clone())),
-                                move |window, cx| {
-                                    view.update(cx, |this, cx| {
-                                        this.focus_dashboard(window, cx);
-                                        this.send_audio(AudioAction::Route(
-                                            stream_id.clone(),
-                                            device_id.clone(),
-                                        ));
-                                        this.routing = None;
-                                        cx.notify();
-                                    })
-                                },
-                            )
-                        })),
-                )
-                .into_any_element();
-        }
-
         let tabs = row().gap(r(5.)).children(
             [
                 (AudioKind::Playback, "Playback"),
@@ -230,85 +152,71 @@ impl Dashboard {
         let recording = matches!(kind, AudioKind::Input | AudioKind::Recording);
         let device = matches!(kind, AudioKind::Input | AudioKind::Output);
         let accent = if recording { BLUE } else { TEAL };
-        let control: AnyElement = if device {
-            if channel.is_default {
-                chip("Default", accent).into_any_element()
-            } else {
-                let id = channel.id.clone();
-                bind(
-                    button(scope("default"), None)
-                        .h(r(27.))
-                        .child("Set default"),
-                    move |_, cx| {
-                        view.read(cx).send_audio(AudioAction::Default(id.clone()));
-                    },
-                )
-                .into_any_element()
-            }
-        } else {
-            let route = channel.id.clone();
-            let route_name = self
-                .audio
-                .channels
-                .iter()
-                .find(|device| {
-                    Some(device.id.index) == channel.device
-                        && device.id.kind
-                            == if recording {
-                                AudioKind::Input
-                            } else {
-                                AudioKind::Output
-                            }
-                })
-                .map(|device| device.label.clone())
-                .unwrap_or_else(|| "Route".into());
-            bind(
-                button(scope("route"), None)
-                    .h(r(27.))
-                    .max_w(r(150.))
-                    .child(div().truncate().child(route_name))
-                    .child(icon(Icon::Chevron, c(MUTED), 12.)),
-                move |window, cx| {
-                    view.update(cx, |this, cx| {
-                        this.focus_dashboard(window, cx);
-                        this.routing = Some(route.clone());
-                        cx.notify();
-                    })
-                },
-            )
-            .into_any_element()
-        };
-
-        let name = label(channel.label.clone()).truncate().text_color(c(INK));
         let meter = self.audio_levels(channel, cx);
         let surface = col()
             .flex_none()
             .bg(c(BACK).opacity(0.42))
             .border_1()
             .border_color(c(STROKE))
-            .rounded(r(8.));
+            .rounded(r(8.))
+            .px(r(7.))
+            .py(r(5.));
+        if !device {
+            let description = if channel.detail.is_empty() {
+                channel.label.clone()
+            } else {
+                format!("{} · {}", channel.label, channel.detail)
+            };
+            let fallback = if recording { Icon::Mic } else { Icon::Music };
+            let app_icon = row()
+                .id(scope("app-icon"))
+                .size(r(30.))
+                .flex_none()
+                .justify_center()
+                .child(match &channel.icon {
+                    Some(path) => img(path.clone())
+                        .size(r(28.))
+                        .object_fit(ObjectFit::Contain)
+                        .with_fallback(move || icon(fallback, c(accent), 24.).into_any_element())
+                        .into_any_element(),
+                    None => icon(fallback, c(accent), 24.).into_any_element(),
+                })
+                .tooltip(move |_, cx| cx.new(|_| Tooltip(description.clone().into())).into());
+            return surface
+                .child(row().gap(r(8.)).child(app_icon).child(meter))
+                .into_any_element();
+        }
+        let control = if channel.is_default {
+            chip("Default", accent).into_any_element()
+        } else {
+            let id = channel.id.clone();
+            bind(
+                button(scope("default"), None)
+                    .h(r(27.))
+                    .child("Set default"),
+                move |_, cx| {
+                    view.read(cx).send_audio(AudioAction::Default(id.clone()));
+                },
+            )
+            .into_any_element()
+        };
+
+        let name = label(channel.label.clone()).truncate().text_color(c(INK));
 
         surface
-            .px(r(7.))
-            .py(r(5.))
             .gap(r(3.))
             .child(
                 row()
                     .gap(r(5.))
-                    .child(
-                        col()
-                            .flex_1()
-                            .child(name)
-                            .when(device, |it| {
-                                it.child(quiet(if recording { "Microphone" } else { "Output" }))
-                            })
-                            .when(!device && !channel.detail.is_empty(), |it| {
-                                it.child(quiet(channel.detail.clone()).truncate())
-                            }),
-                    )
+                    .child(col().flex_1().child(name).child(quiet(if recording {
+                        "Microphone"
+                    } else {
+                        "Output"
+                    })))
                     .child(control),
             )
             .child(meter)
+            .into_any_element()
     }
 }
 

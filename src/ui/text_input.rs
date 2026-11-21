@@ -8,25 +8,51 @@ use gpui::{
 
 use super::theme::*;
 
-pub(super) struct CredentialInput {
+pub(super) struct TextInput {
     pub value: String,
     focus: FocusHandle,
-    masked: bool,
+    kind: InputKind,
     anchor: usize,
     caret: usize,
 }
 
-impl CredentialInput {
+enum InputKind {
+    Credential { masked: bool },
+    Plain { placeholder: &'static str },
+}
+
+impl TextInput {
     pub fn new(value: String, masked: bool, cx: &mut Context<Self>) -> Self {
         let value = value.trim().to_owned();
         let end = value.len();
         Self {
             value,
             focus: cx.focus_handle().tab_stop(true),
-            masked,
+            kind: InputKind::Credential { masked },
             anchor: end,
             caret: end,
         }
+    }
+
+    pub fn with_placeholder(placeholder: &'static str, cx: &mut Context<Self>) -> Self {
+        Self {
+            kind: InputKind::Plain { placeholder },
+            ..Self::new(String::new(), false, cx)
+        }
+    }
+
+    pub fn set_value(&mut self, value: String, cx: &mut Context<Self>) {
+        self.value = value;
+        self.move_caret(self.value.len(), false);
+        cx.notify();
+    }
+
+    pub fn is_focused(&self, window: &Window) -> bool {
+        self.focus.is_focused(window)
+    }
+
+    fn is_masked(&self) -> bool {
+        matches!(self.kind, InputKind::Credential { masked: true })
     }
 
     fn selection(&self) -> Range<usize> {
@@ -34,7 +60,7 @@ impl CredentialInput {
     }
 
     fn move_caret(&mut self, index: usize, extend: bool) {
-        self.caret = index.min(self.value.len());
+        self.caret = self.value.floor_char_boundary(index);
         if !extend {
             self.anchor = self.caret;
         }
@@ -44,6 +70,21 @@ impl CredentialInput {
         let caret = range.start + input.len();
         self.value.replace_range(range, input);
         self.move_caret(caret, false);
+    }
+
+    fn previous(&self) -> usize {
+        self.value[..self.caret]
+            .char_indices()
+            .next_back()
+            .map_or(0, |(index, _)| index)
+    }
+
+    fn next(&self) -> usize {
+        self.caret
+            + self.value[self.caret..]
+                .chars()
+                .next()
+                .map_or(0, char::len_utf8)
     }
 
     fn key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -56,7 +97,7 @@ impl CredentialInput {
                     self.anchor = 0;
                     self.caret = self.value.len();
                 }
-                "c" | "x" if !self.masked && !range.is_empty() => {
+                "c" | "x" if !self.is_masked() && !range.is_empty() => {
                     cx.write_to_clipboard(ClipboardItem::new_string(
                         self.value[range.clone()].to_owned(),
                     ));
@@ -67,7 +108,18 @@ impl CredentialInput {
                 "v" => {
                     if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                         let text = text.trim();
-                        if !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_graphic()) {
+                        if matches!(self.kind, InputKind::Plain { .. }) {
+                            let line: String = text
+                                .chars()
+                                .map(|ch| if ch.is_whitespace() { ' ' } else { ch })
+                                .filter(|ch| !ch.is_control())
+                                .collect();
+                            if !line.is_empty() {
+                                self.replace(range, &line);
+                            }
+                        } else if !text.is_empty()
+                            && text.bytes().all(|byte| byte.is_ascii_graphic())
+                        {
                             self.replace(range, text);
                         }
                     }
@@ -78,22 +130,28 @@ impl CredentialInput {
             match key.key.as_str() {
                 "left" if !extend && !range.is_empty() => self.move_caret(range.start, false),
                 "right" if !extend && !range.is_empty() => self.move_caret(range.end, false),
-                "left" => self.move_caret(self.caret.saturating_sub(1), extend),
-                "right" => self.move_caret(self.caret + 1, extend),
+                "left" => self.move_caret(self.previous(), extend),
+                "right" => self.move_caret(self.next(), extend),
                 "home" => self.move_caret(0, extend),
                 "end" => self.move_caret(self.value.len(), extend),
                 "backspace" if range.is_empty() => {
-                    self.replace(self.caret.saturating_sub(1)..self.caret, "");
+                    self.replace(self.previous()..self.caret, "");
                 }
                 "delete" if range.is_empty() => {
-                    self.replace(self.caret..(self.caret + 1).min(self.value.len()), "");
+                    self.replace(self.caret..self.next(), "");
                 }
                 "backspace" | "delete" => self.replace(range, ""),
                 _ => {
                     let Some(text) = key.key_char.as_deref() else {
                         return;
                     };
-                    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_graphic()) {
+                    let valid = if matches!(self.kind, InputKind::Plain { .. }) {
+                        text.chars()
+                            .all(|ch| !ch.is_control() && (!ch.is_whitespace() || ch == ' '))
+                    } else {
+                        text.bytes().all(|byte| byte.is_ascii_graphic())
+                    };
+                    if text.is_empty() || !valid {
                         return;
                     }
                     self.replace(range, text);
@@ -107,9 +165,15 @@ impl CredentialInput {
     }
 }
 
-impl Render for CredentialInput {
+impl Render for TextInput {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let text = if self.masked {
+        let placeholder = match self.kind {
+            InputKind::Plain { placeholder } if self.value.is_empty() => Some(placeholder),
+            _ => None,
+        };
+        let text = if let Some(placeholder) = placeholder {
+            placeholder.to_owned()
+        } else if self.is_masked() {
             "*".repeat(self.value.len())
         } else {
             self.value.clone()
@@ -129,7 +193,7 @@ impl Render for CredentialInput {
                     &[TextRun {
                         len: text.len(),
                         font: style.font(),
-                        color: c(INK),
+                        color: c(if placeholder.is_some() { MUTED } else { INK }),
                         background_color: None,
                         underline: None,
                         strikethrough: None,
@@ -192,7 +256,7 @@ impl Render for CredentialInput {
         .h(r(23.));
 
         col()
-            .id("credential")
+            .id("text-input")
             .track_focus(&self.focus)
             .focus(|style| style.border_color(c(TEAL)))
             .on_key_down(cx.listener(Self::key))

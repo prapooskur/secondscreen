@@ -1,3 +1,4 @@
+mod app_icons;
 mod audio;
 mod discord;
 mod media;

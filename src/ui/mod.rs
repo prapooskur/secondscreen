@@ -1,5 +1,4 @@
 mod audio;
-mod credential_input;
 mod discord;
 mod home;
 mod icons;
@@ -7,11 +6,13 @@ mod media;
 mod monitor;
 mod settings;
 mod slider;
+mod text_input;
 mod theme;
+mod viewer;
 
 use std::{
     cell::RefCell,
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -25,8 +26,8 @@ use gpui::{
 use crate::{
     config::Preferences,
     model::{
-        AudioAction, AudioChannel, AudioId, AudioKind, AudioState, DiscordAction, DiscordState,
-        DiskUsage, MediaAction, MediaState, Metrics, Player, Update,
+        AudioAction, AudioChannel, AudioKind, AudioState, DiscordAction, DiscordState, DiskUsage,
+        MediaAction, MediaState, Metrics, Player, Update,
     },
     platform::Controls,
 };
@@ -39,8 +40,7 @@ const CONTENT_Y: f32 = 16.;
 
 #[derive(Default)]
 struct History {
-    cpu: VecDeque<f32>,
-    gpu: VecDeque<f32>,
+    sensors: HashMap<String, VecDeque<f32>>,
     memory: VecDeque<f32>,
     download: VecDeque<f32>,
     upload: VecDeque<f32>,
@@ -65,11 +65,11 @@ pub struct Dashboard {
     history: History,
     audio: AudioState,
     audio_kind: AudioKind,
-    routing: Option<AudioId>,
     media: MediaState,
     player: Option<String>,
     pending_seek: Option<media::PendingSeek>,
     discord: DiscordState,
+    viewers: HashMap<u32, gpui::Entity<viewer::Viewer>>,
     controls: Controls,
     focus: FocusHandle,
     gesture: slider::Gesture,
@@ -113,11 +113,11 @@ impl Dashboard {
             history: History::default(),
             audio: AudioState::default(),
             audio_kind: AudioKind::Playback,
-            routing: None,
             media: MediaState::default(),
             player: None,
             pending_seek: None,
             discord: DiscordState::default(),
+            viewers: HashMap::new(),
             controls,
             focus,
             gesture: Rc::new(RefCell::new(None)),
@@ -128,16 +128,12 @@ impl Dashboard {
     fn apply(&mut self, update: Update) -> bool {
         match update {
             Update::Metrics(metrics) => {
-                append(&mut self.history.cpu, metrics.cpu);
-                if self.metrics.gpu.as_ref().map(|gpu| &gpu.key)
-                    != metrics.gpu.as_ref().map(|gpu| &gpu.key)
-                {
-                    self.history.gpu.clear();
+                let mut previous = std::mem::take(&mut self.history.sensors);
+                for sensor in &metrics.sensors {
+                    let mut samples = previous.remove(&sensor.id).unwrap_or_default();
+                    append(&mut samples, sensor.value);
+                    self.history.sensors.insert(sensor.id.clone(), samples);
                 }
-                append(
-                    &mut self.history.gpu,
-                    metrics.gpu.as_ref().and_then(|gpu| gpu.load),
-                );
                 append(
                     &mut self.history.memory,
                     percent(metrics.memory_used, metrics.memory_total),
@@ -155,13 +151,6 @@ impl Dashboard {
             }
             Update::Audio(state) => {
                 self.audio = state;
-                if self
-                    .routing
-                    .as_ref()
-                    .is_some_and(|id| !self.audio.channels.iter().any(|channel| &channel.id == id))
-                {
-                    self.routing = None;
-                }
                 self.settings.open
                     || self.home.contains(home::Kind::Audio)
                     || self.home.contains(home::Kind::Mixer)
@@ -195,7 +184,7 @@ impl Dashboard {
             }
             Update::Discord(state) => {
                 self.discord = state;
-                self.home.contains(home::Kind::Discord)
+                self.home.contains(home::Kind::Discord) || self.home.contains(home::Kind::Viewer)
             }
             Update::ActionError(error) => {
                 self.error = Some((Instant::now(), error));
@@ -268,13 +257,13 @@ impl Dashboard {
             return;
         }
         match key.key.as_str() {
-            "f11" => window.toggle_fullscreen(),
+            "f11" => self.toggle_fullscreen(window),
             "escape" if self.settings.open => self.close_settings(window, cx),
-            "escape" if self.home.escape() || self.routing.take().is_some() => {
+            "escape" if self.home.escape() => {
                 self.focus_dashboard(window, cx);
                 cx.notify();
             }
-            "escape" if window.is_fullscreen() => window.toggle_fullscreen(),
+            "escape" if window.is_fullscreen() => self.toggle_fullscreen(window),
             "tab" => {
                 let mut first_outside = None;
                 loop {
@@ -326,10 +315,15 @@ impl Dashboard {
                 .text_color(c(RED)),
         )
     }
+
+    fn toggle_fullscreen(&mut self, window: &mut Window) {
+        window.toggle_fullscreen();
+    }
 }
 
 impl Render for Dashboard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_viewers(cx);
         let size = window.viewport_size();
         let scale = (f32::from(size.width) / 1400.)
             .min(f32::from(size.height) / 430.)
@@ -386,7 +380,7 @@ fn window_control(
     description: &'static str,
     symbol: Icon,
     width: f32,
-    action: fn(&mut Window),
+    action: impl Fn(&mut Window, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
     bind(
         button(description, None)
@@ -395,7 +389,7 @@ fn window_control(
             .px_0()
             .child(icon(symbol, c(TEXT), 15.))
             .tooltip(move |_, cx| cx.new(|_| Tooltip(description.into())).into()),
-        move |window, _| action(window),
+        action,
     )
 }
 

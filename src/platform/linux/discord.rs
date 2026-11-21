@@ -12,7 +12,7 @@ use std::{
 
 use super::Integration;
 use crate::{
-    config::DiscordCredentials as Credentials,
+    config::{DISCORD_REDIRECT_URI, DiscordCredentials as Credentials},
     model::{DiscordAction, DiscordState, Update, VoiceChannel, VoiceMember, VoiceState},
 };
 
@@ -20,6 +20,7 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(2);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(90);
 const SCOPES: &[&str] = &["identify", "rpc", "rpc.voice.read", "rpc.voice.write"];
 const TOKEN_URL: &str = "https://discord.com/api/oauth2/token";
+const CDN_URL: &str = "https://cdn.discordapp.com";
 
 pub(super) struct Discord {
     credentials: Option<Credentials>,
@@ -76,14 +77,25 @@ impl Credentials {
         let secret = self.secret.as_deref().context(
             "A Discord application secret is required to exchange the authorization code.",
         )?;
-        let authorized = rpc.call(
-            "AUTHORIZE",
-            json!({
-                "client_id": self.client_id,
-                "scopes": SCOPES,
-            }),
-            AUTH_TIMEOUT,
-        )?;
+        // Discord uses the application's registered redirect for desktop RPC.
+        let authorized = rpc
+            .call(
+                "AUTHORIZE",
+                json!({
+                    "client_id": self.client_id,
+                    "scopes": SCOPES,
+                }),
+                AUTH_TIMEOUT,
+            )
+            .map_err(|error| {
+                if error.to_string().to_ascii_lowercase().contains("missing \"redirect_uri\"") {
+                    anyhow::anyhow!(
+                        "{error} Register {DISCORD_REDIRECT_URI} under OAuth2 → Redirects for this application in the Discord Developer Portal."
+                    )
+                } else {
+                    error
+                }
+            })?;
         let code = authorized["code"]
             .as_str()
             .context("Discord did not return an authorization code.")?;
@@ -113,6 +125,7 @@ fn exchange_code(
             ("client_id", id),
             ("client_secret", secret),
             ("code", code),
+            ("redirect_uri", DISCORD_REDIRECT_URI),
         ])
         .send()
         .context("Could not reach Discord's OAuth2 endpoint.")?;
@@ -138,6 +151,27 @@ fn authenticate(rpc: &mut Rpc, token: &str) -> Result<String> {
         .or_else(|| result["user"]["username"].as_str())
         .unwrap_or("Discord account")
         .to_owned())
+}
+
+fn avatar_url(user: &Value) -> Option<String> {
+    let id: u64 = user["id"].as_str()?.parse().ok()?;
+    if let Some(avatar) = user["avatar"].as_str().filter(|avatar| {
+        let hash = avatar.strip_prefix("a_").unwrap_or(avatar);
+        hash.len() == 32 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+    }) {
+        return Some(format!("{CDN_URL}/avatars/{id}/{avatar}.png?size=64"));
+    }
+
+    let discriminator = user["discriminator"]
+        .as_str()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let index = if discriminator == 0 {
+        (id >> 22) % 6
+    } else {
+        discriminator % 5
+    };
+    Some(format!("{CDN_URL}/embed/avatars/{index}.png"))
 }
 
 impl Session {
@@ -171,6 +205,7 @@ impl Session {
                         .or_else(|| member["user"]["username"].as_str())
                         .unwrap_or("Discord user")
                         .to_owned(),
+                    avatar_url: avatar_url(&member["user"]),
                     muted: member["voice_state"]["self_mute"]
                         .as_bool()
                         .unwrap_or(false)
@@ -231,10 +266,6 @@ impl Integration for Discord {
                         Err(error) => self.error = Some(error.to_string()),
                     }
                 }
-            }
-            DiscordAction::Disconnect => {
-                self.session = None;
-                self.error = None;
             }
             DiscordAction::ToggleMute | DiscordAction::ToggleDeafen | DiscordAction::Leave => {
                 let session = self
@@ -408,6 +439,24 @@ mod tests {
     }
 
     #[test]
+    fn discord_avatar_urls_use_profile_hash_or_default_index() {
+        let hash = "a_0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            avatar_url(&json!({ "id": "8388608", "avatar": hash })),
+            Some(format!("{CDN_URL}/avatars/8388608/{hash}.png?size=64")),
+        );
+        assert_eq!(
+            avatar_url(&json!({ "id": "8388608", "avatar": null, "discriminator": "0" })),
+            Some(format!("{CDN_URL}/embed/avatars/2.png")),
+        );
+        assert_eq!(
+            avatar_url(&json!({ "id": "8388608", "discriminator": "0048" })),
+            Some(format!("{CDN_URL}/embed/avatars/3.png")),
+        );
+        assert_eq!(avatar_url(&json!({ "username": "Test account" })), None);
+    }
+
+    #[test]
     fn rejected_token_reauthorizes_and_caches_the_new_token() {
         let (client, server) = UnixStream::pair().unwrap();
         let ipc = thread::spawn(move || {
@@ -431,7 +480,8 @@ mod tests {
                 &mut rpc,
                 "AUTHORIZE",
                 json!({
-                    "client_id": "123456", "scopes": SCOPES
+                    "client_id": "123456",
+                    "scopes": SCOPES,
                 }),
             );
             send(
@@ -481,6 +531,7 @@ mod tests {
             assert_eq!(form["client_id"], "123456");
             assert_eq!(form["client_secret"], "app+&secret");
             assert_eq!(form["code"], "test+code");
+            assert_eq!(form["redirect_uri"], "http://127.0.0.1");
             let body = r#"{"access_token":"new-token"}"#;
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
         });

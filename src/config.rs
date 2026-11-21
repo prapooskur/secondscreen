@@ -38,6 +38,8 @@ impl Preferences {
     }
 }
 
+pub const DISCORD_REDIRECT_URI: &str = "http://127.0.0.1";
+
 #[derive(Clone, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(default)]
 pub struct DiscordCredentials {

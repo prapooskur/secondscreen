@@ -3,7 +3,7 @@ use async_channel::Sender;
 use serde::Deserialize;
 use std::{collections::BTreeMap, process::Command};
 
-use super::Integration;
+use super::{Integration, app_icons::AppIcons};
 use crate::model::{AudioAction, AudioChannel, AudioId, AudioKind, AudioState, Update};
 
 const NORMAL_VOLUME: u64 = 65_536;
@@ -11,6 +11,7 @@ const NORMAL_VOLUME: u64 = 65_536;
 #[derive(Default)]
 pub(super) struct Mixer {
     channels: Vec<AudioChannel>,
+    icons: AppIcons,
 }
 
 #[derive(Deserialize)]
@@ -28,8 +29,6 @@ struct PulseChannel {
     #[serde(default)]
     mute: bool,
     volume: Option<BTreeMap<String, PulseVolume>>,
-    sink: Option<u32>,
-    source: Option<u32>,
     monitor_source: Option<String>,
     #[serde(default)]
     properties: BTreeMap<String, String>,
@@ -68,7 +67,7 @@ fn pulse_channels(kind: AudioKind) -> Result<Vec<PulseChannel>> {
 }
 
 impl Mixer {
-    fn sample(&self) -> Result<Vec<AudioChannel>> {
+    fn sample(&mut self) -> Result<Vec<AudioChannel>> {
         let info: PulseInfo = serde_json::from_slice(&pactl(&["--format=json", "info"])?)?;
         let mut channels = Vec::new();
         for (kind, default) in [
@@ -77,11 +76,16 @@ impl Mixer {
             (AudioKind::Playback, None),
             (AudioKind::Recording, None),
         ] {
-            channels.extend(
-                pulse_channels(kind)?
-                    .into_iter()
-                    .filter_map(|channel| channel.into_channel(kind, default.as_deref())),
-            );
+            channels.extend(pulse_channels(kind)?.into_iter().filter_map(|channel| {
+                let icon = if matches!(kind, AudioKind::Playback | AudioKind::Recording) {
+                    self.icons.resolve(&channel.properties)
+                } else {
+                    None
+                };
+                let mut channel = channel.into_channel(kind, default.as_deref())?;
+                channel.icon = icon;
+                Some(channel)
+            }));
         }
         channels.sort_by(|a, b| {
             b.is_default
@@ -211,9 +215,9 @@ impl PulseChannel {
             },
             label,
             detail,
+            icon: None,
             volume,
             muted: self.mute,
-            device: self.sink.or(self.source),
         })
     }
 }
@@ -276,16 +280,6 @@ impl Integration for Mixer {
                     _ => bail!("Only audio devices can be the default."),
                 };
                 pactl(&[command, &id.name])?;
-            }
-            AudioAction::Route(stream, device) => {
-                self.channel(&stream)?;
-                self.channel(&device)?;
-                let command = match (stream.kind, device.kind) {
-                    (AudioKind::Playback, AudioKind::Output) => "move-sink-input",
-                    (AudioKind::Recording, AudioKind::Input) => "move-source-output",
-                    _ => bail!("The stream and device have incompatible directions."),
-                };
-                pactl(&[command, &stream.index.to_string(), &device.name])?;
             }
         }
         Ok(())

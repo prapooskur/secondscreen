@@ -30,6 +30,11 @@ mod platform;
     any(feature = "ui-gpui", feature = "ui-gpui-fast")
 ))]
 mod ui;
+#[cfg(all(
+    target_os = "linux",
+    any(feature = "ui-gpui", feature = "ui-gpui-fast")
+))]
+mod viewer;
 
 #[cfg(all(
     target_os = "linux",
@@ -42,13 +47,23 @@ fn main() -> anyhow::Result<()> {
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
+    let mut args = std::env::args().skip(1).peekable();
+    if args.peek().is_some_and(|arg| arg == "--viewer") {
+        args.next();
+        let source = args
+            .next()
+            .context("Provide a URL or iframe to --viewer.")?;
+        ensure!(args.next().is_none(), "Pass the viewer one quoted source.");
+        return viewer::run(viewer::Source::parse(&source)?);
+    }
+
     let mut fullscreen = false;
-    for arg in std::env::args().skip(1) {
+    for arg in args {
         match arg.as_str() {
             "--fullscreen" => fullscreen = true,
             "--help" | "-h" => {
                 println!(
-                    "Second Screen\n\nUsage: secondscreen [--fullscreen]\n\nF11 toggles fullscreen. Escape restores the window.\nKey 0 opens Home. Keys 1–5 open System, Audio, Media, Discord, and Settings."
+                    "Second Screen\n\nUsage: secondscreen [--fullscreen]\n\nF11 toggles fullscreen. Escape closes the current overlay or restores the window."
                 );
                 return Ok(());
             }

@@ -1,4 +1,9 @@
-use std::path::Path;
+use super::options::SensorOptions;
+use crate::viewer::ViewerOptions;
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::Path,
+};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -20,10 +25,11 @@ pub(in crate::ui) enum Kind {
     Network,
     Storage,
     Mixer,
+    Viewer,
 }
 
 impl Kind {
-    pub(super) const ALL: [Self; 8] = [
+    pub(super) const ALL: [Self; 9] = [
         Self::Performance,
         Self::Media,
         Self::Audio,
@@ -32,10 +38,16 @@ impl Kind {
         Self::Network,
         Self::Storage,
         Self::Mixer,
+        Self::Viewer,
     ];
+
+    pub(super) fn repeatable(self) -> bool {
+        matches!(self, Self::Performance | Self::Viewer)
+    }
 
     pub(super) fn widget(self) -> Widget {
         Widget {
+            id: self as u32 + 1,
             kind: self,
             columns: 1,
             rows: 3,
@@ -45,6 +57,8 @@ impl Kind {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(super) struct Widget {
+    #[serde(default)]
+    pub id: u32,
     pub kind: Kind,
     pub columns: u8,
     pub rows: u8,
@@ -53,11 +67,17 @@ pub(super) struct Widget {
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 pub(super) struct Layout {
     pub widgets: Vec<Widget>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sensors: BTreeMap<u32, SensorOptions>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub viewers: BTreeMap<u32, ViewerOptions>,
 }
 
 impl Default for Layout {
     fn default() -> Self {
         Self {
+            sensors: BTreeMap::new(),
+            viewers: BTreeMap::new(),
             widgets: [Kind::Performance, Kind::Media, Kind::Audio, Kind::Discord]
                 .map(Kind::widget)
                 .into(),
@@ -69,16 +89,47 @@ impl Layout {
     pub fn read(path: &Path) -> Result<Self> {
         let mut layout: Self = config::read_json(path).context("Could not read the Home layout")?;
         let mut seen = Vec::new();
+        let mut ids = HashSet::new();
+        let reserved: HashSet<_> = layout.widgets.iter().map(|w| w.id).collect();
+        let mut fresh = (1..).filter(|id| !reserved.contains(id));
         layout.widgets.retain_mut(|widget| {
-            if seen.contains(&widget.kind) {
+            if !widget.kind.repeatable() && seen.contains(&widget.kind) {
                 return false;
             }
             seen.push(widget.kind);
+            if widget.id == 0 || !ids.insert(widget.id) {
+                widget.id = fresh.next().expect("widget ID space exhausted");
+                ids.insert(widget.id);
+            }
             widget.columns = widget.columns.clamp(1, MAX_COLUMNS);
             widget.rows = widget.rows.clamp(MIN_ROWS, MAX_ROWS);
             true
         });
+        layout.sensors.retain(|id, _| {
+            layout
+                .widgets
+                .iter()
+                .any(|w| w.id == *id && w.kind == Kind::Performance)
+        });
+        layout.viewers.retain(|id, _| {
+            layout
+                .widgets
+                .iter()
+                .any(|w| w.id == *id && w.kind == Kind::Viewer)
+        });
         Ok(layout)
+    }
+
+    pub fn add(&mut self, kind: Kind) {
+        if kind.repeatable() || !self.widgets.iter().any(|w| w.kind == kind) {
+            let id = (1..)
+                .find(|id| self.widgets.iter().all(|w| w.id != *id))
+                .expect("widget ID space exhausted");
+            self.widgets.push(Widget {
+                id,
+                ..kind.widget()
+            });
+        }
     }
 
     pub fn write(&self, path: &Path) -> Result<()> {
@@ -146,6 +197,53 @@ pub(super) fn shifted_span(saved: u8, delta: i32, min: u8, max: u8) -> u8 {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn upgrades_legacy_tiles_and_keeps_repeated_widgets_independent() {
+        let path = std::env::temp_dir().join(format!(
+            "secondscreen-layout-instances-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path,r#"{"widgets":[{"kind":"viewer","columns":2,"rows":3},{"kind":"performance","columns":1,"rows":4}]}"#).unwrap();
+        let mut layout = Layout::read(&path).unwrap();
+        layout.add(Kind::Performance);
+        layout.add(Kind::Viewer);
+        layout.add(Kind::Storage);
+        layout.add(Kind::Storage);
+        assert_eq!(layout.widgets.len(), 5);
+        assert_eq!(
+            layout
+                .widgets
+                .iter()
+                .map(|w| w.id)
+                .collect::<HashSet<_>>()
+                .len(),
+            5
+        );
+        let first = layout.widgets[0].id;
+        let second = layout.widgets[3].id;
+        for (id, source) in [
+            (first, "https://example.com"),
+            (second, "https://example.org"),
+        ] {
+            layout.viewers.insert(
+                id,
+                ViewerOptions {
+                    source: source.into(),
+                    ..Default::default()
+                },
+            );
+        }
+        layout
+            .sensors
+            .entry(layout.widgets[2].id)
+            .or_default()
+            .chart = "memory".into();
+        layout.widgets.swap(0, 3);
+        layout.write(&path).unwrap();
+        assert_eq!(Layout::read(&path).unwrap(), layout);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn mixed_sizes_reflow_without_overlaps_or_losing_saved_widths() {

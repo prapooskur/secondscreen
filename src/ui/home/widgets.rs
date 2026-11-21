@@ -6,7 +6,7 @@ use super::super::{
     Dashboard,
     icons::Icon,
     media::album_art,
-    monitor::{gib, graph, rate, storage_list, uptime},
+    monitor::{gib, graph, rate, storage_list},
     percent,
     theme::*,
 };
@@ -23,19 +23,21 @@ impl Kind {
             Self::Memory => "Memory",
             Self::Network => "Network",
             Self::Storage => "Storage",
+            Self::Viewer => "Viewer",
         }
     }
 
     pub(super) fn description(self) -> &'static str {
         match self {
-            Self::Performance => "Processor and graphics load",
+            Self::Performance => "Sensor chart, two sensors, or sensor list",
             Self::Media => "Track details and playback",
             Self::Audio => "Audio devices and volume",
-            Self::Mixer => "App volume and stream routing",
+            Self::Mixer => "App volume and mute",
             Self::Discord => "Voice channel and controls",
             Self::Memory => "RAM usage over time",
             Self::Network => "Download and upload activity",
             Self::Storage => "Drive capacity and usage",
+            Self::Viewer => "Web, video, Twitch, and slideshows",
         }
     }
 
@@ -49,6 +51,7 @@ impl Kind {
             Self::Memory => Icon::Memory,
             Self::Network => Icon::Network,
             Self::Storage => Icon::Disk,
+            Self::Viewer => Icon::Play,
         }
     }
 
@@ -58,7 +61,7 @@ impl Kind {
             Self::Media => 0xf2799c,
             Self::Mixer | Self::Audio | Self::Network => AMBER,
             Self::Discord | Self::Memory => VIOLET,
-            Self::Storage => BLUE,
+            Self::Storage | Self::Viewer => BLUE,
         }
     }
 }
@@ -72,7 +75,7 @@ impl Dashboard {
     ) -> AnyElement {
         let wide = tile.columns >= 2;
         match tile.widget.kind {
-            Kind::Performance => self.performance_widget(height).into_any_element(),
+            Kind::Performance => self.performance_widget(tile.widget.id, height, cx),
             Kind::Media => self.media_widget(wide, tile.widget.rows >= 3, height, cx),
             Kind::Audio => self.audio_widget(cx).into_any_element(),
             Kind::Mixer => self.mixer_widget(cx).into_any_element(),
@@ -80,84 +83,13 @@ impl Dashboard {
             Kind::Memory => self.memory_widget(height).into_any_element(),
             Kind::Network => self.network_widget(height).into_any_element(),
             Kind::Storage => storage_list("home-storage", self.visible_disks()).into_any_element(),
+            Kind::Viewer => div()
+                .flex()
+                .flex_1()
+                .min_h_0()
+                .children(self.viewers.get(&tile.widget.id).cloned())
+                .into_any_element(),
         }
-    }
-
-    fn performance_widget(&self, height: f32) -> impl IntoElement {
-        let gpu = self.metrics.gpu.as_ref();
-        col()
-            .flex_1()
-            .gap(r(9.))
-            .child(
-                split()
-                    .gap(r(12.))
-                    .flex_none()
-                    .child(metric("CPU", percent_text(self.metrics.cpu), TEAL, height))
-                    .child(div().w(r(1.)).flex_none().bg(c(STROKE)))
-                    .child(metric(
-                        "GPU",
-                        percent_text(gpu.and_then(|gpu| gpu.load)),
-                        BLUE,
-                        height,
-                    )),
-            )
-            .when(height >= 60., |it| {
-                it.child(graph(
-                    self.history.cpu.clone(),
-                    Some(self.history.gpu.clone()),
-                    100.,
-                    TEAL,
-                ))
-            })
-            .when(height >= 105., |it| {
-                it.child(
-                    row()
-                        .gap(r(10.))
-                        .justify_between()
-                        .flex_none()
-                        .child(
-                            quiet(if self.metrics.cpu_name.is_empty() {
-                                "CPU history".into()
-                            } else {
-                                self.metrics.cpu_name.clone()
-                            })
-                            .truncate(),
-                        )
-                        .child(
-                            quiet(self.metrics.temperature.map_or_else(
-                                || format!("{} threads", self.metrics.threads),
-                                |degrees| format!("{degrees:.0} °C"),
-                            ))
-                            .flex_none()
-                            .text_color(c(TEAL)),
-                        ),
-                )
-            })
-            .when(height >= 170., |it| {
-                it.when_some(gpu, |it, gpu| {
-                    it.child(
-                        row()
-                            .justify_between()
-                            .gap(r(6.))
-                            .child(quiet(gpu.name.clone()).truncate())
-                            .when_some(gpu.vram, |it, (used, total)| {
-                                it.child(
-                                    quiet(format!("{:.1}/{:.1} GiB VRAM", gib(used), gib(total)))
-                                        .flex_none(),
-                                )
-                            }),
-                    )
-                })
-                .when_some(self.metrics.uptime, |it, seconds| {
-                    it.child(
-                        row()
-                            .justify_between()
-                            .gap(r(6.))
-                            .child(quiet(self.metrics.host.clone()).truncate())
-                            .child(quiet(format!("Uptime {}", uptime(seconds))).flex_none()),
-                    )
-                })
-            })
     }
 
     fn memory_widget(&self, height: f32) -> impl IntoElement {

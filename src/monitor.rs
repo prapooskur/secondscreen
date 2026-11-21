@@ -1,13 +1,13 @@
 use std::time::Instant;
-use sysinfo::{Components, Gpus, Networks, System};
+use sysinfo::{Gpus, Networks, System};
 
-use crate::model::{Gpu, Metrics};
+use crate::model::{Metrics, Sensor};
 
+mod sensors;
 mod storage;
 
 pub struct Monitor {
     system: System,
-    components: Option<Components>,
     gpus: Option<Gpus>,
     networks: Option<Networks>,
     last_sample: Option<Instant>,
@@ -18,7 +18,6 @@ impl Monitor {
     pub fn new() -> Result<Self, sysinfo::Error> {
         Ok(Self {
             system: System::new()?,
-            components: Components::new().ok(),
             gpus: Gpus::new().ok(),
             networks: Networks::new().ok(),
             last_sample: None,
@@ -34,9 +33,6 @@ impl Monitor {
             .map(|then| (now - then).as_secs_f32());
         self.system.refresh_cpu_usage();
         self.system.refresh_memory();
-        if let Some(components) = &mut self.components {
-            components.refresh(true);
-        }
         if let Some(networks) = &mut self.networks {
             networks.refresh(true);
         }
@@ -45,25 +41,6 @@ impl Monitor {
         } else {
             self.gpus = Gpus::new_with_refreshed_list().ok();
         }
-
-        let gpu = self.gpus.as_ref().and_then(|gpus| {
-            let gpu = gpus
-                .iter()
-                .max_by_key(|gpu| (gpu.usage().is_some(), gpu.total_memory().unwrap_or(0)))?;
-            let name = gpu
-                .model()
-                .or_else(|| gpu.vendor())
-                .unwrap_or("Graphics adapter");
-            Some(Gpu {
-                name: name.to_owned(),
-                key: gpu.pci().to_string(),
-                load: gpu.usage().filter(|load| load.is_finite()),
-                vram: gpu
-                    .used_memory()
-                    .zip(gpu.total_memory())
-                    .filter(|(_, total)| *total > 0),
-            })
-        });
 
         let interfaces = self
             .networks
@@ -78,6 +55,55 @@ impl Monitor {
             sent = sent.saturating_add(network.transmitted());
         }
 
+        let memory_used = self.system.used_memory();
+        let memory_total = self.system.total_memory();
+        let gib = |n: u64| n as f32 / 1_073_741_824.;
+        let mut sensors = vec![
+            Sensor::new(
+                "cpu",
+                "CPU load",
+                "%",
+                elapsed
+                    .filter(|_| !self.system.cpus().is_empty())
+                    .map(|_| self.system.global_cpu_usage()),
+            ),
+            Sensor::new(
+                "memory",
+                "Memory load",
+                "%",
+                (memory_total > 0).then(|| memory_used as f32 / memory_total as f32 * 100.),
+            ),
+            Sensor::new("ram-used", "Memory used", "GiB", Some(gib(memory_used))),
+        ];
+        if let Some(gpus) = &self.gpus {
+            for gpu in gpus.iter() {
+                let name = gpu.model().or_else(|| gpu.vendor()).unwrap_or("GPU");
+                let id = gpu.pci();
+                sensors.push(Sensor::new(
+                    format!("gpu:{id}:load"),
+                    format!("{name} · GPU load"),
+                    "%",
+                    gpu.usage(),
+                ));
+                if let Some(used) = gpu.used_memory() {
+                    sensors.push(Sensor::new(
+                        format!("gpu:{id}:vram"),
+                        format!("{name} · VRAM used"),
+                        "GiB",
+                        Some(gib(used)),
+                    ));
+                }
+            }
+        }
+        sensors::hardware(std::path::Path::new("/sys/class/hwmon"), &mut sensors);
+        for (index, cpu) in self.system.cpus().iter().enumerate() {
+            sensors.push(Sensor::new(
+                format!("cpu:{index}"),
+                format!("CPU {index} load"),
+                "%",
+                elapsed.map(|_| cpu.usage()),
+            ));
+        }
         Metrics {
             host: self
                 .host
@@ -86,49 +112,19 @@ impl Monitor {
                 })
                 .clone(),
             uptime: System::uptime().ok(),
-            cpu: elapsed
-                .filter(|_| !self.system.cpus().is_empty())
-                .map(|_| self.system.global_cpu_usage()),
+            sensors,
             cpu_name: self
                 .system
                 .cpus()
                 .first()
                 .map(|cpu| cpu.brand().to_owned())
                 .unwrap_or_default(),
-            threads: self.system.cpus().len(),
-            temperature: self.cpu_temperature(),
-            gpu,
-            memory_used: self.system.used_memory(),
-            memory_total: self.system.total_memory(),
+            memory_used,
+            memory_total,
             download: elapsed.map_or(0.0, |seconds| received as f32 / seconds),
             upload: elapsed.map_or(0.0, |seconds| sent as f32 / seconds),
             network_available,
             storage: storage::sample(),
         }
-    }
-
-    fn cpu_temperature(&self) -> Option<f32> {
-        self.components
-            .as_ref()?
-            .iter()
-            .filter_map(|sensor| {
-                let label = sensor.label().to_ascii_lowercase();
-                let priority = if ["package", "tctl", "tdie", "cpu"]
-                    .iter()
-                    .any(|name| label.contains(name))
-                {
-                    2
-                } else if label.contains("coretemp") || label.contains("core ") {
-                    1
-                } else {
-                    return None;
-                };
-                sensor
-                    .temperature()
-                    .filter(|value| value.is_finite())
-                    .map(|value| (priority, value))
-            })
-            .max_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)))
-            .map(|(_, value)| value)
     }
 }

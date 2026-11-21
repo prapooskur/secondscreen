@@ -1,0 +1,35 @@
+<!doctype html><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src file:; media-src file:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<style>
+html,body,main,img,video {width:100%;height:100%;margin:0;background:#0c1017;object-fit:contain}
+nav {position:absolute;right:5px;top:5px} button {color:white;background:#172232;border:0;border-radius:4px;padding:5px 9px}
+</style>
+<main></main><nav hidden><button aria-label="Previous slide">‹</button> <button aria-label="Next slide">›</button></nav>
+<script>
+const items = MEDIA_ITEMS;
+let index = 0, timer;
+function show(step) {
+  clearTimeout(timer);
+  index = (index + step + items.length) % items.length;
+  const [tag, url] = items[index];
+  const media = document.createElement(tag);
+  const next = () => show(1);
+  if (tag === "video") {
+    media.controls = true;
+    media.autoplay = true;
+    media.loop = items.length === 1;
+    media.onended = next;
+  }
+  if (items.length > 1) {
+    if (tag === "img") timer = setTimeout(next, SLIDE_INTERVAL * 1000);
+    media.onerror = () => { clearTimeout(timer); timer = setTimeout(next, 1500); };
+  }
+  media.src = url;
+  document.querySelector("main").replaceChildren(media);
+}
+const nav = document.querySelector("nav");
+nav.hidden = items.length < 2;
+nav.children[0].onclick = () => show(-1);
+nav.children[1].onclick = () => show(1);
+show(0);
+</script>
