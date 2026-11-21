@@ -16,7 +16,7 @@ pub struct Preferences {
     pub start_fullscreen: bool,
     pub hidden_media: BTreeMap<String, String>,
     pub hidden_audio: BTreeMap<String, String>,
-    pub hidden_disks: BTreeMap<String, String>,
+    pub hidden_drives: BTreeMap<String, String>,
     pub discord: Option<DiscordCredentials>,
 }
 

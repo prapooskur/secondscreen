@@ -17,8 +17,10 @@ pub struct Metrics {
 
 #[derive(Clone)]
 pub struct DiskUsage {
-    pub mount: String,
-    pub used: u64,
+    pub id: String,
+    pub label: String,
+    pub device: String,
+    pub used: Option<u64>,
     pub total: u64,
 }
 

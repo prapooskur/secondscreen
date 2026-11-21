@@ -18,8 +18,8 @@ use std::{
 
 use async_channel::Receiver;
 use gpui::{
-    AnyElement, Context, FocusHandle, FontWeight, IntoElement, KeyDownEvent, MouseButton, Render,
-    SharedString, Window, div, linear_color_stop, linear_gradient, prelude::*, px,
+    Context, FocusHandle, FontWeight, IntoElement, KeyDownEvent, Render, SharedString, Window,
+    prelude::*, px,
 };
 
 use crate::{
@@ -34,63 +34,8 @@ use icons::{Icon, icon};
 use theme::*;
 
 const HISTORY: usize = 60;
-const RAIL_WIDTH: f32 = 78.;
 const CONTENT_X: f32 = 18.;
 const CONTENT_Y: f32 = 16.;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Page {
-    Home,
-    System,
-    Audio,
-    Media,
-    Discord,
-    Settings,
-}
-
-impl Page {
-    const ALL: [Self; 6] = [
-        Self::Home,
-        Self::System,
-        Self::Audio,
-        Self::Media,
-        Self::Discord,
-        Self::Settings,
-    ];
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Home => "Home",
-            Self::System => "System",
-            Self::Audio => "Audio",
-            Self::Media => "Media",
-            Self::Discord => "Discord",
-            Self::Settings => "Settings",
-        }
-    }
-
-    fn icon(self) -> Icon {
-        match self {
-            Self::Home => Icon::Home,
-            Self::System => Icon::Activity,
-            Self::Audio => Icon::Audio,
-            Self::Media => Icon::Music,
-            Self::Discord => Icon::Discord,
-            Self::Settings => Icon::Settings,
-        }
-    }
-
-    fn palette(self) -> (u32, u32, u32) {
-        match self {
-            Self::Home => (0x405972, 0x263749, 0xf2f7ff),
-            Self::System => (0x31b987, 0x127453, 0xf3fff8),
-            Self::Audio => (0xffbc65, 0xdb7624, 0x291b0e),
-            Self::Media => (0xf25e84, 0xbf2b54, 0xfff6fa),
-            Self::Discord => (0x828cff, 0x4b54d0, 0xffffff),
-            Self::Settings => (0x879ab1, 0x516579, 0xffffff),
-        }
-    }
-}
 
 #[derive(Default)]
 struct History {
@@ -113,7 +58,6 @@ fn append(series: &mut VecDeque<f32>, value: Option<f32>) {
 }
 
 pub struct Dashboard {
-    page: Page,
     home: home::Home,
     preferences: Preferences,
     settings: settings::SettingsView,
@@ -162,10 +106,9 @@ impl Dashboard {
         #[cfg(not(feature = "ui-gpui"))]
         window.focus(&focus, cx);
         Self {
-            page: Page::Home,
             home: home::Home::load(),
             preferences,
-            settings: settings::SettingsView::default(),
+            settings: settings::SettingsView::new(cx.focus_handle()),
             metrics: Metrics::default(),
             history: History::default(),
             audio: AudioState::default(),
@@ -219,7 +162,9 @@ impl Dashboard {
                 {
                     self.routing = None;
                 }
-                self.shows(Page::Audio)
+                self.settings.open
+                    || self.home.contains(home::Kind::Audio)
+                    || self.home.contains(home::Kind::Mixer)
             }
             Update::Media(state) => {
                 self.media = state;
@@ -231,7 +176,7 @@ impl Dashboard {
                     self.player = None;
                 }
                 self.update_seek();
-                self.shows(Page::Media)
+                self.settings.open || self.home.contains(home::Kind::Media)
             }
             Update::MediaSeekFailed {
                 requested_at,
@@ -250,7 +195,7 @@ impl Dashboard {
             }
             Update::Discord(state) => {
                 self.discord = state;
-                self.shows(Page::Discord)
+                self.home.contains(home::Kind::Discord)
             }
             Update::ActionError(error) => {
                 self.error = Some((Instant::now(), error));
@@ -288,26 +233,8 @@ impl Dashboard {
         self.metrics
             .storage
             .iter()
-            .filter(|disk| !self.preferences.hidden_disks.contains_key(&disk.mount))
+            .filter(|disk| !self.preferences.hidden_drives.contains_key(&disk.id))
             .collect()
-    }
-
-    fn shows(&self, page: Page) -> bool {
-        self.page == page
-            || self.page == Page::Settings
-            || (self.page == Page::Home && self.home.includes(page))
-    }
-
-    fn select(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
-        if self.page != page {
-            self.home.leave();
-            self.page = page;
-            self.routing = None;
-            self.error = None;
-            self.gesture.borrow_mut().take();
-            self.focus_dashboard(window, cx);
-            cx.notify();
-        }
     }
 
     fn focus_dashboard(&self, window: &mut Window, _cx: &mut Context<Self>) {
@@ -342,143 +269,41 @@ impl Dashboard {
         }
         match key.key.as_str() {
             "f11" => window.toggle_fullscreen(),
-            "escape" if self.page == Page::Home && self.home.escape() => cx.notify(),
-            "escape" if self.routing.take().is_some() => cx.notify(),
+            "escape" if self.settings.open => self.close_settings(window, cx),
+            "escape" if self.home.escape() || self.routing.take().is_some() => {
+                self.focus_dashboard(window, cx);
+                cx.notify();
+            }
             "escape" if window.is_fullscreen() => window.toggle_fullscreen(),
             "tab" => {
-                #[cfg(feature = "ui-gpui")]
-                if key.modifiers.shift {
-                    window.focus_prev();
-                } else {
-                    window.focus_next();
-                }
-                #[cfg(not(feature = "ui-gpui"))]
-                if key.modifiers.shift {
-                    window.focus_prev(cx);
-                } else {
-                    window.focus_next(cx);
+                let mut first_outside = None;
+                loop {
+                    #[cfg(feature = "ui-gpui")]
+                    if key.modifiers.shift {
+                        window.focus_prev();
+                    } else {
+                        window.focus_next();
+                    }
+                    #[cfg(not(feature = "ui-gpui"))]
+                    if key.modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                    if !self.settings.open || self.settings.focus.contains_focused(window, cx) {
+                        break;
+                    }
+                    // GPUI traverses the whole window. Skip dashboard controls under the overlay.
+                    let current = window.focused(cx);
+                    if current.is_none() || current == first_outside {
+                        break;
+                    }
+                    first_outside = first_outside.or(current);
                 }
             }
-            "0" => self.select(Page::Home, window, cx),
-            "1" => self.select(Page::System, window, cx),
-            "2" => self.select(Page::Audio, window, cx),
-            "3" => self.select(Page::Media, window, cx),
-            "4" => self.select(Page::Discord, window, cx),
-            "5" => self.select(Page::Settings, window, cx),
             _ => return,
         };
         cx.stop_propagation();
-    }
-
-    fn navigation(&self, window: &Window, height: f32, cx: &mut Context<Self>) -> impl IntoElement {
-        let fullscreen = window.is_fullscreen();
-        let (tile_size, tile_gap) = if height < 412. {
-            (39., 5.)
-        } else if height < 486. {
-            (46., 6.)
-        } else {
-            (54., 8.)
-        };
-        let view = cx.entity();
-        let drag_space = || {
-            div().flex_1().w_full().when(!fullscreen, |space| {
-                space
-                    .cursor_move()
-                    .on_mouse_down(MouseButton::Left, |event, window, _| {
-                        if event.click_count == 2 {
-                            window.zoom_window();
-                        } else {
-                            window.start_window_move();
-                        }
-                    })
-            })
-        };
-
-        let destinations =
-            col()
-                .items_center()
-                .flex_none()
-                .gap(r(tile_gap))
-                .children(Page::ALL.into_iter().map(|page| {
-                    let selected = self.page == page;
-                    let (light, dark, foreground) = page.palette();
-                    let view = view.clone();
-                    bind(
-                        row()
-                            .id(page.label())
-                            .size(r(tile_size))
-                            .justify_center()
-                            .rounded(r(16.))
-                            .border_1()
-                            .border_color(c(light).opacity(if selected { 0.76 } else { 0.0 }))
-                            .bg(c(light).opacity(if selected { 0.15 } else { 0.0 }))
-                            .hover(move |tile| tile.bg(c(light).opacity(0.22)))
-                            .child(
-                                row()
-                                    .size(r(tile_size - 10.))
-                                    .justify_center()
-                                    .rounded(r(12.))
-                                    .bg(linear_gradient(
-                                        180.,
-                                        linear_color_stop(c(light), 0.),
-                                        linear_color_stop(c(dark), 1.),
-                                    ))
-                                    .child(icon(page.icon(), c(foreground), tile_size * 0.46)),
-                            )
-                            .tooltip(move |_, cx| cx.new(|_| Tooltip(page.label().into())).into()),
-                        move |window, cx| {
-                            view.update(cx, |this, cx| this.select(page, window, cx));
-                        },
-                    )
-                }));
-
-        let controls = col()
-            .w_full()
-            .items_center()
-            .gap(r(6.))
-            .pb(r(12.))
-            .flex_none()
-            .child(window_control(
-                if fullscreen {
-                    "Exit fullscreen (F11)"
-                } else {
-                    "Fullscreen (F11)"
-                },
-                if fullscreen {
-                    Icon::Restore
-                } else {
-                    Icon::Fullscreen
-                },
-                44.,
-                |window| window.toggle_fullscreen(),
-            ))
-            .when(!fullscreen, |controls| {
-                controls.child(
-                    row()
-                        .gap(r(4.))
-                        .child(window_control("Minimize", Icon::Minimize, 28., |window| {
-                            window.minimize_window();
-                        }))
-                        .child(window_control("Close", Icon::Close, 28., |window| {
-                            window.remove_window();
-                        })),
-                )
-            });
-
-        col()
-            .w(r(RAIL_WIDTH))
-            .h_full()
-            .flex_none()
-            .items_center()
-            .gap(r(8.))
-            .pt(r(12.))
-            .bg(c(HEADER))
-            .border_r_1()
-            .border_color(c(STROKE))
-            .child(drag_space())
-            .child(destinations)
-            .child(drag_space())
-            .child(controls)
     }
 
     fn notice(&self) -> Option<impl IntoElement> {
@@ -512,23 +337,18 @@ impl Render for Dashboard {
         window.set_rem_size(px(16. * scale));
         let width = f32::from(size.width) / scale;
         let height = f32::from(size.height) / scale;
-        let page: AnyElement = match self.page {
-            Page::Home => self
-                .home_page(
-                    width - RAIL_WIDTH - 2. * CONTENT_X,
-                    height - 2. * CONTENT_Y,
-                    scale,
-                    cx,
-                )
-                .into_any_element(),
-            Page::System => self.system_page().into_any_element(),
-            Page::Audio => self.audio_page(cx).into_any_element(),
-            Page::Media => self.media_page(cx).into_any_element(),
-            Page::Discord => self.discord_page(cx).into_any_element(),
-            Page::Settings => self.settings_page(cx).into_any_element(),
-        };
+        let home = self.home_page(
+            width - 2. * CONTENT_X,
+            height - 2. * CONTENT_Y,
+            scale,
+            window.is_fullscreen(),
+            cx,
+        );
 
-        split()
+        col()
+            .relative()
+            .px(r(CONTENT_X))
+            .py(r(CONTENT_Y))
             .id("secondscreen")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key))
@@ -538,16 +358,11 @@ impl Render for Dashboard {
             .size_full()
             .bg(c(BACK))
             .overflow_hidden()
-            .child(self.navigation(window, height, cx))
-            .child(
-                col()
-                    .relative()
-                    .flex_1()
-                    .px(r(CONTENT_X))
-                    .py(r(CONTENT_Y))
-                    .child(page)
-                    .children(self.notice()),
-            )
+            .child(home)
+            .when(self.settings.open, |root| {
+                root.child(self.settings_overlay(cx))
+            })
+            .children(self.notice())
     }
 }
 

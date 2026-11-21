@@ -9,15 +9,15 @@ use super::{
 use crate::model::{DiscordAction, DiscordState, VoiceState};
 
 impl Dashboard {
-    pub(super) fn discord_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn discord_widget(&self, cx: &Context<Self>) -> impl IntoElement {
         let content = match &self.discord {
             DiscordState::Connected(voice) => self.connected(voice, cx).into_any_element(),
             state => self.disconnected(state, cx).into_any_element(),
         };
         col()
+            .id("voice-content")
             .flex_1()
-            .gap(r(12.))
-            .child(section_header("Discord voice", None))
+            .overflow_y_scroll()
             .child(content)
     }
 
@@ -30,8 +30,8 @@ impl Dashboard {
             DiscordState::Connected(_) => unreachable!(),
         };
         let controls = row()
-            .justify_center()
-            .gap(r(8.))
+            .flex_wrap()
+            .gap(r(6.))
             .flex_none()
             .child(bind(
                 button("open-discord", None).child("Open Discord"),
@@ -61,18 +61,11 @@ impl Dashboard {
                 },
             );
 
-        panel()
-            .flex_1()
-            .justify_center()
-            .items_center()
-            .p(r(14.))
-            .gap(r(4.))
-            .overflow_hidden()
-            .child(
-                empty(Icon::Chat, VIOLET, headline, description)
-                    .flex_none()
-                    .flex_basis(gpui::auto()),
-            )
+        col()
+            .flex_none()
+            .gap(r(8.))
+            .child(label(headline).text_color(c(INK)))
+            .child(quiet(description))
             .child(controls)
     }
 
@@ -109,124 +102,79 @@ impl Dashboard {
             )
         };
         let channel = voice.channel.as_ref();
-        let account = panel()
-            .flex_1()
-            .p(r(16.))
-            .gap(r(11.))
-            .overflow_hidden()
+        col()
+            .gap(r(7.))
+            .flex_none()
             .child(
                 row()
-                    .gap(r(9.))
-                    .child(dot(TEAL))
-                    .child(label(voice.account.clone()).truncate()),
-            )
-            .child(
-                col()
-                    .flex_1()
-                    .justify_center()
-                    .gap(r(9.))
-                    .child(
-                        title(
-                            channel
-                                .map(|channel| channel.name.clone())
-                                .unwrap_or_else(|| "No active voice channel".into()),
-                        )
-                        .w_full()
-                        .whitespace_nowrap(),
-                    )
-                    .child(
-                        quiet(channel.map_or_else(
-                            || "Join a call in Discord to see its participants here.".to_owned(),
-                            |channel| format!("{} in voice", channel.members.len()),
-                        ))
-                        .whitespace_nowrap(),
-                    )
-                    .child(
-                        row()
-                            .gap(r(7.))
-                            .child(mute)
-                            .child(deafen)
-                            .when(channel.is_some(), |it| it.child(leave)),
-                    ),
-            )
-            .child(row().justify_start().child(disconnect));
-
-        let participants = panel()
-            .w(gpui::relative(0.43))
-            .overflow_hidden()
-            .child(
-                row()
-                    .h(r(50.))
-                    .px(r(12.))
-                    .flex_none()
-                    .gap(r(8.))
-                    .border_b_1()
-                    .border_color(c(STROKE))
-                    .child(icon_tile(Icon::Chat, VIOLET, 28.))
-                    .child(label("Participants").text_color(c(INK))),
-            )
-            .child(
-                col()
-                    .id("voice-members")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .p(r(12.))
                     .gap(r(6.))
-                    .when(
-                        channel.is_none_or(|channel| channel.members.is_empty()),
-                        |it| it.child(quiet("No participants to show")),
-                    )
-                    .children(
-                        channel
-                            .into_iter()
-                            .flat_map(|channel| &channel.members)
-                            .map(|member| {
-                                let initial = member
-                                    .name
-                                    .chars()
-                                    .next()
-                                    .map(|letter| letter.to_uppercase().to_string())
-                                    .unwrap_or_else(|| "?".into());
+                    .child(dot(TEAL))
+                    .child(quiet(voice.account.clone()).truncate()),
+            )
+            .child(
+                label(
+                    channel
+                        .map(|channel| channel.name.clone())
+                        .unwrap_or_else(|| "No active voice channel".into()),
+                )
+                .text_color(c(INK))
+                .truncate(),
+            )
+            .child(
+                row()
+                    .gap(r(5.))
+                    .flex_wrap()
+                    .child(mute)
+                    .child(deafen)
+                    .when(channel.is_some(), |it| it.child(leave)),
+            )
+            .child(row().child(disconnect))
+            .when_some(channel, |it, channel| {
+                it.child(quiet(format!("{} in voice", channel.members.len())))
+            })
+            .children(
+                channel
+                    .into_iter()
+                    .flat_map(|channel| &channel.members)
+                    .map(|member| {
+                        let initial = member
+                            .name
+                            .chars()
+                            .next()
+                            .map(|letter| letter.to_uppercase().to_string())
+                            .unwrap_or_else(|| "?".into());
+                        row()
+                            .h(r(38.))
+                            .px(r(7.))
+                            .gap(r(8.))
+                            .flex_none()
+                            .rounded(r(6.))
+                            .bg(c(BACK).opacity(0.45))
+                            .child(
                                 row()
-                                    .h(r(38.))
-                                    .px(r(7.))
-                                    .gap(r(8.))
+                                    .size(r(25.))
                                     .flex_none()
-                                    .rounded(r(6.))
-                                    .bg(c(BACK).opacity(0.45))
-                                    .child(
-                                        row()
-                                            .size(r(25.))
-                                            .flex_none()
-                                            .justify_center()
-                                            .rounded_full()
-                                            .bg(c(VIOLET).opacity(0.13))
-                                            .text_color(c(VIOLET))
-                                            .text_size(r(11.))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(initial),
-                                    )
-                                    .child(div().flex_1().truncate().child(member.name.clone()))
-                                    .when(member.muted, |it| {
-                                        it.child(icon(Icon::MicOff, c(AMBER), 15.))
-                                    })
-                                    .when(member.deafened, |it| {
-                                        it.child(icon(Icon::Headphones, c(AMBER), 15.))
-                                    })
-                            }),
-                    ),
-            );
-
-        split()
-            .flex_1()
-            .min_h_0()
-            .gap(r(12.))
-            .child(account)
-            .child(participants)
+                                    .justify_center()
+                                    .rounded_full()
+                                    .bg(c(VIOLET).opacity(0.13))
+                                    .text_color(c(VIOLET))
+                                    .text_size(r(11.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(initial),
+                            )
+                            .child(div().flex_1().truncate().child(member.name.clone()))
+                            .when(member.muted, |it| {
+                                it.child(icon(Icon::MicOff, c(AMBER), 15.))
+                            })
+                            .when(member.deafened, |it| {
+                                it.child(icon(Icon::Headphones, c(AMBER), 15.))
+                            })
+                    }),
+            )
     }
 }
 
-pub(super) fn discord_button(
+fn discord_button(
     id: &'static str,
     symbol: Icon,
     name: &'static str,
@@ -237,6 +185,9 @@ pub(super) fn discord_button(
     let view = cx.entity();
     bind(
         button(id, color)
+            .h(r(29.))
+            .px(r(6.))
+            .gap(r(4.))
             .child(icon(symbol, c(color.unwrap_or(TEXT)), 15.))
             .child(name),
         move |_, cx| {

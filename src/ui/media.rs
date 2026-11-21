@@ -6,7 +6,7 @@ use std::{
 
 use crate::model::{Artwork, MediaAction, Playback, Player, Track};
 use gpui::{
-    App, Asset, Context, FontWeight, IntoElement, ObjectFit, RenderImage, Styled, div, img,
+    AnyElement, App, Asset, Context, IntoElement, ObjectFit, RenderImage, Styled, div, img,
     prelude::*,
 };
 
@@ -110,101 +110,6 @@ impl Dashboard {
         cx.notify();
     }
 
-    pub(super) fn media_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let content = match self.current_player() {
-            Some(player) => split()
-                .flex_1()
-                .min_h_0()
-                .gap(r(12.))
-                .child(self.now_playing(player, cx))
-                .child(self.player_list(player, cx))
-                .into_any_element(),
-            None => panel()
-                .flex_1()
-                .child(empty(
-                    Icon::Music,
-                    BLUE,
-                    if self.media.issue.is_some() {
-                        "Media service unavailable"
-                    } else if !self.media.players.is_empty() {
-                        "All media apps are hidden"
-                    } else {
-                        "No media players"
-                    },
-                    self.media.issue.clone().unwrap_or_else(|| {
-                        if self.media.players.is_empty() {
-                            "Play something in a desktop app or browser that supports MPRIS.".into()
-                        } else {
-                            "Choose apps in Settings → Media apps.".into()
-                        }
-                    }),
-                ))
-                .into_any_element(),
-        };
-
-        col()
-            .flex_1()
-            .gap(r(12.))
-            .child(section_header("Media playback", None))
-            .child(content)
-    }
-
-    fn now_playing(&self, player: &Player, cx: &Context<Self>) -> impl IntoElement {
-        let track = player.track.as_ref();
-        let (status, color) = match player.playback {
-            Playback::Playing => ("Playing", TEAL),
-            Playback::Paused => ("Paused", AMBER),
-            Playback::Stopped => ("Stopped", MUTED),
-        };
-        panel()
-            .flex_1()
-            .p(r(14.))
-            .gap(r(10.))
-            .overflow_hidden()
-            .child(
-                row()
-                    .flex_1()
-                    .min_h_0()
-                    .gap(r(17.))
-                    .child(album_art(
-                        track.and_then(|track| track.artwork.clone()),
-                        123.,
-                    ))
-                    .child(
-                        col()
-                            .flex_1()
-                            .gap(r(7.))
-                            .child(
-                                row()
-                                    .gap(r(8.))
-                                    .child(chip(status, color))
-                                    .child(quiet(player.name.clone()).truncate()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(r(23.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .truncate()
-                                    .child(
-                                        track
-                                            .map(|track| track.title.clone())
-                                            .unwrap_or_else(|| "No track selected".into()),
-                                    ),
-                            )
-                            .when_some(track, |it, track| {
-                                it.when(!track.artist.is_empty(), |it| {
-                                    it.child(label(track.artist.clone()).truncate())
-                                })
-                                .when(!track.album.is_empty(), |it| {
-                                    it.child(quiet(track.album.clone()).truncate())
-                                })
-                            }),
-                    ),
-            )
-            .child(self.media_progress(player, cx))
-            .child(self.media_transport(player, false, cx))
-    }
-
     pub(super) fn media_progress(&self, player: &Player, cx: &Context<Self>) -> impl IntoElement {
         let track = player.track.as_ref();
         let length = track.and_then(|track| track.duration);
@@ -282,9 +187,9 @@ impl Dashboard {
         let playing = player.playback == Playback::Playing;
         let direction = |id, symbol, can, which| {
             let control = button(id, None)
-                .size(r(if compact { 33. } else { 39. }))
+                .size(r(if compact { 26. } else { 33. }))
                 .px_0()
-                .child(icon(symbol, c(TEXT), 16.));
+                .child(icon(symbol, c(TEXT), if compact { 13. } else { 16. }));
             if can {
                 let view = cx.entity();
                 let id = player.id.clone();
@@ -303,12 +208,12 @@ impl Dashboard {
             }
         };
         let toggle = button("play-pause", Some(TEAL))
-            .size(r(if compact { 37. } else { 43. }))
+            .size(r(if compact { 30. } else { 37. }))
             .px_0()
             .child(icon(
                 if playing { Icon::Pause } else { Icon::Play },
                 c(TEAL),
-                20.,
+                if compact { 16. } else { 20. },
             ));
         let toggle = if player.can_toggle_playback() {
             let view = cx.entity();
@@ -322,7 +227,7 @@ impl Dashboard {
 
         row()
             .justify_center()
-            .gap(r(8.))
+            .gap(r(if compact { 4. } else { 8. }))
             .flex_none()
             .child(direction(
                 "previous",
@@ -334,57 +239,43 @@ impl Dashboard {
             .child(direction("next", Icon::Next, player.can_next, true))
     }
 
-    fn player_list(&self, active: &Player, cx: &Context<Self>) -> impl IntoElement {
-        panel()
-            .w(gpui::relative(0.32))
-            .overflow_hidden()
-            .child(
-                row()
-                    .h(r(50.))
-                    .flex_none()
-                    .px(r(12.))
-                    .gap(r(8.))
-                    .border_b_1()
-                    .border_color(c(STROKE))
-                    .child(icon_tile(Icon::Music, BLUE, 28.))
-                    .child(label("Players").text_color(c(INK))),
+    pub(super) fn player_control(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let active = self.current_player()?;
+        let mut players = self.visible_players();
+        players.find(|player| player.id == active.id)?;
+        let next = players.next().or_else(|| self.visible_players().next())?;
+        if next.id == active.id {
+            return Some(
+                quiet(active.name.clone())
+                    .max_w(gpui::relative(0.48))
+                    .truncate()
+                    .into_any_element(),
+            );
+        }
+        let view = cx.entity();
+        let id = next.id.clone();
+        Some(
+            bind(
+                button("switch-player", None)
+                    .h(r(27.))
+                    .max_w(gpui::relative(0.48))
+                    .px(r(6.))
+                    .child(div().truncate().child(active.name.clone()))
+                    .child(icon(Icon::Chevron, c(TEXT), 12.))
+                    .tooltip(|_, cx| {
+                        cx.new(|_| super::Tooltip("Switch media player".into()))
+                            .into()
+                    }),
+                move |_, cx| {
+                    view.update(cx, |this, cx| {
+                        this.player = Some(id.clone());
+                        this.gesture.borrow_mut().take();
+                        cx.notify();
+                    })
+                },
             )
-            .child(
-                col()
-                    .id("players")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .p(r(10.))
-                    .gap(r(6.))
-                    .children(self.visible_players().map(|player| {
-                        let selected = player.id == active.id;
-                        let id = player.id.clone();
-                        let view = cx.entity();
-                        bind(
-                            button(
-                                gpui::SharedString::from(player.id.clone()),
-                                selected.then_some(BLUE),
-                            )
-                            .justify_start()
-                            .child(icon(
-                                if selected { Icon::Check } else { Icon::Music },
-                                c(if selected { BLUE } else { MUTED }),
-                                15.,
-                            ))
-                            .child(div().flex_1().truncate().child(player.name.clone()))
-                            .when(player.playback == Playback::Playing, |it| {
-                                it.child(dot(TEAL))
-                            }),
-                            move |_, cx| {
-                                view.update(cx, |this, cx| {
-                                    this.player = Some(id.clone());
-                                    this.gesture.borrow_mut().take();
-                                    cx.notify();
-                                })
-                            },
-                        )
-                    })),
-            )
+            .into_any_element(),
+        )
     }
 }
 

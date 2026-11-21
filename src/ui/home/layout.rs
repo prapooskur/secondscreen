@@ -5,13 +5,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::config;
 
-pub(super) const MAX_COLUMNS: u8 = 4;
+pub(super) const MAX_COLUMNS: u8 = 5;
 pub(super) const MIN_ROWS: u8 = 2;
 pub(super) const MAX_ROWS: u8 = 5;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(super) enum Kind {
+pub(in crate::ui) enum Kind {
     Performance,
     Media,
     Audio,
@@ -19,10 +19,11 @@ pub(super) enum Kind {
     Memory,
     Network,
     Storage,
+    Mixer,
 }
 
 impl Kind {
-    pub const ALL: [Self; 7] = [
+    pub(super) const ALL: [Self; 8] = [
         Self::Performance,
         Self::Media,
         Self::Audio,
@@ -30,9 +31,10 @@ impl Kind {
         Self::Memory,
         Self::Network,
         Self::Storage,
+        Self::Mixer,
     ];
 
-    pub fn widget(self) -> Widget {
+    pub(super) fn widget(self) -> Widget {
         Widget {
             kind: self,
             columns: 1,
@@ -148,7 +150,7 @@ mod tests {
     #[test]
     fn mixed_sizes_reflow_without_overlaps_or_losing_saved_widths() {
         let mut layout = Layout::default();
-        layout.widgets[0].columns = 3;
+        layout.widgets[0].columns = MAX_COLUMNS;
         layout.widgets[0].rows = 4;
         layout.widgets[2].columns = 2;
         for columns in 1..=MAX_COLUMNS {
@@ -164,7 +166,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(place(layout.widgets, 4)[0].columns, 3);
+        assert_eq!(place(layout.widgets, MAX_COLUMNS)[0].columns, MAX_COLUMNS);
     }
 
     #[test]

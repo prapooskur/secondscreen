@@ -1,15 +1,13 @@
 use gpui::{AnyElement, Context, Div, FontWeight, IntoElement, Styled, div, prelude::*};
 
-use crate::model::{AudioChannel, AudioKind, DiscordAction, DiscordState, Playback};
+use crate::model::{AudioKind, Playback};
 
 use super::super::{
-    Dashboard, Page,
-    discord::discord_button,
+    Dashboard,
     icons::Icon,
     media::album_art,
-    monitor::{gib, graph, rate, storage_list},
+    monitor::{gib, graph, rate, storage_list, uptime},
     percent,
-    settings::Section,
     theme::*,
 };
 use super::layout::{Kind, Placement};
@@ -20,6 +18,7 @@ impl Kind {
             Self::Performance => "Performance",
             Self::Media => "Now playing",
             Self::Audio => "Audio",
+            Self::Mixer => "App mixer",
             Self::Discord => "Discord",
             Self::Memory => "Memory",
             Self::Network => "Network",
@@ -31,20 +30,12 @@ impl Kind {
         match self {
             Self::Performance => "Processor and graphics load",
             Self::Media => "Track details and playback",
-            Self::Audio => "Default devices and volume",
+            Self::Audio => "Audio devices and volume",
+            Self::Mixer => "App volume and stream routing",
             Self::Discord => "Voice channel and controls",
             Self::Memory => "RAM usage over time",
             Self::Network => "Download and upload activity",
-            Self::Storage => "Usage for mounted volumes",
-        }
-    }
-
-    pub(super) fn page(self) -> Page {
-        match self {
-            Self::Performance | Self::Memory | Self::Network | Self::Storage => Page::System,
-            Self::Media => Page::Media,
-            Self::Audio => Page::Audio,
-            Self::Discord => Page::Discord,
+            Self::Storage => "Drive capacity and usage",
         }
     }
 
@@ -53,6 +44,7 @@ impl Kind {
             Self::Performance => Icon::Activity,
             Self::Media => Icon::Music,
             Self::Audio => Icon::Speaker,
+            Self::Mixer => Icon::Audio,
             Self::Discord => Icon::Discord,
             Self::Memory => Icon::Memory,
             Self::Network => Icon::Network,
@@ -64,7 +56,7 @@ impl Kind {
         match self {
             Self::Performance => TEAL,
             Self::Media => 0xf2799c,
-            Self::Audio | Self::Network => AMBER,
+            Self::Mixer | Self::Audio | Self::Network => AMBER,
             Self::Discord | Self::Memory => VIOLET,
             Self::Storage => BLUE,
         }
@@ -72,21 +64,26 @@ impl Kind {
 }
 
 impl Dashboard {
-    pub(super) fn widget_content(&self, tile: Placement, cx: &Context<Self>) -> AnyElement {
+    pub(super) fn widget_content(
+        &self,
+        tile: Placement,
+        height: f32,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let wide = tile.columns >= 2;
-        let tall = tile.widget.rows >= 3;
         match tile.widget.kind {
-            Kind::Performance => self.performance_widget(tall).into_any_element(),
-            Kind::Media => self.media_widget(wide, tall, cx).into_any_element(),
-            Kind::Audio => self.audio_widget(tall, cx).into_any_element(),
-            Kind::Discord => self.discord_widget(wide, tall, cx).into_any_element(),
-            Kind::Memory => self.memory_widget(tall).into_any_element(),
-            Kind::Network => self.network_widget(tall).into_any_element(),
+            Kind::Performance => self.performance_widget(height).into_any_element(),
+            Kind::Media => self.media_widget(wide, tile.widget.rows >= 3, height, cx),
+            Kind::Audio => self.audio_widget(cx).into_any_element(),
+            Kind::Mixer => self.mixer_widget(cx).into_any_element(),
+            Kind::Discord => self.discord_widget(cx).into_any_element(),
+            Kind::Memory => self.memory_widget(height).into_any_element(),
+            Kind::Network => self.network_widget(height).into_any_element(),
             Kind::Storage => storage_list("home-storage", self.visible_disks()).into_any_element(),
         }
     }
 
-    fn performance_widget(&self, tall: bool) -> impl IntoElement {
+    fn performance_widget(&self, height: f32) -> impl IntoElement {
         let gpu = self.metrics.gpu.as_ref();
         col()
             .flex_1()
@@ -95,22 +92,24 @@ impl Dashboard {
                 split()
                     .gap(r(12.))
                     .flex_none()
-                    .child(metric("CPU", percent_text(self.metrics.cpu), TEAL, tall))
+                    .child(metric("CPU", percent_text(self.metrics.cpu), TEAL, height))
                     .child(div().w(r(1.)).flex_none().bg(c(STROKE)))
                     .child(metric(
                         "GPU",
                         percent_text(gpu.and_then(|gpu| gpu.load)),
                         BLUE,
-                        tall,
+                        height,
                     )),
             )
-            .child(graph(
-                self.history.cpu.clone(),
-                Some(self.history.gpu.clone()),
-                100.,
-                TEAL,
-            ))
-            .when(tall, |it| {
+            .when(height >= 60., |it| {
+                it.child(graph(
+                    self.history.cpu.clone(),
+                    Some(self.history.gpu.clone()),
+                    100.,
+                    TEAL,
+                ))
+            })
+            .when(height >= 105., |it| {
                 it.child(
                     row()
                         .gap(r(10.))
@@ -126,7 +125,7 @@ impl Dashboard {
                         )
                         .child(
                             quiet(self.metrics.temperature.map_or_else(
-                                || "60 s".into(),
+                                || format!("{} threads", self.metrics.threads),
                                 |degrees| format!("{degrees:.0} °C"),
                             ))
                             .flex_none()
@@ -134,16 +133,43 @@ impl Dashboard {
                         ),
                 )
             })
+            .when(height >= 170., |it| {
+                it.when_some(gpu, |it, gpu| {
+                    it.child(
+                        row()
+                            .justify_between()
+                            .gap(r(6.))
+                            .child(quiet(gpu.name.clone()).truncate())
+                            .when_some(gpu.vram, |it, (used, total)| {
+                                it.child(
+                                    quiet(format!("{:.1}/{:.1} GiB VRAM", gib(used), gib(total)))
+                                        .flex_none(),
+                                )
+                            }),
+                    )
+                })
+                .when_some(self.metrics.uptime, |it, seconds| {
+                    it.child(
+                        row()
+                            .justify_between()
+                            .gap(r(6.))
+                            .child(quiet(self.metrics.host.clone()).truncate())
+                            .child(quiet(format!("Uptime {}", uptime(seconds))).flex_none()),
+                    )
+                })
+            })
     }
 
-    fn memory_widget(&self, tall: bool) -> impl IntoElement {
+    fn memory_widget(&self, height: f32) -> impl IntoElement {
         let memory = percent(self.metrics.memory_used, self.metrics.memory_total);
         col()
             .flex_1()
             .gap(r(8.))
-            .child(metric("RAM in use", percent_text(memory), VIOLET, tall))
-            .child(graph(self.history.memory.clone(), None, 100., VIOLET))
-            .when(memory.is_some(), |it| {
+            .child(metric("RAM in use", percent_text(memory), VIOLET, height))
+            .when(height >= 60., |it| {
+                it.child(graph(self.history.memory.clone(), None, 100., VIOLET))
+            })
+            .when(height >= 105. && memory.is_some(), |it| {
                 it.child(
                     quiet(format!(
                         "{:.1} of {:.1} GiB used",
@@ -156,7 +182,7 @@ impl Dashboard {
             })
     }
 
-    fn network_widget(&self, tall: bool) -> impl IntoElement {
+    fn network_widget(&self, height: f32) -> impl IntoElement {
         let top = self
             .history
             .download
@@ -171,18 +197,24 @@ impl Dashboard {
             } else {
                 ("—".into(), "")
             };
-            col().flex_1().gap(r(4.)).child(quiet(label)).child(
-                row()
-                    .items_baseline()
-                    .gap(r(4.))
-                    .child(
-                        mono(number)
-                            .text_size(r(22.))
-                            .text_color(c(color))
-                            .truncate(),
-                    )
-                    .child(quiet(unit).whitespace_nowrap()),
-            )
+            let compact = height < 60.;
+            let reading = if compact { row() } else { col() };
+            reading
+                .flex_1()
+                .gap(r(4.))
+                .child(quiet(label).truncate())
+                .child(
+                    row()
+                        .items_baseline()
+                        .gap(r(4.))
+                        .child(
+                            mono(number)
+                                .text_size(r(if height >= 75. { 22. } else { 14. }))
+                                .text_color(c(color))
+                                .truncate(),
+                        )
+                        .child(quiet(unit).whitespace_nowrap()),
+                )
         };
         col()
             .flex_1()
@@ -194,13 +226,15 @@ impl Dashboard {
                     .child(network_rate("Download", self.metrics.download, AMBER))
                     .child(network_rate("Upload", self.metrics.upload, BLUE)),
             )
-            .child(graph(
-                self.history.download.clone(),
-                Some(self.history.upload.clone()),
-                top,
-                AMBER,
-            ))
-            .when(tall, |it| {
+            .when(height >= 75., |it| {
+                it.child(graph(
+                    self.history.download.clone(),
+                    Some(self.history.upload.clone()),
+                    top,
+                    AMBER,
+                ))
+            })
+            .when(height >= 105., |it| {
                 it.child(quiet(if self.metrics.network_available {
                     "Last 60 seconds"
                 } else {
@@ -209,7 +243,13 @@ impl Dashboard {
             })
     }
 
-    fn media_widget(&self, wide: bool, tall: bool, cx: &Context<Self>) -> AnyElement {
+    fn media_widget(
+        &self,
+        wide: bool,
+        show_progress: bool,
+        height: f32,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let Some(player) = self.current_player() else {
             return message(
                 if self.media.issue.is_some() {
@@ -229,9 +269,12 @@ impl Dashboard {
         };
         let track = player.track.as_ref();
         let art = track.and_then(|track| track.artwork.clone());
-        let cover = if wide && tall {
+        let spacious = height >= 170.;
+        let show_progress = show_progress && height >= 78.;
+        let inline_transport = height < if show_progress { 112. } else { 82. };
+        let cover = if wide && spacious {
             96.
-        } else if tall {
+        } else if spacious {
             65.
         } else {
             38.
@@ -244,18 +287,18 @@ impl Dashboard {
 
         col()
             .flex_1()
-            .gap(r(if tall { 11. } else { 5. }))
+            .gap(r(if spacious { 11. } else { 5. }))
             .child(
                 row()
                     .min_h_0()
                     .flex_1()
                     .gap(r(10.))
-                    .child(album_art(art, cover))
+                    .when(height >= cover, |it| it.child(album_art(art, cover)))
                     .child(
                         col()
                             .flex_1()
                             .gap(r(3.))
-                            .when(tall, |it| {
+                            .when(spacious, |it| {
                                 it.child(row().gap(r(5.)).child(dot(color)).child(quiet(status)))
                             })
                             .child(
@@ -269,38 +312,51 @@ impl Dashboard {
                                             .unwrap_or_else(|| player.name.clone()),
                                     ),
                             )
-                            .child(
-                                quiet(
-                                    track
-                                        .filter(|track| !track.artist.is_empty())
-                                        .map(|track| track.artist.clone())
-                                        .unwrap_or_else(|| player.name.clone()),
+                            .when(height >= 45., |it| {
+                                it.child(
+                                    quiet(
+                                        track
+                                            .filter(|track| !track.artist.is_empty())
+                                            .map(|track| track.artist.clone())
+                                            .unwrap_or_else(|| player.name.clone()),
+                                    )
+                                    .truncate(),
                                 )
-                                .truncate(),
-                            ),
-                    ),
+                            })
+                            .when(spacious && wide, |it| {
+                                it.when_some(
+                                    track.filter(|track| !track.album.is_empty()),
+                                    |it, track| it.child(quiet(track.album.clone()).truncate()),
+                                )
+                            }),
+                    )
+                    .when(inline_transport && height >= 30., |it| {
+                        it.child(self.media_transport(player, true, cx))
+                    }),
             )
-            .when(tall, |it| it.child(self.media_progress(player, cx)))
-            .child(self.media_transport(player, true, cx))
+            .when(show_progress, |it| {
+                it.child(self.media_progress(player, cx))
+            })
+            .when(!inline_transport, |it| {
+                it.child(self.media_transport(player, !spacious, cx))
+            })
             .into_any_element()
     }
 
-    fn audio_widget(&self, tall: bool, cx: &Context<Self>) -> AnyElement {
+    fn audio_widget(&self, cx: &Context<Self>) -> AnyElement {
         let devices: Vec<_> = [AudioKind::Output, AudioKind::Input]
             .into_iter()
             .flat_map(|kind| {
                 self.visible_audio_devices()
                     .filter(move |channel| channel.id.kind == kind)
             })
-            .take(if tall { usize::MAX } else { 1 })
             .collect();
+        if let Some(issue) = &self.audio.issue {
+            return message("Audio server unavailable", issue).into_any_element();
+        }
         if devices.is_empty() {
             return message(
-                if self.audio.issue.is_some() {
-                    "Audio server unavailable"
-                } else {
-                    "No audio devices shown"
-                },
+                "No audio devices shown",
                 "Choose devices in Settings → Audio devices.",
             )
             .into_any_element();
@@ -310,139 +366,8 @@ impl Dashboard {
             .id("home-audio-devices")
             .flex_1()
             .overflow_y_scroll()
-            .child(
-                col()
-                    .gap(r(12.))
-                    .flex_none()
-                    .children(devices.into_iter().map(|device| {
-                        let description = if device.id.kind == AudioKind::Output {
-                            "Output"
-                        } else {
-                            "Microphone"
-                        };
-                        self.audio_widget_device(device, description, cx)
-                    })),
-            )
-            .into_any_element()
-    }
-
-    fn audio_widget_device(
-        &self,
-        device: &AudioChannel,
-        description: &'static str,
-        cx: &Context<Self>,
-    ) -> impl IntoElement {
-        col()
-            .gap(r(4.))
-            .flex_none()
-            .child(quiet(description))
-            .child(
-                div()
-                    .text_size(r(15.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .truncate()
-                    .child(device.label.clone()),
-            )
-            .child(self.audio_levels(device, cx))
-    }
-
-    fn discord_widget(&self, wide: bool, tall: bool, cx: &Context<Self>) -> AnyElement {
-        if let DiscordState::Connected(voice) = &self.discord {
-            let status = voice
-                .channel
-                .as_ref()
-                .map(|channel| {
-                    (
-                        channel.name.clone(),
-                        format!("{} in voice", channel.members.len()),
-                    )
-                })
-                .unwrap_or_else(|| ("No active voice channel".into(), voice.account.clone()));
-            return col()
-                .flex_1()
-                .justify_center()
-                .gap(r(8.))
-                .when(tall, |it| {
-                    it.child(row().gap(r(6.)).child(dot(TEAL)).child(quiet("Connected")))
-                })
-                .child(
-                    div()
-                        .text_size(r(18.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .truncate()
-                        .child(status.0),
-                )
-                .child(quiet(status.1).truncate())
-                .child(
-                    row()
-                        .gap(r(6.))
-                        .flex_none()
-                        .child(discord_button(
-                            "home-mute",
-                            if voice.muted { Icon::MicOff } else { Icon::Mic },
-                            if voice.muted { "Unmute" } else { "Mute" },
-                            voice.muted.then_some(AMBER),
-                            || DiscordAction::ToggleMute,
-                            cx,
-                        ))
-                        .child(discord_button(
-                            "home-deafen",
-                            Icon::Headphones,
-                            if voice.deafened { "Undeafen" } else { "Deafen" },
-                            voice.deafened.then_some(AMBER),
-                            || DiscordAction::ToggleDeafen,
-                            cx,
-                        ))
-                        .when(wide && voice.channel.is_some(), |it| {
-                            it.child(discord_button(
-                                "home-leave",
-                                Icon::Phone,
-                                "Leave call",
-                                Some(RED),
-                                || DiscordAction::Leave,
-                                cx,
-                            ))
-                        }),
-                )
-                .into_any_element();
-        }
-
-        let (heading, detail) = match &self.discord {
-            DiscordState::Unconfigured => {
-                ("Discord voice", "Set up Discord to see your voice channel.")
-            }
-            DiscordState::Authorizing => (
-                "Waiting for Discord",
-                "Approve the request in Discord desktop.",
-            ),
-            DiscordState::Error(error) => ("Discord connection failed", error.as_str()),
-            _ => (
-                "Discord disconnected",
-                "Connect to see your channel and participants.",
-            ),
-        };
-        let view = cx.entity();
-        message(heading, detail)
-            .when(!matches!(self.discord, DiscordState::Authorizing), |it| {
-                it.child(row().child(bind(
-                    button("home-discord-setup", Some(VIOLET)).child(
-                        if matches!(self.discord, DiscordState::Unconfigured) {
-                            "Set up Discord"
-                        } else {
-                            "Connect"
-                        },
-                    ),
-                    move |window, cx| {
-                        view.update(cx, |this, cx| {
-                            if matches!(this.discord, DiscordState::Unconfigured) {
-                                this.open_settings(Section::Discord, window, cx);
-                            } else {
-                                this.send_discord(DiscordAction::Connect);
-                            }
-                        })
-                    },
-                )))
-            })
+            .gap(r(6.))
+            .children(devices.into_iter().map(|device| self.channel(device, cx)))
             .into_any_element()
     }
 }
@@ -451,14 +376,15 @@ fn percent_text(value: Option<f32>) -> String {
     value.map_or_else(|| "—".into(), |value| format!("{value:.0}%"))
 }
 
-fn metric(name: &'static str, value: String, color: u32, spacious: bool) -> Div {
-    col()
+fn metric(name: &'static str, value: String, color: u32, height: f32) -> Div {
+    let presentation = if height >= 105. { col() } else { row() };
+    presentation
         .flex_1()
-        .gap(r(4.))
+        .gap(r(5.))
         .child(quiet(name).truncate())
         .child(
             mono(value)
-                .text_size(r(if spacious { 33. } else { 22. }))
+                .text_size(r(if height >= 170. { 33. } else { 21. }))
                 .text_color(c(color))
                 .truncate(),
         )

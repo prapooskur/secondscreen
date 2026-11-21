@@ -1,4 +1,4 @@
-use gpui::{AnyElement, Context, ElementId, FontWeight, IntoElement, Styled, div, prelude::*};
+use gpui::{AnyElement, Context, ElementId, IntoElement, Styled, div, prelude::*};
 
 use super::{
     Dashboard,
@@ -9,73 +9,10 @@ use super::{
 use crate::model::{AudioAction, AudioChannel, AudioKind};
 
 impl Dashboard {
-    pub(super) fn audio_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let heading = section_header("Audio mixer", None);
-        let Some(issue) = self.audio.issue.as_deref() else {
-            return col().flex_1().gap(r(12.)).child(heading).child(
-                split()
-                    .flex_1()
-                    .gap(r(12.))
-                    .min_h_0()
-                    .child(self.device_panel(cx))
-                    .child(self.stream_panel(cx)),
-            );
-        };
-        col()
-            .flex_1()
-            .gap(r(12.))
-            .child(heading)
-            .child(panel().flex_1().child(empty(
-                Icon::Audio,
-                AMBER,
-                "Audio server unavailable",
-                issue.to_owned(),
-            )))
-    }
-
-    fn device_panel(&self, cx: &Context<Self>) -> impl IntoElement {
-        panel()
-            .w(gpui::relative(0.43))
-            .overflow_hidden()
-            .child(panel_header(Icon::Speaker, TEAL, "Devices", None))
-            .child(
-                col()
-                    .id("devices")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .p(r(10.))
-                    .gap(r(8.))
-                    .children(
-                        [AudioKind::Output, AudioKind::Input]
-                            .into_iter()
-                            .map(|kind| {
-                                let channels: Vec<_> = self
-                                    .visible_audio_devices()
-                                    .filter(|channel| channel.id.kind == kind)
-                                    .collect();
-                                let (title, empty) = if kind == AudioKind::Output {
-                                    ("Output", "No outputs shown")
-                                } else {
-                                    ("Microphone", "No microphones shown")
-                                };
-                                col()
-                                    .gap(r(4.))
-                                    .flex_none()
-                                    .child(quiet(title).font_weight(FontWeight::SEMIBOLD))
-                                    .when(channels.is_empty(), |it| {
-                                        it.child(quiet(empty).py(r(4.)))
-                                    })
-                                    .children(
-                                        channels
-                                            .into_iter()
-                                            .map(|channel| self.channel(channel, cx)),
-                                    )
-                            }),
-                    ),
-            )
-    }
-
-    fn stream_panel(&self, cx: &Context<Self>) -> impl IntoElement {
+    pub(super) fn mixer_widget(&self, cx: &Context<Self>) -> impl IntoElement {
+        if let Some(error) = &self.audio.issue {
+            return quiet(error.clone()).into_any_element();
+        }
         let view = cx.entity();
         if let Some(stream) = self
             .routing
@@ -84,8 +21,9 @@ impl Dashboard {
         {
             let back = bind(
                 button("routing-back", None).h(r(28.)).child("Back"),
-                move |_, cx| {
+                move |window, cx| {
                     view.update(cx, |this, cx| {
+                        this.focus_dashboard(window, cx);
                         this.routing = None;
                         cx.notify();
                     });
@@ -97,26 +35,24 @@ impl Dashboard {
                 AudioKind::Input
             };
             let devices: Vec<_> = self
-                .audio
-                .channels
-                .iter()
+                .visible_audio_devices()
                 .filter(|channel| channel.id.kind == device_kind)
                 .collect();
-            return panel()
+            return col()
                 .flex_1()
                 .overflow_hidden()
-                .child(panel_header(
-                    Icon::Audio,
-                    VIOLET,
-                    "Route audio",
-                    Some(back.into_any_element()),
-                ))
+                .child(
+                    row()
+                        .justify_between()
+                        .child(label("Route audio"))
+                        .child(back),
+                )
                 .child(
                     col()
                         .id("route-devices")
                         .flex_1()
                         .overflow_y_scroll()
-                        .p(r(12.))
+                        .py(r(4.))
                         .gap(r(6.))
                         .child(quiet(stream.label.clone()).w_full().flex_none().truncate())
                         .when(devices.is_empty(), |it| {
@@ -139,8 +75,9 @@ impl Dashboard {
                                     13.,
                                 ))
                                 .child(div().truncate().child(device.label.clone())),
-                                move |_, cx| {
+                                move |window, cx| {
                                     view.update(cx, |this, cx| {
+                                        this.focus_dashboard(window, cx);
                                         this.send_audio(AudioAction::Route(
                                             stream_id.clone(),
                                             device_id.clone(),
@@ -151,7 +88,8 @@ impl Dashboard {
                                 },
                             )
                         })),
-                );
+                )
+                .into_any_element();
         }
 
         let tabs = row().gap(r(5.)).children(
@@ -182,15 +120,11 @@ impl Dashboard {
             .iter()
             .filter(|channel| channel.id.kind == self.audio_kind)
             .collect();
-        panel()
+        col()
             .flex_1()
             .overflow_hidden()
-            .child(panel_header(
-                Icon::Audio,
-                VIOLET,
-                "Applications",
-                Some(tabs.into_any_element()),
-            ))
+            .gap(r(6.))
+            .child(tabs)
             .when(streams.is_empty(), |it| {
                 it.child(empty(
                     Icon::Audio,
@@ -209,18 +143,15 @@ impl Dashboard {
                         .id("streams")
                         .flex_1()
                         .overflow_y_scroll()
-                        .p(r(12.))
+                        .py(r(4.))
                         .gap(r(6.))
                         .children(streams.into_iter().map(|channel| self.channel(channel, cx))),
                 )
             })
+            .into_any_element()
     }
 
-    pub(super) fn audio_levels(
-        &self,
-        channel: &AudioChannel,
-        cx: &Context<Self>,
-    ) -> impl IntoElement {
+    fn audio_levels(&self, channel: &AudioChannel, cx: &Context<Self>) -> impl IntoElement {
         const LIMIT: f32 = 150.;
         let view = cx.entity();
         let kind = channel.id.kind;
@@ -290,7 +221,7 @@ impl Dashboard {
             .child(percent)
     }
 
-    fn channel(&self, channel: &AudioChannel, cx: &Context<Self>) -> impl IntoElement {
+    pub(super) fn channel(&self, channel: &AudioChannel, cx: &Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         let kind = channel.id.kind;
         let key = kind_key(kind);
@@ -337,8 +268,9 @@ impl Dashboard {
                     .max_w(r(150.))
                     .child(div().truncate().child(route_name))
                     .child(icon(Icon::Chevron, c(MUTED), 12.)),
-                move |_, cx| {
+                move |window, cx| {
                     view.update(cx, |this, cx| {
+                        this.focus_dashboard(window, cx);
                         this.routing = Some(route.clone());
                         cx.notify();
                     })
@@ -356,55 +288,28 @@ impl Dashboard {
             .border_color(c(STROKE))
             .rounded(r(8.));
 
-        if device {
-            surface.child(
+        surface
+            .px(r(7.))
+            .py(r(5.))
+            .gap(r(3.))
+            .child(
                 row()
-                    .h(r(40.))
-                    .gap(r(8.))
-                    .px(r(8.))
-                    .child(name.flex_none().w(gpui::relative(0.25)))
-                    .child(meter)
+                    .gap(r(5.))
+                    .child(
+                        col()
+                            .flex_1()
+                            .child(name)
+                            .when(device, |it| {
+                                it.child(quiet(if recording { "Microphone" } else { "Output" }))
+                            })
+                            .when(!device && !channel.detail.is_empty(), |it| {
+                                it.child(quiet(channel.detail.clone()).truncate())
+                            }),
+                    )
                     .child(control),
             )
-        } else {
-            surface
-                .px(r(9.))
-                .py(r(5.))
-                .gap(r(2.))
-                .child(
-                    row()
-                        .gap(r(8.))
-                        .child(
-                            col()
-                                .flex_1()
-                                .child(name)
-                                .when(!channel.detail.is_empty(), |it| {
-                                    it.child(quiet(channel.detail.clone()).truncate())
-                                }),
-                        )
-                        .child(control),
-                )
-                .child(meter)
-        }
+            .child(meter)
     }
-}
-
-fn panel_header(
-    symbol: Icon,
-    accent: u32,
-    name: &str,
-    control: Option<AnyElement>,
-) -> impl IntoElement {
-    row()
-        .h(r(50.))
-        .px(r(12.))
-        .flex_none()
-        .gap(r(8.))
-        .border_b_1()
-        .border_color(c(STROKE))
-        .child(icon_tile(symbol, accent, 28.))
-        .child(label(name.to_owned()).flex_1().text_color(c(INK)))
-        .children(control)
 }
 
 fn kind_key(kind: AudioKind) -> &'static str {

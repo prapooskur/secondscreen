@@ -1,14 +1,15 @@
 use std::time::Instant;
-use sysinfo::{Components, DiskRefreshKind, Disks, Gpus, Networks, System};
+use sysinfo::{Components, Gpus, Networks, System};
 
-use crate::model::{DiskUsage, Gpu, Metrics};
+use crate::model::{Gpu, Metrics};
+
+mod storage;
 
 pub struct Monitor {
     system: System,
     components: Option<Components>,
     gpus: Option<Gpus>,
     networks: Option<Networks>,
-    disks: Option<Disks>,
     last_sample: Option<Instant>,
     host: Option<String>,
 }
@@ -20,7 +21,6 @@ impl Monitor {
             components: Components::new().ok(),
             gpus: Gpus::new().ok(),
             networks: Networks::new().ok(),
-            disks: Disks::new().ok(),
             last_sample: None,
             host: None,
         })
@@ -103,40 +103,8 @@ impl Monitor {
             download: elapsed.map_or(0.0, |seconds| received as f32 / seconds),
             upload: elapsed.map_or(0.0, |seconds| sent as f32 / seconds),
             network_available,
-            storage: self.storage(),
+            storage: storage::sample(),
         }
-    }
-
-    fn storage(&mut self) -> Vec<DiskUsage> {
-        let mut volumes = Vec::new();
-        if let Some(disks) = &mut self.disks {
-            disks.refresh_specifics(true, DiskRefreshKind::nothing().with_storage());
-            volumes.extend(disks.iter().filter_map(|disk| {
-                let total = disk.total_space();
-                let mount = disk.mount_point();
-                (total > 0 && mount.is_dir()).then(|| DiskUsage {
-                    mount: mount.to_string_lossy().into_owned(),
-                    used: total.saturating_sub(disk.available_space()),
-                    total,
-                })
-            }));
-        }
-        if !volumes.iter().any(|disk| disk.mount == "/")
-            && let Ok(root) = rustix::fs::statvfs("/")
-        {
-            let total = root.f_blocks.saturating_mul(root.f_frsize);
-            if total > 0 {
-                let available = root.f_bavail.saturating_mul(root.f_frsize);
-                volumes.push(DiskUsage {
-                    mount: "/".into(),
-                    used: total.saturating_sub(available),
-                    total,
-                });
-            }
-        }
-        volumes.sort_by(|a, b| a.mount.cmp(&b.mount));
-        volumes.dedup_by(|a, b| a.mount == b.mount);
-        volumes
     }
 
     fn cpu_temperature(&self) -> Option<f32> {

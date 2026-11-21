@@ -1,6 +1,6 @@
 use gpui::{
-    AnyElement, App, Div, ElementId, FontWeight, Hsla, IntoElement, Rems, Stateful, Window, div,
-    prelude::*, rems, rgb,
+    App, Div, ElementId, FontWeight, Hsla, IntoElement, Rems, Stateful, Window, div, prelude::*,
+    rems, rgb,
 };
 
 use super::icons::{Icon, icon};
@@ -129,20 +129,11 @@ pub fn bind(
     button: Stateful<Div>,
     action: impl Fn(&mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
-    use std::rc::Rc;
-    let action = Rc::new(action);
-    let keyboard = action.clone();
     button
         .cursor_pointer()
         .tab_index(0)
         .focus(|it| it.border_color(c(TEAL)))
         .on_click(move |_, window, cx| action(window, cx))
-        .on_key_down(move |event, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") && !event.is_held {
-                cx.stop_propagation();
-                keyboard(window, cx);
-            }
-        })
 }
 
 pub fn disabled(button: Stateful<Div>) -> Stateful<Div> {
@@ -164,14 +155,4 @@ pub fn empty(symbol: Icon, accent: u32, heading: &str, help: impl IntoElement) -
                 .child(heading.to_owned()),
         )
         .child(quiet(help).text_center())
-}
-
-pub fn section_header(heading: &str, right: Option<AnyElement>) -> Div {
-    row()
-        .w_full()
-        .justify_between()
-        .gap(r(12.))
-        .flex_none()
-        .child(title(heading.to_owned()))
-        .children(right)
 }

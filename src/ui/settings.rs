@@ -1,6 +1,8 @@
 use std::{collections::BTreeMap, time::Instant};
 
-use gpui::{Context, Entity, IntoElement, SharedString, Styled, Window, div, prelude::*};
+use gpui::{
+    Context, Entity, FocusHandle, IntoElement, SharedString, Styled, Window, div, prelude::*,
+};
 
 use crate::{
     config::{DiscordCredentials, Preferences},
@@ -8,7 +10,7 @@ use crate::{
 };
 
 use super::{
-    Dashboard, Page, Tooltip,
+    CONTENT_X, CONTENT_Y, Dashboard, Tooltip,
     credential_input::CredentialInput,
     icons::{Icon, icon},
     monitor::capacity,
@@ -48,17 +50,32 @@ impl Section {
         match self {
             Self::Media => &mut preferences.hidden_media,
             Self::Audio => &mut preferences.hidden_audio,
-            Self::Storage => &mut preferences.hidden_disks,
+            Self::Storage => &mut preferences.hidden_drives,
             _ => unreachable!(),
         }
     }
 }
 
-#[derive(Default)]
 pub(super) struct SettingsView {
-    section: Section,
+    pub(super) open: bool,
+    pub(super) section: Section,
+    pub(super) focus: FocusHandle,
+    previous_focus: Option<FocusHandle>,
     discord_fields: Option<DiscordFields>,
     discord_saved: bool,
+}
+
+impl SettingsView {
+    pub(super) fn new(focus: FocusHandle) -> Self {
+        Self {
+            open: false,
+            section: Section::default(),
+            focus,
+            previous_focus: None,
+            discord_fields: None,
+            discord_saved: false,
+        }
+    }
 }
 
 struct DiscordFields {
@@ -98,19 +115,66 @@ impl Dashboard {
         cx: &mut Context<Self>,
     ) {
         self.settings.section = section;
-        self.select(Page::Settings, window, cx);
+        if !self.settings.open {
+            self.settings.previous_focus = window.focused(cx);
+            self.settings.open = true;
+            self.gesture.borrow_mut().take();
+            self.focus_settings(window, cx);
+        }
         cx.notify();
     }
 
-    pub(super) fn settings_page(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn focus_settings(&self, window: &mut Window, _cx: &mut Context<Self>) {
+        #[cfg(feature = "ui-gpui")]
+        window.focus(&self.settings.focus);
+        #[cfg(not(feature = "ui-gpui"))]
+        window.focus(&self.settings.focus, _cx);
+    }
+
+    pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.open {
+            self.settings.open = false;
+            let previous = self
+                .settings
+                .previous_focus
+                .take()
+                .filter(|focus| self.focus.contains(focus, window))
+                .unwrap_or_else(|| self.focus.clone());
+            #[cfg(feature = "ui-gpui")]
+            window.focus(&previous);
+            #[cfg(not(feature = "ui-gpui"))]
+            window.focus(&previous, cx);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn settings_overlay(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        split()
+            .absolute()
+            .inset_0()
+            .justify_end()
+            .px(r(CONTENT_X))
+            .py(r(CONTENT_Y))
+            .child(
+                div()
+                    .id("settings-backdrop")
+                    .absolute()
+                    .inset_0()
+                    .bg(c(BACK).opacity(0.52))
+                    .occlude()
+                    .on_click(cx.listener(|this, _, window, cx| this.close_settings(window, cx))),
+            )
+            .child(self.settings_panel(cx))
+    }
+
+    fn settings_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let section = self.settings.section;
         let view = cx.entity();
-        let sidebar = panel()
+        let tabs = row()
+            .flex_wrap()
             .id("settings-categories")
-            .w(r(190.))
             .flex_none()
             .gap(r(5.))
-            .p(r(9.))
             .children(Section::ALL.map(|section| {
                 let (name, symbol, accent) = section.presentation();
                 let active = section == self.settings.section;
@@ -118,7 +182,8 @@ impl Dashboard {
                 bind(
                     button(name, active.then_some(accent))
                         .justify_start()
-                        .h(r(39.))
+                        .h(r(29.))
+                        .px(r(8.))
                         .child(icon(symbol, c(if active { accent } else { MUTED }), 16.))
                         .child(name),
                     move |window, cx| {
@@ -131,27 +196,42 @@ impl Dashboard {
             Section::Discord => self.discord_settings(cx).into_any_element(),
             _ => self.visibility_settings(section, cx).into_any_element(),
         };
-        col()
-            .gap(r(12.))
-            .flex_1()
-            .child(section_header("Settings", None))
+        panel()
+            .id("settings-panel")
+            .w(r(540.))
+            .max_w_full()
+            .h_full()
+            .flex_none()
+            .occlude()
+            .track_focus(&self.settings.focus)
+            .tab_index(0)
+            .tab_stop(false)
+            .tab_group()
+            .overflow_hidden()
+            .p(r(12.))
+            .gap(r(9.))
             .child(
-                split().flex_1().min_h_0().gap(r(12.)).child(sidebar).child(
-                    panel().flex_1().overflow_hidden().child(
-                        col()
-                            .id(("settings-content", section as usize))
-                            .flex_1()
-                            .overflow_y_scroll()
-                            .p(r(14.))
-                            .child(body),
-                    ),
-                ),
+                row().justify_between().child(title("Settings")).child(bind(
+                    button("dismiss-settings", None)
+                        .size(r(28.))
+                        .px_0()
+                        .child(icon(Icon::Close, c(TEXT), 14.))
+                        .tooltip(|_, cx| cx.new(|_| Tooltip("Close settings".into())).into()),
+                    move |window, cx| view.update(cx, |this, cx| this.close_settings(window, cx)),
+                )),
+            )
+            .child(tabs)
+            .child(
+                col()
+                    .id(("settings-content", section as usize))
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .child(body),
             )
     }
 
     fn general_settings(&self, cx: &Context<Self>) -> impl IntoElement {
         let view = cx.entity();
-        let layout = view.clone();
         col()
             .gap(r(12.))
             .flex_none()
@@ -176,38 +256,24 @@ impl Dashboard {
                     },
                 ),
             ))
-            .child(preference_row(
-                "home-layout-row",
-                "Home layout",
-                "Add, arrange, and resize widgets.",
-                bind(
-                    button("settings-edit-home", None).child("Edit layout"),
-                    move |window, cx| {
-                        layout.update(cx, |this, cx| {
-                            this.select(Page::Home, window, cx);
-                            this.home.edit();
-                        });
-                    },
-                ),
-            ))
     }
 
     fn visibility_settings(&self, section: Section, cx: &Context<Self>) -> impl IntoElement {
         let (title_text, hint, empty) = match section {
             Section::Media => (
                 "Media apps",
-                "Choose which apps appear in Media and Now Playing.",
+                "Choose which apps appear in the Now playing widget.",
                 "Open a media app that supports MPRIS to see it here.",
             ),
             Section::Audio => (
                 "Audio devices",
-                "Choose which outputs and microphones appear in Audio and on Home.",
+                "Choose which outputs and microphones appear in the Audio widget.",
                 "Connect an audio device to see it here.",
             ),
             Section::Storage => (
                 "Storage",
-                "Choose which mounted volumes appear in System and on Home.",
-                "Mounted volumes with capacity information appear here.",
+                "Choose which drives appear in the Storage widget.",
+                "Detected drives appear here.",
             ),
             _ => unreachable!(),
         };
@@ -238,18 +304,18 @@ impl Dashboard {
                     .collect(),
             ),
             Section::Storage => (
-                &self.preferences.hidden_disks,
+                &self.preferences.hidden_drives,
                 self.metrics
                     .storage
                     .iter()
                     .map(|disk| {
-                        (
-                            disk.mount.clone(),
-                            (
-                                disk.mount.clone(),
-                                format!("{} total", capacity(disk.total)),
-                            ),
-                        )
+                        let total = format!("{} total", capacity(disk.total));
+                        let detail = if disk.device == disk.label {
+                            total
+                        } else {
+                            format!("{} · {total}", disk.device)
+                        };
+                        (disk.id.clone(), (disk.label.clone(), detail))
                     })
                     .collect(),
             ),
@@ -341,7 +407,6 @@ impl Dashboard {
         let view = cx.entity();
         let clear = view.clone();
         let from_env = view.clone();
-        let open = view.clone();
         let save = bind(
             button("save-discord-settings", Some(VIOLET)).child("Save credentials"),
             {
@@ -372,7 +437,7 @@ impl Dashboard {
         let note = if using_environment {
             "Using credentials from the environment."
         } else if self.settings.discord_saved {
-            "Credentials saved. Connect from Discord voice."
+            "Credentials saved. Connect from the Discord widget."
         } else {
             "Enter your application ID and either a client secret or an access token."
         };
@@ -414,14 +479,6 @@ impl Dashboard {
                                 from_env.update(cx, |this, cx| this.save_discord(None, window, cx))
                             },
                         ))
-                    })
-                    .when(saved || using_environment, |row| {
-                        row.child(bind(
-                            button("open-discord-controls", None).child("Discord voice"),
-                            move |window, cx| {
-                                open.update(cx, |this, cx| this.select(Page::Discord, window, cx))
-                            },
-                        ))
                     }),
             )
     }
@@ -436,7 +493,7 @@ impl Dashboard {
         let mut preferences = self.preferences.clone();
         preferences.discord = credentials.clone();
         if self.save_preferences(preferences, cx) {
-            self.focus_dashboard(window, cx);
+            self.focus_settings(window, cx);
             self.settings.discord_fields = None;
             self.settings.discord_saved =
                 credentials.as_ref().is_some_and(DiscordCredentials::valid);
@@ -490,7 +547,7 @@ fn preference_row(
                         .truncate()
                         .tooltip(move |_, cx| cx.new(|_| Tooltip(name.clone())).into()),
                 )
-                .child(quiet(detail.into()).truncate()),
+                .child(quiet(detail.into())),
         )
         .child(control)
 }

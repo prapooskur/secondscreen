@@ -8,18 +8,24 @@ use gpui::{
     canvas, div, prelude::*,
 };
 
-use self::layout::{
-    Kind, Layout, MAX_COLUMNS, MAX_ROWS, MIN_ROWS, Placement, Widget, shifted_span,
-};
+pub(super) use self::layout::Kind;
+use self::layout::{Layout, MAX_COLUMNS, MAX_ROWS, MIN_ROWS, Placement, Widget, shifted_span};
 use super::{
-    Dashboard, Page, Tooltip,
+    Dashboard, Tooltip,
     icons::{Icon, icon},
     theme::*,
+    window_control,
 };
 
 const GAP: f32 = 12.;
+const VISIBLE_ROWS: u8 = 4;
+const REFERENCE_ROWS: u8 = 3;
+const REFERENCE_COLUMNS: u8 = 4;
+const MIN_COLUMN_WIDTH: f32 = 232.;
 const HEADING_HEIGHT: f32 = 37.;
 const EDIT_HEADING_HEIGHT: f32 = 60.;
+const WIDGET_HEADER_HEIGHT: f32 = 29.;
+const RESIZE_CONTROL_HEIGHT: f32 = 28.;
 
 pub(super) struct Home {
     layout: Layout,
@@ -45,13 +51,22 @@ struct Grid {
 }
 
 impl Grid {
-    fn new(width: f32, height: f32) -> Self {
-        let width = width.max(1.);
-        let columns = (((width + GAP) / (232. + GAP)).floor() as u8).clamp(1, MAX_COLUMNS);
+    fn new(available_width: f32, available_height: f32) -> Self {
+        let available_width = available_width.max(1.);
+        let fit_columns = |width: f32| {
+            (((available_width + GAP) / (width + GAP)).floor() as u8).clamp(1, MAX_COLUMNS)
+        };
+        let row_height = |rows| ((available_height + GAP) / f32::from(rows) - GAP).max(1.);
+        let reference_columns = fit_columns(MIN_COLUMN_WIDTH).min(REFERENCE_COLUMNS);
+        let reference_width = (available_width + GAP) / f32::from(reference_columns) - GAP;
+        let height = row_height(VISIBLE_ROWS);
+        let reference_height = row_height(REFERENCE_ROWS).clamp(80., 118.);
+        let width = (reference_width * height / reference_height)
+            .clamp(MIN_COLUMN_WIDTH.min(available_width), available_width);
         Self {
-            columns,
-            width: (width - GAP * f32::from(columns - 1)) / f32::from(columns),
-            height: ((height - 2. * GAP) / 3.).clamp(80., 118.),
+            columns: fit_columns(width),
+            width,
+            height,
         }
     }
 
@@ -85,15 +100,8 @@ impl Home {
         }
     }
 
-    pub(super) fn includes(&self, page: Page) -> bool {
-        self.layout
-            .widgets
-            .iter()
-            .any(|widget| widget.kind.page() == page)
-    }
-
-    pub(super) fn edit(&mut self) {
-        self.editing = true;
+    pub(super) fn contains(&self, kind: Kind) -> bool {
+        self.layout.widgets.iter().any(|widget| widget.kind == kind)
     }
 
     pub(super) fn leave(&mut self) {
@@ -149,8 +157,9 @@ impl Dashboard {
         width: f32,
         height: f32,
         scale: f32,
+        fullscreen: bool,
         cx: &Context<Self>,
-    ) -> impl IntoElement {
+    ) -> gpui::Div {
         let heading_height = if self.home.editing && !self.home.catalog {
             EDIT_HEADING_HEIGHT
         } else {
@@ -173,11 +182,12 @@ impl Dashboard {
                 col()
                     .id("home-widget-scroll")
                     .flex_1()
+                    .items_center()
                     .overflow_y_scroll()
                     .child(
                         div()
                             .relative()
-                            .w_full()
+                            .w(r(grid.span_width(grid.columns)))
                             .h(r(grid.span_height(rows)))
                             .flex_none()
                             .children(placements.into_iter().enumerate().map(|(index, tile)| {
@@ -192,14 +202,14 @@ impl Dashboard {
             .relative()
             .flex_1()
             .gap(r(GAP))
-            .child(self.home_heading(heading_height, cx))
+            .child(self.home_heading(heading_height, fullscreen, cx))
             .child(content)
             .when(self.home.resizing.is_some(), |it| {
                 it.child(self.track_resize(cx))
             })
     }
 
-    fn home_heading(&self, height: f32, cx: &Context<Self>) -> impl IntoElement {
+    fn home_heading(&self, height: f32, fullscreen: bool, cx: &Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         let editing = self.home.editing;
         let catalog = self.home.catalog;
@@ -212,8 +222,9 @@ impl Dashboard {
                     15.,
                 ))
                 .child(if editing { "Done" } else { "Edit layout" }),
-            move |_, cx| {
+            move |window, cx| {
                 view.update(cx, |this, cx| {
+                    this.close_settings(window, cx);
                     if this.home.editing {
                         this.home.leave();
                     } else {
@@ -231,8 +242,25 @@ impl Dashboard {
             .gap(r(12.))
             .child(
                 col()
+                    .flex_1()
+                    .justify_center()
+                    .h_full()
                     .gap(r(3.))
-                    .child(title(if catalog { "Add widgets" } else { "Home" }))
+                    .when(!fullscreen, |it| {
+                        it.cursor_move()
+                            .on_mouse_down(MouseButton::Left, |event, window, _| {
+                                if event.click_count == 2 {
+                                    window.zoom_window();
+                                } else {
+                                    window.start_window_move();
+                                }
+                            })
+                    })
+                    .child(title(if catalog {
+                        "Add widgets"
+                    } else {
+                        "Second Screen"
+                    }))
                     .when(editing && !catalog, |it| {
                         it.child(quiet("Drag a corner or use the size controls.").truncate())
                     }),
@@ -264,7 +292,49 @@ impl Dashboard {
                             },
                         ))
                     })
-                    .child(toggle),
+                    .child(toggle)
+                    .child(bind(
+                        button("settings", self.settings.open.then_some(TEAL))
+                            .child(icon(Icon::Settings, c(TEXT), 15.))
+                            .child("Settings"),
+                        {
+                            let view = cx.entity();
+                            move |window, cx| {
+                                view.update(cx, |this, cx| {
+                                    if this.settings.open {
+                                        this.close_settings(window, cx);
+                                    } else {
+                                        this.open_settings(this.settings.section, window, cx);
+                                    }
+                                })
+                            }
+                        },
+                    ))
+                    .child(window_control(
+                        if fullscreen {
+                            "Exit fullscreen (F11)"
+                        } else {
+                            "Fullscreen (F11)"
+                        },
+                        if fullscreen {
+                            Icon::Restore
+                        } else {
+                            Icon::Fullscreen
+                        },
+                        30.,
+                        |window| window.toggle_fullscreen(),
+                    ))
+                    .when(!fullscreen, |it| {
+                        it.child(window_control("Minimize", Icon::Minimize, 28., |window| {
+                            window.minimize_window()
+                        }))
+                        .child(window_control(
+                            "Close",
+                            Icon::Close,
+                            28.,
+                            |window| window.remove_window(),
+                        ))
+                    }),
             )
     }
 
@@ -279,9 +349,11 @@ impl Dashboard {
             .child(title("Your Home is empty"))
             .child(bind(
                 button("first-widget", Some(TEAL)).child("Add widget"),
-                move |_, cx| {
+                move |window, cx| {
                     view.update(cx, |this, cx| {
+                        this.close_settings(window, cx);
                         this.home.editing = true;
+                        this.focus_dashboard(window, cx);
                         this.home.catalog = true;
                         cx.notify();
                     });
@@ -305,12 +377,14 @@ impl Dashboard {
         col()
             .id("widget-catalog-scroll")
             .flex_1()
+            .items_center()
             .overflow_y_scroll()
             .when(available.is_empty(), |it| {
                 it.child(quiet("All widgets are on Home.").p(r(6.)))
             })
             .child(
                 split()
+                    .w(r(grid.span_width(grid.columns)))
                     .flex_wrap()
                     .gap(r(GAP))
                     .children(available.into_iter().map(|kind| {
@@ -330,7 +404,7 @@ impl Dashboard {
                                         .child(quiet(kind.description()).truncate()),
                                 )
                                 .child(icon(Icon::Plus, c(kind.accent()), 15.)),
-                            move |_, cx| {
+                            move |window, cx| {
                                 view.update(cx, |this, cx| {
                                     if !this
                                         .home
@@ -339,6 +413,7 @@ impl Dashboard {
                                         .iter()
                                         .any(|widget| widget.kind == kind)
                                     {
+                                        this.focus_dashboard(window, cx);
                                         this.home.layout.widgets.push(kind.widget());
                                         this.save_home(cx);
                                     }
@@ -360,8 +435,14 @@ impl Dashboard {
     ) -> impl IntoElement {
         let kind = tile.widget.kind;
         let editing = self.home.editing;
+        let height = grid.span_height(usize::from(tile.widget.rows));
+        let (padding, gap) = if height < 155. { (8., 6.) } else { (13., 11.) };
+        let mut content_height = height - 2. * (padding + 1.) - WIDGET_HEADER_HEIGHT - gap;
+        if editing {
+            content_height -= RESIZE_CONTROL_HEIGHT + gap;
+        }
         let view = cx.entity();
-        let tools = if editing {
+        let tools = editing.then(|| {
             row()
                 .gap(r(4.))
                 .child(self.widget_move(kind, -1, index > 0, cx))
@@ -373,9 +454,13 @@ impl Dashboard {
                         Icon::Close,
                         RED,
                     ),
-                    move |_, cx| {
+                    move |window, cx| {
                         view.update(cx, |this, cx| {
+                            this.focus_dashboard(window, cx);
                             this.home.resizing = None;
+                            if kind == Kind::Mixer {
+                                this.routing = None;
+                            }
                             this.home
                                 .layout
                                 .widgets
@@ -384,28 +469,16 @@ impl Dashboard {
                         })
                     },
                 ))
-                .into_any_element()
-        } else {
-            bind(
-                tile_button(
-                    ("widget-details", kind as usize),
-                    kind.page().label(),
-                    Icon::Chevron,
-                    MUTED,
-                ),
-                move |window, cx| view.update(cx, |this, cx| this.select(kind.page(), window, cx)),
-            )
-            .into_any_element()
-        };
+        });
 
         panel()
             .absolute()
             .top(r(tile.y as f32 * (grid.height + GAP)))
             .left(r(tile.x as f32 * (grid.width + GAP)))
             .w(r(grid.span_width(tile.columns)))
-            .h(r(grid.span_height(usize::from(tile.widget.rows))))
-            .p(r(13.))
-            .gap(r(11.))
+            .h(r(height))
+            .p(r(padding))
+            .gap(r(gap))
             .overflow_hidden()
             .when(editing, |it| {
                 it.border_color(c(kind.accent()).opacity(0.42))
@@ -419,12 +492,19 @@ impl Dashboard {
                         row()
                             .flex_1()
                             .gap(r(8.))
-                            .child(icon_tile(kind.icon(), kind.accent(), 29.))
+                            .child(icon_tile(kind.icon(), kind.accent(), WIDGET_HEADER_HEIGHT))
                             .child(label(kind.name()).text_color(c(INK)).truncate()),
                     )
-                    .child(tools),
+                    .children(tools)
+                    .when(!editing && kind == Kind::Media, |it| {
+                        it.children(self.player_control(cx))
+                    }),
             )
-            .child(self.widget_content(tile, cx))
+            .child(col().flex_1().overflow_hidden().child(self.widget_content(
+                tile,
+                content_height,
+                cx,
+            )))
             .when(editing, |it| {
                 it.child(
                     row()
@@ -668,8 +748,42 @@ fn tile_button(
 ) -> gpui::Stateful<gpui::Div> {
     button(id, None)
         .w(r(27.))
-        .h(r(28.))
+        .h(r(RESIZE_CONTROL_HEIGHT))
         .px_0()
         .child(icon(symbol, c(color), 14.))
         .tooltip(move |_, cx| cx.new(|_| Tooltip(description.into())).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn two_stacked_two_row_widgets_fill_the_visible_grid() {
+        for height in [276., 349., 600.] {
+            let grid = Grid::new(1400., height);
+            let stacked = 2. * grid.span_height(2) + GAP;
+            assert!((stacked - height).abs() < 0.001);
+            assert!(grid.span_height(5) > height);
+        }
+    }
+
+    #[test]
+    fn cells_preserve_the_three_row_aspect_ratio_on_an_ultrawide_display() {
+        let (width, height) = (1493., 349.);
+        let grid = Grid::new(width, height);
+        let old_width = (width - 3. * GAP) / 4.;
+        let old_height = (height - 2. * GAP) / 3.;
+        assert_eq!(grid.columns, 5);
+        assert!((grid.width / grid.height - old_width / old_height).abs() < 0.001);
+        assert!(grid.span_width(grid.columns) <= width);
+        assert!(grid.span_width(grid.columns + 1) > width);
+    }
+
+    #[test]
+    fn columns_keep_space_for_resize_controls_on_narrow_windows() {
+        let grid = Grid::new(900., 276.);
+        assert_eq!(grid.columns, 3);
+        assert_eq!(grid.width, MIN_COLUMN_WIDTH);
+    }
 }
