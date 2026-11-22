@@ -238,8 +238,7 @@ impl Dashboard {
     }
 
     fn widget_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        const LAUNCH: &str =
-            r#"gamescope --stats-path "$XDG_RUNTIME_DIR/secondscreen-fps" -- %command%"#;
+        use super::utilities::FPS_LAUNCH_OPTIONS;
         let (zones, location) = self
             .settings
             .widget_fields
@@ -351,7 +350,7 @@ impl Dashboard {
             .child(
                 row()
                     .justify_between()
-                    .child(label("Steam launch options for FPS"))
+                    .child(label("Steam launch options for MangoHud FPS"))
                     .child(bind(
                         button("copy-launch-options", None)
                             .h(r(25.))
@@ -359,12 +358,15 @@ impl Dashboard {
                             .child("Copy"),
                         |_, cx| {
                             cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                LAUNCH.to_owned(),
+                                FPS_LAUNCH_OPTIONS.to_owned(),
                             ))
                         },
                     )),
             )
-            .child(quiet(LAUNCH))
+            .child(quiet(
+                "Install MangoHud to track current FPS, 1% low, and 0.1% low.",
+            ))
+            .child(quiet(FPS_LAUNCH_OPTIONS))
     }
 
     fn general_settings(&self, cx: &Context<Self>) -> impl IntoElement {

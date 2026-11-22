@@ -35,7 +35,7 @@ cargo run --release --locked --no-default-features --features ui-gpui-fast
 
 Choose **Edit layout** to add widgets from the catalog, remove them with **×**, or change their order with the arrows in each card header. Drag a card’s bottom-right corner to resize. Use the width and height controls for single steps, or focus the corner and press the arrow keys. Choose **Done** to return to Home.
 
-Home fits four grid rows and up to five columns in the visible area. Widgets can span two to five rows. Scroll down when the layout grows past the visible area. The app keeps each widget’s requested size when space is limited and saves the layout in `${XDG_CONFIG_HOME:-~/.config}/secondscreen/home.json`.
+Home fits four grid rows and up to five columns in the visible area. Widgets can span two to four visible rows. When the grid extends to the right, scroll horizontally with a trackpad, use **Shift** + mouse wheel, or use the arrows in the right-hand rail. The app keeps each widget’s requested size when space is limited and saves the layout in `${XDG_CONFIG_HOME:-~/.config}/secondscreen/home.json`.
 
 ## Configure Performance
 
@@ -73,7 +73,13 @@ Add these tiles from **Edit layout → Add widget**. Open **Settings → Widgets
 - **Calendar** shows the local month and highlights today. Use the arrows to browse months. Click the month name to return to today.
 - **Weather / AQI** shows current conditions, wind, sunrise and sunset, US AQI, and a ten-day forecast with daily highs and lows. Widen the tile for forecast cards or scroll through the days in a narrow tile. Enter a city name or exact latitude and longitude. City search uses the first matching location. The widget refreshes every 15 minutes and retries after five minutes when data is unavailable. [Open-Meteo weather](https://open-meteo.com/) · [Air quality data from CAMS via Open-Meteo](https://open-meteo.com/en/docs/air-quality-api)
 - **Notifications** shows the latest 30 incoming Freedesktop desktop notifications while the tile is on Home. The history stays in memory. **Clear** clears the tile’s history. The desktop session bus must allow notification monitoring.
-- **FPS** displays the Gamescope session’s reported frame rate and a 60-second graph. Add the tile, then launch a game through Gamescope with the Steam launch options below. For a standalone game, replace `%command%` with its executable. Gamescope writes a sample every 300 frames.
+- **FPS** shows current FPS, 1% low, 0.1% low, and a 60-second graph. Install MangoHud and add the tile, then copy the launch options below from **FPS → Setup** into Steam. For a standalone game, replace `%command%` with its executable. Start Secondscreen once per login before launching the game so it can create `$XDG_RUNTIME_DIR/secondscreen-mangohud` for MangoHud's per-frame CSV files. Current FPS uses the latest second of frame times. Each low is the frame rate of the slowest 1% or 0.1% of frames in the latest 60 seconds, rounded up to at least one frame.
+
+```sh
+MANGOHUD_CONFIG="autostart_log=1,log_interval=0,alpha=0,background_alpha=0,output_folder=$XDG_RUNTIME_DIR/secondscreen-mangohud" mangohud %command%
+```
+
+The existing Gamescope launch options still provide current FPS. Gamescope reports an average every 300 frames, so the lows appear as dashes with that feed.
 
 ```sh
 gamescope --stats-path "$XDG_RUNTIME_DIR/secondscreen-fps" -- %command%

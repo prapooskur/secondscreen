@@ -47,7 +47,7 @@ impl Kind {
             Self::Calendar => "Monthly calendar and today’s date",
             Self::Weather => "10-day forecast and air quality",
             Self::Notifications => "Recent desktop notifications",
-            Self::Fps => "Live Gamescope frame rate",
+            Self::Fps => "Current FPS, 1% low, and 0.1% low",
         }
     }
 
@@ -90,13 +90,14 @@ impl Dashboard {
     pub(super) fn widget_content(
         &self,
         tile: Placement,
+        width: f32,
         height: f32,
         cx: &Context<Self>,
     ) -> AnyElement {
         let wide = tile.columns >= 2;
         match tile.widget.kind {
             Kind::Performance => self.performance_widget(tile.widget.id, height, cx),
-            Kind::Media => self.media_widget(wide, tile.widget.rows >= 3, height, cx),
+            Kind::Media => self.media_widget(wide, tile.rows >= 3, height, cx),
             Kind::Audio => self.audio_widget(cx).into_any_element(),
             Kind::Mixer => self.mixer_widget(cx).into_any_element(),
             Kind::Discord => self.discord_widget(cx).into_any_element(),
@@ -107,7 +108,7 @@ impl Dashboard {
             Kind::Calendar => self.calendar(height, cx).into_any_element(),
             Kind::Weather => self.weather_widget(tile.columns, height).into_any_element(),
             Kind::Notifications => self.notification_widget().into_any_element(),
-            Kind::Fps => self.fps_widget(height).into_any_element(),
+            Kind::Fps => self.fps_widget(width, height).into_any_element(),
             Kind::Viewer => div()
                 .flex()
                 .flex_1()

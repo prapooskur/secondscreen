@@ -108,7 +108,7 @@ impl Dashboard {
         window.focus(&focus, cx);
         Self {
             home: home::Home::load(),
-            utilities: Default::default(),
+            utilities: utilities::Utilities::new(),
             preferences,
             settings: settings::SettingsView::new(cx.focus_handle()),
             metrics: Metrics::default(),

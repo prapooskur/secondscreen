@@ -32,13 +32,15 @@ pub(super) fn parse_zones(value: &str) -> anyhow::Result<Vec<String>> {
     Ok(zones)
 }
 
+pub(super) use fps::LAUNCH_OPTIONS as FPS_LAUNCH_OPTIONS;
 pub(super) use weather::coordinates;
 
 #[derive(Default)]
 pub(super) struct Utilities {
     month: Option<Date>,
     ticker: Option<Task<()>>,
-    fps: Option<fps::Feed>,
+    fps_task: Option<Task<()>>,
+    fps_reading: Option<fps::Reading>,
     fps_history: VecDeque<f32>,
     fps_error: Option<String>,
     weather_query: String,
@@ -52,61 +54,82 @@ pub(super) struct Utilities {
 }
 
 impl Utilities {
-    fn fps_sample(&mut self) -> anyhow::Result<Option<f32>> {
-        let feed = match &mut self.fps {
-            Some(feed) => feed,
-            None => self.fps.insert(fps::Feed::open()?),
-        };
-        Ok(feed.sample()?)
+    pub(super) fn new() -> Self {
+        if let Err(error) = fps::prepare_mangohud() {
+            log::warn!("Could not prepare MangoHud logging: {error:#}");
+        }
+        Self::default()
     }
 
-    fn poll_fps(&mut self) {
-        match self.fps_sample() {
-            Ok(value) => {
-                self.fps_error = None;
-                append(&mut self.fps_history, value);
-            }
-            Err(e) => {
-                self.fps = None;
-                self.fps_history.clear();
-                self.fps_error = Some(format!("Gamescope feed unavailable · {e}"));
-            }
+    fn record_fps(&mut self, result: anyhow::Result<Option<fps::Reading>>) {
+        self.fps_error = result
+            .as_ref()
+            .err()
+            .map(|e| format!("FPS feed unavailable · {e:#}"));
+        let reading = result.ok().flatten();
+        if reading.as_ref().map(|r| r.source) != self.fps_reading.as_ref().map(|r| r.source) {
+            self.fps_history.clear();
         }
+        append(&mut self.fps_history, reading.as_ref().map(|r| r.current));
+        self.fps_reading = reading;
     }
 }
 
 impl Dashboard {
     pub(super) fn sync_utilities(&mut self, cx: &mut Context<Self>) {
-        let ticking = [Kind::WorldClock, Kind::Calendar, Kind::Fps]
+        let ticking = [Kind::WorldClock, Kind::Calendar]
             .into_iter()
             .any(|k| self.home.contains(k));
-        if !self.home.contains(Kind::Fps) {
-            self.utilities.fps = None;
-            self.utilities.fps_history.clear();
-            self.utilities.fps_error = None;
-        }
         if !ticking {
             self.utilities.ticker = None;
         } else if self.utilities.ticker.is_none() {
             self.utilities.ticker = Some(cx.spawn(async move |this, cx| {
                 loop {
                     gpui::Timer::after(Duration::from_secs(1)).await;
+                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
+        self.sync_fps(cx);
+        self.sync_weather(cx);
+        self.sync_notifications(cx);
+    }
+
+    fn sync_fps(&mut self, cx: &mut Context<Self>) {
+        if !self.home.contains(Kind::Fps) {
+            if self.utilities.fps_task.take().is_some() {
+                self.utilities.record_fps(Ok(None));
+            }
+        } else if self.utilities.fps_task.is_none() {
+            self.utilities.fps_task = Some(cx.spawn(async move |this, cx| {
+                let mut feed: Option<fps::Feed> = None;
+                loop {
+                    let (next_feed, reading) = blocking::unblock(move || {
+                        let reading = match &mut feed {
+                            Some(feed) => feed.sample(),
+                            None => {
+                                fps::Feed::open().and_then(|opened| feed.insert(opened).sample())
+                            }
+                        };
+                        (feed, reading)
+                    })
+                    .await;
+                    feed = next_feed;
                     if this
                         .update(cx, |this, cx| {
-                            if this.home.contains(Kind::Fps) {
-                                this.utilities.poll_fps();
-                            }
+                            this.utilities.record_fps(reading);
                             cx.notify();
                         })
                         .is_err()
                     {
                         break;
                     }
+                    gpui::Timer::after(Duration::from_secs(1)).await;
                 }
             }));
         }
-        self.sync_weather(cx);
-        self.sync_notifications(cx);
     }
 
     fn sync_weather(&mut self, cx: &mut Context<Self>) {
@@ -359,29 +382,74 @@ impl Dashboard {
         )
     }
 
-    pub(super) fn fps_widget(&self, height: f32) -> impl IntoElement {
+    pub(super) fn fps_widget(&self, width: f32, height: f32) -> impl IntoElement {
         let state = &self.utilities;
-        let mut tile = col().flex_1().gap(r(5.));
-        if let Some(value) = state.fps_history.back() {
-            tile = tile.child(
-                mono(format!("{value:.1} FPS"))
-                    .text_size(r(24.))
-                    .text_color(c(TEAL)),
-            );
-            if height >= 65. {
-                tile = tile.child(graph(
+        let tile = col().flex_1().gap(r(6.));
+        if let Some(reading) = &state.fps_reading {
+            let compact = height < 85.;
+            let gap = 8.;
+            let metric_width = (width - 2. * gap) / 3.;
+            let metric = |name, value: Option<f32>, color, size: f32| {
+                let text = value.map_or_else(|| "—".into(), |fps| format!("{fps:.1}"));
+                // Leave enough room for each monospace digit at narrow tile sizes.
+                let fitted_size = size.min(metric_width / (0.64 * text.chars().count() as f32));
+                col()
+                    .flex_1()
+                    .gap(r(2.))
+                    .child(quiet(name).whitespace_nowrap())
+                    .child(
+                        mono(text)
+                            .text_size(r(fitted_size.max(10.)))
+                            .text_color(c(color))
+                            .truncate(),
+                    )
+            };
+            tile.child(
+                split()
+                    .gap(r(gap))
+                    .flex_none()
+                    .child(metric(
+                        "Current",
+                        Some(reading.current),
+                        TEAL,
+                        if compact { 17. } else { 24. },
+                    ))
+                    .child(metric(
+                        "1% low",
+                        reading.low_1,
+                        INK,
+                        if compact { 14. } else { 19. },
+                    ))
+                    .child(metric(
+                        "0.1% low",
+                        reading.low_01,
+                        INK,
+                        if compact { 14. } else { 19. },
+                    )),
+            )
+            .when(height >= 75., |it| {
+                it.child(graph(
                     state.fps_history.clone(),
                     None,
                     state.fps_history.iter().copied().fold(60., f32::max),
                     TEAL,
-                ));
-            }
-            tile.child(quiet(format!("Gamescope · last {HISTORY} seconds")))
+                ))
+            })
+            .when(height >= 100., |it| {
+                it.child(
+                    quiet(match reading.source {
+                        fps::Source::MangoHud(_) => format!("MangoHud · last {HISTORY} seconds"),
+                        fps::Source::Gamescope => "Gamescope · Use MangoHud for lows".into(),
+                    })
+                    .truncate()
+                    .flex_none(),
+                )
+            })
         } else {
             let status = state
                 .fps_error
                 .as_deref()
-                .unwrap_or("Waiting for Gamescope. Choose Setup for the Steam launch options.");
+                .unwrap_or("Waiting for a game. Choose Setup for the MangoHud launch options.");
             tile.child(quiet(status.to_owned()))
         }
     }

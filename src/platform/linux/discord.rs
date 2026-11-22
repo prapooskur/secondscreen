@@ -5,8 +5,9 @@ use async_channel::Sender;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use serde_json::{Value, json};
 use std::{
+    collections::HashSet,
     env,
-    io::{Read, Write},
+    io::{self, Read, Write},
     os::unix::net::UnixStream,
     path::PathBuf,
     time::{Duration, Instant},
@@ -18,8 +19,12 @@ use crate::{
     model::{DiscordAction, DiscordState, Update, VoiceChannel, VoiceMember, VoiceState},
 };
 
-const RPC_TIMEOUT: Duration = Duration::from_secs(2);
+const RPC_TIMEOUT: Duration = Duration::from_secs(5);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
+const SUBSCRIPTION_TIMEOUT: Duration = Duration::from_secs(2);
+const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const EVENT_INTERVAL: Duration = Duration::from_millis(50);
+const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 const CHANNEL_EVENTS: &[&str] = &[
     "SPEAKING_START",
     "SPEAKING_STOP",
@@ -32,7 +37,7 @@ const CDN_URL: &str = "https://cdn.discordapp.com";
 pub(super) struct Discord {
     credentials: Option<Credentials>,
     auth: auth::Authorization,
-    resume: bool,
+    resume_at: Option<Instant>,
     session: Option<Session>,
     error: Option<String>,
 }
@@ -40,6 +45,7 @@ pub(super) struct Discord {
 struct Session {
     rpc: Rpc,
     voice: VoiceState,
+    last_poll_succeeded: bool,
     subscriptions: Vec<&'static str>,
 }
 
@@ -48,7 +54,7 @@ impl Discord {
         Self {
             credentials: effective_credentials(credentials),
             auth: auth::Authorization::new(config::path("discord-session.lock")),
-            resume: true,
+            resume_at: Some(Instant::now()),
             session: None,
             error: None,
         }
@@ -59,7 +65,18 @@ impl Discord {
             .credentials
             .as_ref()
             .context("Configure Discord RPC before connecting.")?;
-        let Some(rpc) = Rpc::connect(&credentials.client_id)? else {
+        let paths = Rpc::socket_paths();
+        if interactive.is_none() && !paths.iter().any(|path| path.exists()) {
+            return Ok(());
+        }
+        let mut login = self.auth.login(credentials, interactive.is_some())?;
+        if interactive.is_none() && !login.can_resume() {
+            self.resume_at = None;
+            return Ok(());
+        }
+
+        let Some(rpc) = Rpc::connect_paths(&credentials.client_id, &paths, HANDSHAKE_TIMEOUT)?
+        else {
             if interactive.is_some() {
                 bail!(
                     "Discord desktop is not listening for local RPC. Open Discord and try again."
@@ -68,11 +85,9 @@ impl Discord {
             return Ok(());
         };
 
-        self.resume = false;
-        let mut login = self.auth.login(credentials, interactive.is_some())?;
-        if interactive.is_some() || login.can_resume() {
-            self.session = Some(login.authenticate(rpc, auth::TOKEN_URL, interactive)?);
-        }
+        self.resume_at = None;
+        self.session = Some(login.authenticate(rpc, auth::TOKEN_URL, interactive)?);
+        self.error = None;
         Ok(())
     }
 
@@ -85,12 +100,13 @@ impl Discord {
             self.credentials = next;
             self.session = None;
             self.error = None;
-            self.resume = true;
+            self.resume_at = Some(Instant::now());
         }
     }
 
     fn disconnect(&mut self, error: anyhow::Error) -> DiscordState {
         self.session = None;
+        self.resume_at = transport_failure(&error).then(|| Instant::now() + RECONNECT_DELAY);
         let message = error.to_string();
         self.error = Some(message.clone());
         DiscordState::Error(message)
@@ -165,6 +181,7 @@ impl Session {
                 deafened: false,
                 channel: None,
             },
+            last_poll_succeeded: false,
             subscriptions: Vec::new(),
         }
     }
@@ -183,6 +200,21 @@ impl Session {
     }
 
     fn poll(&mut self) -> Result<VoiceState> {
+        let result = self.poll_snapshot();
+        let previously_current = std::mem::replace(&mut self.last_poll_succeeded, result.is_ok());
+        match result {
+            Err(error)
+                if previously_current && io_kind(&error) == Some(io::ErrorKind::TimedOut) =>
+            {
+                log::debug!("Using the last Discord voice snapshot: {error:#}");
+                self.apply_events();
+                Ok(self.voice.clone())
+            }
+            result => result,
+        }
+    }
+
+    fn poll_snapshot(&mut self) -> Result<VoiceState> {
         let (muted, deafened) = self.voice_settings()?;
         let selected = self
             .rpc
@@ -323,13 +355,12 @@ impl Integration for Discord {
     type Action = DiscordAction;
 
     fn poll(&mut self) -> Update {
-        if self.resume
+        if self.resume_at.is_some_and(|at| Instant::now() >= at)
             && self.session.is_none()
             && self.credentials.is_some()
             && let Err(error) = self.connect(None)
         {
-            self.resume = false;
-            self.error = Some(error.to_string());
+            self.disconnect(error);
         }
         let state = match self.session.as_mut().map(Session::poll) {
             Some(Ok(voice)) => DiscordState::Connected(voice),
@@ -362,10 +393,9 @@ impl Integration for Discord {
             DiscordAction::Configure(credentials) => self.configure(credentials),
             DiscordAction::Connect => {
                 if self.session.is_none() {
-                    self.error = self
-                        .connect(Some(updates))
-                        .err()
-                        .map(|error| error.to_string());
+                    if let Err(error) = self.connect(Some(updates)) {
+                        self.disconnect(error);
+                    }
                 }
             }
             DiscordAction::ToggleMute | DiscordAction::ToggleDeafen | DiscordAction::Leave => {
@@ -408,9 +438,50 @@ impl std::fmt::Display for RpcError {
 
 impl std::error::Error for RpcError {}
 
+fn transport_failure(error: &anyhow::Error) -> bool {
+    matches!(
+        io_kind(error),
+        Some(
+            io::ErrorKind::TimedOut
+                | io::ErrorKind::WouldBlock
+                | io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::BrokenPipe
+                | io::ErrorKind::UnexpectedEof
+        )
+    )
+}
+
+fn io_kind(error: &anyhow::Error) -> Option<io::ErrorKind> {
+    error.downcast_ref::<io::Error>().map(io::Error::kind)
+}
+
+fn rpc_step(error: anyhow::Error, operation: &str) -> anyhow::Error {
+    if let Some(io_error) = error.downcast_ref::<io::Error>() {
+        let message = match io_error.kind() {
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
+                format!("Discord timed out during {operation}.")
+            }
+            io::ErrorKind::ConnectionAborted if io_error.get_ref().is_some() => {
+                format!("Discord closed the RPC connection during {operation}: {io_error}")
+            }
+            io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::UnexpectedEof => {
+                format!("Discord closed the RPC connection during {operation}.")
+            }
+            _ => format!("Discord IPC failed during {operation}: {io_error}."),
+        };
+        return error.context(message);
+    }
+    error
+}
+
 struct Rpc {
     socket: UnixStream,
     nonce: u64,
+    incoming: Vec<u8>,
     events: Vec<Value>,
 }
 
@@ -419,11 +490,12 @@ impl Rpc {
         Self {
             socket,
             nonce: 0,
+            incoming: Vec::new(),
             events: Vec::new(),
         }
     }
 
-    fn connect(client_id: &str) -> Result<Option<Self>> {
+    fn socket_paths() -> Vec<PathBuf> {
         let mut directories: Vec<PathBuf> = ["XDG_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP"]
             .into_iter()
             .filter_map(env::var_os)
@@ -443,25 +515,78 @@ impl Rpc {
         }
         directories.push(PathBuf::from("/tmp"));
 
-        let Some(socket) = directories
-            .iter()
+        let mut seen = HashSet::new();
+        directories
+            .into_iter()
+            .filter(|dir| seen.insert(dir.clone()))
             .flat_map(|path| (0..10).map(move |n| path.join(format!("discord-ipc-{n}"))))
-            .find_map(|path| UnixStream::connect(path).ok())
-        else {
-            return Ok(None);
-        };
+            .collect()
+    }
+
+    fn connect_paths(
+        client_id: &str,
+        paths: &[PathBuf],
+        timeout: Duration,
+    ) -> Result<Option<Self>> {
+        let mut failure = None;
+        let mut seen = HashSet::new();
+        for path in paths {
+            if let Ok(resolved) = path.canonicalize()
+                && !seen.insert(resolved)
+            {
+                continue;
+            }
+            let socket = match UnixStream::connect(path) {
+                Ok(socket) => socket,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+                    ) =>
+                {
+                    continue;
+                }
+                Err(error) => {
+                    let error = anyhow::anyhow!(
+                        "Could not open Discord IPC at {}: {error}",
+                        path.display()
+                    );
+                    failure.get_or_insert(error);
+                    continue;
+                }
+            };
+            match Self::handshake(socket, client_id, timeout) {
+                Ok(rpc) => return Ok(Some(rpc)),
+                Err(error) => {
+                    log::debug!("Discord handshake failed at {}: {error:#}", path.display());
+                    failure.get_or_insert_with(|| rpc_step(error, "the READY handshake"));
+                }
+            }
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(None),
+        }
+    }
+
+    fn handshake(socket: UnixStream, client_id: &str, timeout: Duration) -> Result<Self> {
         socket.set_write_timeout(Some(RPC_TIMEOUT))?;
         let mut rpc = Self::new(socket);
         rpc.send(
             0,
             &serde_json::to_vec(&json!({ "v": 1, "client_id": client_id }))?,
         )?;
-        let ready = rpc.receive(Instant::now() + RPC_TIMEOUT)?;
+        let ready = rpc.receive(Instant::now() + timeout)?;
+        if ready["evt"] == "ERROR"
+            && let Some(message) = ready["data"]["message"].as_str()
+        {
+            bail!("Discord rejected the RPC handshake: {message}");
+        }
         ensure!(
             ready["evt"] == "READY",
             "Discord did not accept the RPC handshake."
         );
-        Ok(Some(rpc))
+        Ok(rpc)
     }
 
     fn call(&mut self, command: &str, args: Value, timeout: Duration) -> Result<Value> {
@@ -469,7 +594,7 @@ impl Rpc {
     }
 
     fn subscription(&mut self, command: &str, event: &str, args: &Value) -> Result<()> {
-        self.request(command, args.clone(), Some(event), RPC_TIMEOUT)
+        self.request(command, args.clone(), Some(event), SUBSCRIPTION_TIMEOUT)
             .map(|_| ())
     }
 
@@ -486,11 +611,19 @@ impl Rpc {
         if let Some(event) = event {
             payload["evt"] = json!(event);
         }
-        self.send(1, &serde_json::to_vec(&payload)?)?;
+        let operation =
+            event.map_or_else(|| command.to_owned(), |event| format!("{command} {event}"));
+        self.send(1, &serde_json::to_vec(&payload)?)
+            .map_err(|error| rpc_step(error, &operation))?;
         let deadline = Instant::now() + timeout;
         loop {
-            let response = self.receive(deadline)?;
-            if response["nonce"].as_str() != Some(&nonce) {
+            let response = self
+                .receive(deadline)
+                .map_err(|error| rpc_step(error, &operation))?;
+            let command_error = response["evt"] == "ERROR"
+                && response["cmd"] == command
+                && response["nonce"].is_null();
+            if response["nonce"].as_str() != Some(&nonce) && !command_error {
                 self.queue_event(response);
                 continue;
             }
@@ -523,19 +656,14 @@ impl Rpc {
     }
 
     fn drain_events(&mut self) -> Result<()> {
-        let deadline = Instant::now() + RPC_TIMEOUT;
         for _ in 0..64 {
-            let mut fd = [PollFd::new(&self.socket, PollFlags::IN)];
-            match poll(&mut fd, Some(&Timespec::default())) {
-                Ok(0) | Err(rustix::io::Errno::INTR) => break,
-                Ok(_) => {}
-                Err(error) => {
-                    return Err(error).context("Could not check for Discord voice events.");
-                }
-            }
-            if let Some(message) = self.receive_frame(deadline)? {
-                self.queue_event(message);
-            }
+            let Some(message) = self
+                .receive_frame(None)
+                .map_err(|error| rpc_step(error, "voice event delivery"))?
+            else {
+                break;
+            };
+            self.queue_event(message);
         }
         Ok(())
     }
@@ -554,49 +682,84 @@ impl Rpc {
     }
 
     fn receive(&mut self, deadline: Instant) -> Result<Value> {
-        loop {
-            if let Some(message) = self.receive_frame(deadline)? {
-                return Ok(message);
-            }
-        }
+        self.receive_frame(Some(deadline))?
+            .context("Missing Discord RPC frame.")
     }
 
-    fn receive_frame(&mut self, deadline: Instant) -> Result<Option<Value>> {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        ensure!(!remaining.is_zero(), "Discord RPC timed out.");
-        self.socket.set_read_timeout(Some(remaining))?;
-        let mut header = [0u8; 8];
-        self.socket
-            .read_exact(&mut header)
-            .context("Discord desktop did not send a reply.")?;
-        let opcode = u32::from_le_bytes(header[..4].try_into()?);
-        let size = u32::from_le_bytes(header[4..].try_into()?) as usize;
-        ensure!(
-            size <= 8 * 1024 * 1024,
-            "Discord sent an oversized RPC frame."
-        );
-        let mut payload = vec![0; size];
-        self.socket
-            .read_exact(&mut payload)
-            .context("Discord desktop closed an RPC frame early.")?;
-        match opcode {
-            1 => {
-                return serde_json::from_slice(&payload)
-                    .map(Some)
-                    .context("Discord sent invalid RPC data.");
+    fn receive_frame(&mut self, deadline: Option<Instant>) -> Result<Option<Value>> {
+        while let Some((opcode, payload)) = self.read_packet(deadline)? {
+            match opcode {
+                1 => {
+                    return serde_json::from_slice(&payload)
+                        .map(Some)
+                        .context("Discord sent invalid RPC data.");
+                }
+                2 => {
+                    let message = serde_json::from_slice::<Value>(&payload)
+                        .ok()
+                        .and_then(|value| value["message"].as_str().map(str::to_owned));
+                    let error = message.map_or_else(
+                        || io::Error::from(io::ErrorKind::ConnectionAborted),
+                        |message| io::Error::new(io::ErrorKind::ConnectionAborted, message),
+                    );
+                    return Err(error.into());
+                }
+                3 => self.send(4, &payload)?,
+                4 => {}
+                _ => bail!("Discord sent an unknown RPC frame."),
             }
-            2 => {
-                let message = serde_json::from_slice::<Value>(&payload)
-                    .ok()
-                    .and_then(|value| value["message"].as_str().map(str::to_owned))
-                    .unwrap_or_else(|| "Discord closed its RPC connection.".into());
-                bail!("{message}");
-            }
-            3 => self.send(4, &payload)?,
-            4 => {}
-            _ => bail!("Discord sent an unknown RPC frame."),
         }
         Ok(None)
+    }
+
+    fn read_packet(&mut self, deadline: Option<Instant>) -> Result<Option<(u32, Vec<u8>)>> {
+        loop {
+            let timeout = match deadline {
+                Some(deadline) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(io::Error::from(io::ErrorKind::TimedOut).into());
+                    }
+                    Timespec {
+                        tv_sec: remaining.as_secs() as _,
+                        tv_nsec: remaining.subsec_nanos() as _,
+                    }
+                }
+                None => Timespec::default(),
+            };
+            if let Some(header) = self.incoming.get(..8) {
+                let size = u32::from_le_bytes(header[4..].try_into()?) as usize;
+                ensure!(
+                    size <= MAX_FRAME_BYTES,
+                    "Discord sent an oversized RPC frame."
+                );
+                if let Some(payload) = self.incoming.get(8..8 + size) {
+                    let opcode = u32::from_le_bytes(header[..4].try_into()?);
+                    let payload = payload.to_vec();
+                    self.incoming.drain(..8 + size);
+                    return Ok(Some((opcode, payload)));
+                }
+            }
+
+            let mut fd = [PollFd::new(&self.socket, PollFlags::IN)];
+            match poll(&mut fd, Some(&timeout)) {
+                Ok(0) if deadline.is_some() => {
+                    return Err(io::Error::from(io::ErrorKind::TimedOut).into());
+                }
+                Ok(0) => return Ok(None),
+                Ok(_) => {}
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(error) => return Err(io::Error::from(error).into()),
+            }
+            // Only one worker reads this socket. Keep fragments between events and command deadlines.
+            let mut bytes = [0u8; 8192];
+            match self.socket.read(&mut bytes) {
+                Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()),
+                Ok(count) => self.incoming.extend_from_slice(&bytes[..count]),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 }
 
@@ -607,6 +770,8 @@ mod tests {
         collections::BTreeMap,
         io::{BufRead, BufReader},
         net::TcpListener,
+        os::unix::net::UnixListener,
+        sync::mpsc,
         thread,
     };
 
@@ -619,6 +784,93 @@ mod tests {
 
     fn send(rpc: &mut Rpc, value: Value) {
         rpc.send(1, &serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_late_fragmented_reply_does_not_corrupt_the_next_rpc_call() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let (continue_tx, continue_rx) = mpsc::channel();
+        let ipc = thread::spawn(move || {
+            let mut rpc = Rpc::new(server);
+            let first = assert_rpc(&mut rpc, "GET_VOICE_SETTINGS", json!({}));
+            let late = serde_json::to_vec(&json!({
+                "cmd": first["cmd"], "nonce": first["nonce"], "data": { "mute": false }
+            }))
+            .unwrap();
+            let header = [1u32.to_le_bytes(), (late.len() as u32).to_le_bytes()].concat();
+            rpc.socket.write_all(&header[..5]).unwrap();
+            continue_rx.recv_timeout(RPC_TIMEOUT).unwrap();
+            rpc.socket.write_all(&header[5..]).unwrap();
+            rpc.socket.write_all(&late).unwrap();
+
+            let second = assert_rpc(&mut rpc, "GET_VOICE_SETTINGS", json!({}));
+            send(
+                &mut rpc,
+                json!({
+                    "cmd": second["cmd"], "nonce": second["nonce"], "data": { "mute": true }
+                }),
+            );
+        });
+        let mut rpc = Rpc::new(client);
+        let error = rpc
+            .call("GET_VOICE_SETTINGS", json!({}), Duration::from_millis(250))
+            .unwrap_err();
+        assert_eq!(io_kind(&error), Some(io::ErrorKind::TimedOut));
+        assert!(error.to_string().contains("GET_VOICE_SETTINGS"));
+        assert_eq!(rpc.incoming.len(), 5);
+        rpc.drain_events().unwrap();
+        assert_eq!(rpc.incoming.len(), 5);
+
+        continue_tx.send(()).unwrap();
+        let data = rpc
+            .call("GET_VOICE_SETTINGS", json!({}), RPC_TIMEOUT)
+            .unwrap();
+        assert_eq!(data["mute"], true);
+        ipc.join().unwrap();
+        let error = rpc
+            .call("GET_SELECTED_VOICE_CHANNEL", json!({}), RPC_TIMEOUT)
+            .unwrap_err();
+        assert!(transport_failure(&error));
+        assert!(
+            error
+                .to_string()
+                .contains("closed the RPC connection during GET_SELECTED_VOICE_CHANNEL")
+        );
+    }
+
+    #[test]
+    fn a_silent_socket_does_not_mask_a_desktop_that_sends_ready() {
+        let root = std::env::temp_dir().join(format!("secondscreen-rpc-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let paths = [root.join("discord-ipc-0"), root.join("discord-ipc-1")];
+        let silent = UnixListener::bind(&paths[0]).unwrap();
+        let ready = UnixListener::bind(&paths[1]).unwrap();
+        let ipc = thread::spawn(move || {
+            for (listener, responding) in [(silent, false), (ready, true)] {
+                let mut rpc = Rpc::new(listener.accept().unwrap().0);
+                let (opcode, data) = rpc
+                    .read_packet(Some(Instant::now() + RPC_TIMEOUT))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(opcode, 0);
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&data).unwrap()["client_id"],
+                    "123456"
+                );
+                if responding {
+                    send(&mut rpc, json!({ "cmd": "DISPATCH", "evt": "READY" }));
+                } else {
+                    assert_eq!(rpc.socket.read(&mut [0u8]).unwrap(), 0);
+                }
+            }
+        });
+        assert!(
+            Rpc::connect_paths("123456", &paths, Duration::from_millis(250))
+                .unwrap()
+                .is_some()
+        );
+        ipc.join().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -13,6 +13,7 @@ use crate::config;
 pub(super) const MAX_COLUMNS: u8 = 5;
 pub(super) const MIN_ROWS: u8 = 2;
 pub(super) const MAX_ROWS: u8 = 5;
+pub(super) const VISIBLE_ROWS: u8 = 4;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -153,41 +154,43 @@ pub(super) struct Placement {
     pub x: usize,
     pub y: usize,
     pub columns: u8,
+    pub rows: u8,
 }
 
 pub(super) fn place(widgets: impl IntoIterator<Item = Widget>, columns: u8) -> Vec<Placement> {
     let columns = columns.clamp(1, MAX_COLUMNS);
-    let width = usize::from(columns);
+    let height = usize::from(VISIBLE_ROWS);
     let mut used = Vec::<u8>::new();
     let mut cursor = 0;
     widgets
         .into_iter()
         .map(|widget| {
             let span = widget.columns.clamp(1, columns);
-            let height = usize::from(widget.rows);
+            let rows = widget.rows.clamp(MIN_ROWS, VISIBLE_ROWS);
             loop {
-                let (x, y) = (cursor % width, cursor / width);
+                let (x, y) = (cursor / height, cursor % height);
                 cursor += 1;
-                if x + usize::from(span) > width {
+                if y + usize::from(rows) > height {
                     continue;
                 }
-                let mask = ((1u8 << span) - 1) << x;
-                let end = y + height;
+                let mask = ((1u8 << rows) - 1) << y;
+                let end = x + usize::from(span);
                 if used.len() < end {
                     used.resize(end, 0);
                 }
-                let rows = &mut used[y..end];
-                if rows.iter().any(|row| row & mask != 0) {
+                let occupied = &mut used[x..end];
+                if occupied.iter().any(|column| column & mask != 0) {
                     continue;
                 }
-                for row in rows {
-                    *row |= mask;
+                for column in occupied {
+                    *column |= mask;
                 }
                 return Placement {
                     widget,
                     x,
                     y,
                     columns: span,
+                    rows,
                 };
             }
         })
@@ -259,15 +262,16 @@ mod tests {
     fn mixed_sizes_reflow_without_overlaps_or_losing_saved_widths() {
         let mut layout = Layout::default();
         layout.widgets[0].columns = MAX_COLUMNS;
-        layout.widgets[0].rows = 4;
+        layout.widgets[0].rows = MAX_ROWS;
         layout.widgets[2].columns = 2;
         for columns in 1..=MAX_COLUMNS {
             let placements = place(layout.widgets.iter().copied(), columns);
             let mut cells = HashSet::new();
             for (placement, saved) in placements.iter().zip(&layout.widgets) {
                 assert_eq!(placement.widget, *saved);
-                assert!(placement.x + usize::from(placement.columns) <= usize::from(columns));
-                for y in placement.y..placement.y + usize::from(saved.rows) {
+                assert!(placement.columns <= columns);
+                assert!(placement.y + usize::from(placement.rows) <= usize::from(VISIBLE_ROWS));
+                for y in placement.y..placement.y + usize::from(placement.rows) {
                     for x in placement.x..placement.x + usize::from(placement.columns) {
                         assert!(cells.insert((x, y)));
                     }
@@ -275,6 +279,18 @@ mod tests {
             }
         }
         assert_eq!(place(layout.widgets, MAX_COLUMNS)[0].columns, MAX_COLUMNS);
+    }
+
+    #[test]
+    fn overflow_extends_to_the_right_and_keeps_stacked_widgets_together() {
+        let tile = Widget {
+            rows: 2,
+            ..Kind::Performance.widget()
+        };
+        let placements = place([tile; 14], MAX_COLUMNS);
+        for (index, placement) in placements.iter().enumerate() {
+            assert_eq!((placement.x, placement.y), (index / 2, index % 2 * 2));
+        }
     }
 
     #[test]

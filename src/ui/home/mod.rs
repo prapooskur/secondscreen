@@ -6,12 +6,12 @@ mod widgets;
 use std::{path::PathBuf, time::Instant};
 
 use gpui::{
-    Context, DispatchPhase, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    canvas, div, prelude::*,
+    Context, DispatchPhase, HitboxBehavior, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent,
+    Pixels, Point, ScrollHandle, ScrollWheelEvent, Window, canvas, div, point, prelude::*, px,
 };
 
 pub(super) use self::layout::Kind;
-use self::layout::{Layout, MAX_COLUMNS, MAX_ROWS, MIN_ROWS, Placement, Widget, shifted_span};
+use self::layout::{Layout, MAX_COLUMNS, MIN_ROWS, Placement, VISIBLE_ROWS, Widget, shifted_span};
 use super::{
     Dashboard, Tooltip,
     icons::{Icon, icon},
@@ -19,7 +19,6 @@ use super::{
 };
 
 const GAP: f32 = 12.;
-const VISIBLE_ROWS: u8 = 4;
 const REFERENCE_ROWS: u8 = 3;
 const REFERENCE_COLUMNS: u8 = 4;
 const MIN_COLUMN_WIDTH: f32 = 232.;
@@ -35,6 +34,7 @@ pub(super) struct Home {
     editing: bool,
     catalog: bool,
     resizing: Option<Resize>,
+    scroll: ScrollHandle,
 }
 
 struct Resize {
@@ -50,6 +50,12 @@ struct Grid {
     columns: u8,
     width: f32,
     height: f32,
+}
+
+#[derive(Clone, Copy)]
+struct HorizontalScroll {
+    step: Pixels,
+    limit: Pixels,
 }
 
 impl Grid {
@@ -72,8 +78,8 @@ impl Grid {
         }
     }
 
-    fn span_width(self, columns: u8) -> f32 {
-        f32::from(columns) * (self.width + GAP) - GAP
+    fn span_width(self, columns: usize) -> f32 {
+        columns as f32 * (self.width + GAP) - GAP
     }
 
     fn span_height(self, rows: usize) -> f32 {
@@ -100,6 +106,7 @@ impl Home {
             editing: false,
             catalog: false,
             resizing: None,
+            scroll: ScrollHandle::new(),
         }
     }
 
@@ -164,7 +171,9 @@ impl Dashboard {
         fullscreen: bool,
         cx: &Context<Self>,
     ) -> gpui::Div {
-        let grid = Grid::new(width - RAIL_WIDTH - GAP, height);
+        let viewport_width = (width - RAIL_WIDTH - GAP).max(1.);
+        let grid = Grid::new(viewport_width, height);
+        let mut scrolling = None;
         let content = if self.home.catalog {
             self.widget_catalog(grid, cx).into_any_element()
         } else {
@@ -172,27 +181,42 @@ impl Dashboard {
             if placements.is_empty() {
                 self.empty_home(cx).into_any_element()
             } else {
-                let rows = placements
+                let columns = placements
                     .iter()
-                    .map(|tile| tile.y + usize::from(tile.widget.rows))
+                    .map(|tile| tile.x + usize::from(tile.columns))
                     .max()
                     .unwrap_or_default();
+                let visible_width = grid.span_width(usize::from(grid.columns));
+                let content_width = grid.span_width(columns).max(visible_width);
+                let overflow = px((content_width - viewport_width) * scale);
+                if overflow > px(0.5) {
+                    scrolling = Some(HorizontalScroll {
+                        step: px((visible_width + GAP) * scale),
+                        limit: overflow,
+                    });
+                }
                 let count = placements.len();
-                col()
+                let viewport = col()
                     .id("home-widget-scroll")
                     .flex_1()
-                    .items_center()
-                    .overflow_y_scroll()
+                    .overflow_hidden()
+                    .track_scroll(&self.home.scroll)
+                    .when(scrolling.is_none(), |it| it.items_center())
                     .child(
                         div()
                             .relative()
-                            .w(r(grid.span_width(grid.columns)))
-                            .h(r(grid.span_height(rows)))
+                            .w(r(content_width))
+                            .h(r(grid.span_height(usize::from(VISIBLE_ROWS))))
                             .flex_none()
                             .children(placements.into_iter().enumerate().map(|(index, tile)| {
                                 self.widget_tile(tile, index, count, grid, scale, cx)
                             })),
-                    )
+                    );
+                col()
+                    .flex_1()
+                    .relative()
+                    .child(viewport)
+                    .children(scrolling.map(|scroll| self.track_home_scroll(scroll.limit)))
                     .into_any_element()
             }
         };
@@ -203,13 +227,18 @@ impl Dashboard {
             .min_h_0()
             .gap(r(GAP))
             .child(content)
-            .child(self.control_rail(fullscreen, cx))
+            .child(self.control_rail(fullscreen, scrolling, cx))
             .when(self.home.resizing.is_some(), |it| {
                 it.child(self.track_resize(cx))
             })
     }
 
-    fn control_rail(&self, fullscreen: bool, cx: &Context<Self>) -> impl IntoElement {
+    fn control_rail(
+        &self,
+        fullscreen: bool,
+        scrolling: Option<HorizontalScroll>,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
         let editing = self.home.editing;
         let catalog = self.home.catalog;
         let edit_view = cx.entity();
@@ -285,11 +314,13 @@ impl Dashboard {
                     .w_full()
                     .justify_center()
                     .items_center()
+                    .gap(r(5.))
+                    .children(scrolling.map(|scroll| self.scroll_controls(scroll)))
                     .when(!fullscreen, |it| {
                         it.child(
                             row()
                                 .id("move-window")
-                                .size(r(RAIL_BUTTON_SIZE))
+                                .size(r(26.))
                                 .justify_center()
                                 .rounded(r(8.))
                                 .cursor_move()
@@ -343,6 +374,59 @@ impl Dashboard {
             })
     }
 
+    fn scroll_controls(&self, scroll: HorizontalScroll) -> impl IntoElement {
+        let offset = self.home.scroll.offset().x;
+        col().flex_none().gap(r(5.)).children(
+            [
+                ("Scroll left", Icon::Left, scroll.step, offset < px(-0.5)),
+                (
+                    "Scroll right",
+                    Icon::Chevron,
+                    -scroll.step,
+                    offset > -scroll.limit + px(0.5),
+                ),
+            ]
+            .map(|(name, symbol, step, enabled)| {
+                let control = tile_button(name, name, symbol, TEXT).size(r(28.));
+                if !enabled {
+                    return disabled(control);
+                }
+                let handle = self.home.scroll.clone();
+                bind(control, move |window, _| {
+                    scroll_horizontally(&handle, step, scroll.limit, window)
+                })
+            }),
+        )
+    }
+
+    fn track_home_scroll(&self, limit: Pixels) -> impl IntoElement {
+        let handle = self.home.scroll.clone();
+        canvas(
+            |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+            move |_, hitbox, window, _| {
+                window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Capture || !hitbox.should_handle_scroll(window) {
+                        return;
+                    }
+                    let delta = event.delta.pixel_delta(window.line_height());
+                    let step = if event.modifiers.shift && delta.x == px(0.) {
+                        delta.y
+                    } else if delta.x.abs() >= delta.y.abs() {
+                        delta.x
+                    } else {
+                        return;
+                    };
+                    if step != px(0.) {
+                        scroll_horizontally(&handle, step, limit, window);
+                        cx.stop_propagation();
+                    }
+                });
+            },
+        )
+        .absolute()
+        .inset_0()
+    }
+
     fn empty_home(&self, cx: &Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         panel()
@@ -382,7 +466,7 @@ impl Dashboard {
             })
             .child(
                 split()
-                    .w(r(grid.span_width(grid.columns)))
+                    .w(r(grid.span_width(usize::from(grid.columns))))
                     .flex_wrap()
                     .gap(r(GAP))
                     .children(available.into_iter().map(|kind| {
@@ -425,7 +509,8 @@ impl Dashboard {
     ) -> impl IntoElement {
         let kind = tile.widget.kind;
         let editing = self.home.editing;
-        let height = grid.span_height(usize::from(tile.widget.rows));
+        let height = grid.span_height(usize::from(tile.rows));
+        let width = grid.span_width(usize::from(tile.columns));
         let (padding, gap) = if height < 155. { (8., 6.) } else { (13., 11.) };
         let mut content_height = height - 2. * (padding + 1.) - WIDGET_HEADER_HEIGHT - gap;
         if editing {
@@ -466,7 +551,7 @@ impl Dashboard {
             .absolute()
             .top(r(tile.y as f32 * (grid.height + GAP)))
             .left(r(tile.x as f32 * (grid.width + GAP)))
-            .w(r(grid.span_width(tile.columns)))
+            .w(r(width))
             .h(r(height))
             .p(r(padding))
             .gap(r(gap))
@@ -525,6 +610,7 @@ impl Dashboard {
             )
             .child(col().flex_1().overflow_hidden().child(self.widget_content(
                 tile,
+                width - 2. * (padding + 1.),
                 content_height,
                 cx,
             )))
@@ -654,7 +740,7 @@ impl Dashboard {
             .child(step("Wider", Icon::Plus, 1, 0))
             .child(quiet("×").px(r(2.)))
             .child(step("Shorter", Icon::Minimize, 0, -1))
-            .child(number(widget.rows))
+            .child(number(tile.rows))
             .child(step("Taller", Icon::Plus, 0, 1))
     }
 
@@ -775,8 +861,17 @@ impl Dashboard {
 fn adjusted(widget: Widget, columns: u8, (horizontal, vertical): (i32, i32)) -> Widget {
     Widget {
         columns: shifted_span(widget.columns, horizontal, 1, columns),
-        rows: shifted_span(widget.rows, vertical, MIN_ROWS, MAX_ROWS),
+        rows: shifted_span(widget.rows, vertical, MIN_ROWS, VISIBLE_ROWS),
         ..widget
+    }
+}
+
+fn scroll_horizontally(handle: &ScrollHandle, step: Pixels, limit: Pixels, window: &mut Window) {
+    let offset = handle.offset().x;
+    let next = (offset + step).clamp(-limit, px(0.));
+    if next != offset {
+        handle.set_offset(point(next, px(0.)));
+        window.refresh();
     }
 }
 
@@ -833,8 +928,8 @@ mod tests {
         let old_height = (height - 2. * GAP) / 3.;
         assert_eq!(grid.columns, 5);
         assert!((grid.width / grid.height - old_width / old_height).abs() < 0.001);
-        assert!(grid.span_width(grid.columns) <= width);
-        assert!(grid.span_width(grid.columns + 1) > width);
+        assert!(grid.span_width(usize::from(grid.columns)) <= width);
+        assert!(grid.span_width(usize::from(grid.columns) + 1) > width);
     }
 
     #[test]
