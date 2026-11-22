@@ -1,14 +1,7 @@
 use super::options::SensorOptions;
 use crate::viewer::ViewerOptions;
-use std::{
-    collections::{BTreeMap, HashSet},
-    path::Path,
-};
-
-use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-
-use crate::config;
+use std::collections::{BTreeMap, HashSet};
 
 pub(super) const MAX_COLUMNS: u8 = 5;
 pub(super) const MIN_ROWS: u8 = 2;
@@ -61,7 +54,7 @@ impl Kind {
             id: self as u32 + 1,
             kind: self,
             columns: 1,
-            rows: 3,
+            rows: VISIBLE_ROWS,
         }
     }
 }
@@ -87,23 +80,29 @@ pub(super) struct Layout {
 impl Default for Layout {
     fn default() -> Self {
         Self {
-            sensors: BTreeMap::new(),
-            viewers: BTreeMap::new(),
             widgets: [Kind::Performance, Kind::Media, Kind::Audio, Kind::Discord]
                 .map(Kind::widget)
                 .into(),
+            ..Self::empty()
         }
     }
 }
 
 impl Layout {
-    pub fn read(path: &Path) -> Result<Self> {
-        let mut layout: Self = config::read_json(path).context("Could not read the Home layout")?;
+    pub fn empty() -> Self {
+        Self {
+            widgets: Vec::new(),
+            sensors: BTreeMap::new(),
+            viewers: BTreeMap::new(),
+        }
+    }
+
+    pub fn normalize(&mut self) {
         let mut seen = Vec::new();
         let mut ids = HashSet::new();
-        let reserved: HashSet<_> = layout.widgets.iter().map(|w| w.id).collect();
+        let reserved: HashSet<_> = self.widgets.iter().map(|w| w.id).collect();
         let mut fresh = (1..).filter(|id| !reserved.contains(id));
-        layout.widgets.retain_mut(|widget| {
+        self.widgets.retain_mut(|widget| {
             if !widget.kind.repeatable() && seen.contains(&widget.kind) {
                 return false;
             }
@@ -116,19 +115,16 @@ impl Layout {
             widget.rows = widget.rows.clamp(MIN_ROWS, MAX_ROWS);
             true
         });
-        layout.sensors.retain(|id, _| {
-            layout
-                .widgets
+        self.sensors.retain(|id, _| {
+            self.widgets
                 .iter()
                 .any(|w| w.id == *id && w.kind == Kind::Performance)
         });
-        layout.viewers.retain(|id, _| {
-            layout
-                .widgets
+        self.viewers.retain(|id, _| {
+            self.widgets
                 .iter()
                 .any(|w| w.id == *id && w.kind == Kind::Viewer)
         });
-        Ok(layout)
     }
 
     pub fn add(&mut self, kind: Kind) {
@@ -141,10 +137,6 @@ impl Layout {
                 ..kind.widget()
             });
         }
-    }
-
-    pub fn write(&self, path: &Path) -> Result<()> {
-        config::write_json(path, self).context("Could not save the Home layout")
     }
 }
 
@@ -218,12 +210,15 @@ mod tests {
             std::process::id()
         ));
         std::fs::write(&path,r#"{"widgets":[{"kind":"viewer","columns":2,"rows":3},{"kind":"performance","columns":1,"rows":4}]}"#).unwrap();
-        let mut layout = Layout::read(&path).unwrap();
+        let mut layout: Layout = crate::config::read_json(&path).unwrap();
+        layout.normalize();
         layout.add(Kind::Performance);
         layout.add(Kind::Viewer);
         layout.add(Kind::Storage);
         layout.add(Kind::Storage);
         assert_eq!(layout.widgets.len(), 5);
+        assert_eq!(layout.widgets[0].rows, 3);
+        assert!(layout.widgets[2..].iter().all(|w| w.rows == VISIBLE_ROWS));
         assert_eq!(
             layout
                 .widgets
@@ -253,8 +248,10 @@ mod tests {
             .or_default()
             .chart = "memory".into();
         layout.widgets.swap(0, 3);
-        layout.write(&path).unwrap();
-        assert_eq!(Layout::read(&path).unwrap(), layout);
+        crate::config::write_json(&path, &layout).unwrap();
+        let mut saved: Layout = crate::config::read_json(&path).unwrap();
+        saved.normalize();
+        assert_eq!(saved, layout);
         std::fs::remove_file(path).unwrap();
     }
 
@@ -264,6 +261,7 @@ mod tests {
         layout.widgets[0].columns = MAX_COLUMNS;
         layout.widgets[0].rows = MAX_ROWS;
         layout.widgets[2].columns = 2;
+        layout.widgets[2].rows = 3;
         for columns in 1..=MAX_COLUMNS {
             let placements = place(layout.widgets.iter().copied(), columns);
             let mut cells = HashSet::new();

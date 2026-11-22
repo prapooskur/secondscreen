@@ -51,7 +51,7 @@ impl Dashboard {
     ) -> AnyElement {
         let options = self
             .home
-            .layout
+            .layout()
             .sensors
             .get(&id)
             .cloned()
@@ -178,7 +178,7 @@ impl Dashboard {
                     .child(title),
                 move |_, cx| {
                     view.update(cx, |this, cx| {
-                        this.home.layout.sensors.entry(id).or_default().mode = mode;
+                        this.home.layout_mut().sensors.entry(id).or_default().mode = mode;
                         this.home.sensor_editor = Some((id, 0));
                         this.save_home(cx);
                     })
@@ -249,7 +249,7 @@ impl Dashboard {
                 .child(label(name).truncate()),
                 move |_, cx| {
                     view.update(cx, |this, cx| {
-                        let options = this.home.layout.sensors.entry(id).or_default();
+                        let options = this.home.layout_mut().sensors.entry(id).or_default();
                         match options.mode {
                             SensorMode::Chart => options.chart = key.clone(),
                             SensorMode::Pair => options.pair[slot] = key.clone(),

@@ -35,6 +35,8 @@ cargo run --release --locked --no-default-features --features ui-gpui-fast
 
 Choose **Edit layout** to add widgets from the catalog, remove them with **×**, or change their order with the arrows in each card header. Drag a card’s bottom-right corner to resize. Use the width and height controls for single steps, or focus the corner and press the arrow keys. Choose **Done** to return to Home.
 
+Use the left rail to switch profiles. **+** creates an empty profile and selects it, up to five total. The existing Home layout becomes profile 1. Each profile saves its own layout and widget options. Select the pencil on the left rail to give the active profile a single letter, a number, or an SVG or PNG image. Secondscreen imports a copy of the image and remembers which profile was selected.
+
 Home fits four grid rows and up to five columns in the visible area. Widgets can span two to four visible rows. When the grid extends to the right, scroll horizontally with a trackpad, use **Shift** + mouse wheel, or use the arrows in the right-hand rail. The app keeps each widget’s requested size when space is limited and saves the layout in `${XDG_CONFIG_HOME:-~/.config}/secondscreen/home.json`.
 
 ## Configure Performance

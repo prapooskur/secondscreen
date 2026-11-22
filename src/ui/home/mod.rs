@@ -1,6 +1,7 @@
 mod layout;
 mod options;
 mod performance;
+mod profiles;
 mod widgets;
 
 use std::{path::PathBuf, time::Instant};
@@ -12,6 +13,8 @@ use gpui::{
 
 pub(super) use self::layout::Kind;
 use self::layout::{Layout, MAX_COLUMNS, MIN_ROWS, Placement, VISIBLE_ROWS, Widget, shifted_span};
+pub(super) use self::profiles::{Badge, import_profile_image};
+use self::profiles::{Profile, Profiles};
 use super::{
     Dashboard, Tooltip,
     icons::{Icon, icon},
@@ -28,7 +31,7 @@ const WIDGET_HEADER_HEIGHT: f32 = 29.;
 const RESIZE_CONTROL_HEIGHT: f32 = 28.;
 
 pub(super) struct Home {
-    layout: Layout,
+    profiles: Profiles,
     sensor_editor: Option<(u32, usize)>,
     path: Option<PathBuf>,
     editing: bool,
@@ -90,17 +93,17 @@ impl Grid {
 impl Home {
     pub(super) fn load() -> Self {
         let path = crate::config::path("home.json");
-        let layout = path
+        let profiles = path
             .as_deref()
-            .map(Layout::read)
+            .map(Profiles::read)
             .transpose()
             .unwrap_or_else(|error| {
-                log::warn!("Could not load the Home layout: {error:#}");
+                log::warn!("Could not load the Home profiles: {error:#}");
                 None
             })
             .unwrap_or_default();
         Self {
-            layout,
+            profiles,
             sensor_editor: None,
             path,
             editing: false,
@@ -111,7 +114,23 @@ impl Home {
     }
 
     pub(super) fn contains(&self, kind: Kind) -> bool {
-        self.layout.widgets.iter().any(|widget| widget.kind == kind)
+        self.layout()
+            .widgets
+            .iter()
+            .any(|widget| widget.kind == kind)
+    }
+
+    pub(super) fn active_profile(&self) -> (usize, &Profile) {
+        let index = self.profiles.active;
+        (index, &self.profiles.items[index])
+    }
+
+    fn layout(&self) -> &Layout {
+        &self.active_profile().1.layout
+    }
+
+    fn layout_mut(&mut self) -> &mut Layout {
+        &mut self.profiles.items[self.profiles.active].layout
     }
 
     pub(super) fn leave(&mut self) {
@@ -137,7 +156,7 @@ impl Home {
     }
 
     fn widgets(&self) -> impl Iterator<Item = Widget> + '_ {
-        self.layout.widgets.iter().map(|widget| {
+        self.layout().widgets.iter().map(|widget| {
             self.resizing
                 .as_ref()
                 .filter(|drag| drag.original.id == widget.id)
@@ -147,7 +166,7 @@ impl Home {
 
     fn resize(&mut self, next: Widget) -> bool {
         let Some(widget) = self
-            .layout
+            .layout_mut()
             .widgets
             .iter_mut()
             .find(|widget| widget.id == next.id)
@@ -171,7 +190,7 @@ impl Dashboard {
         fullscreen: bool,
         cx: &Context<Self>,
     ) -> gpui::Div {
-        let viewport_width = (width - RAIL_WIDTH - GAP).max(1.);
+        let viewport_width = (width - 2. * (RAIL_WIDTH + GAP)).max(1.);
         let grid = Grid::new(viewport_width, height);
         let mut scrolling = None;
         let content = if self.home.catalog {
@@ -226,7 +245,13 @@ impl Dashboard {
             .flex_1()
             .min_h_0()
             .gap(r(GAP))
-            .child(content)
+            .child(self.profile_rail(cx))
+            .child(
+                col()
+                    .id(("profile-home", self.home.profiles.active))
+                    .flex_1()
+                    .child(content),
+            )
             .child(self.control_rail(fullscreen, scrolling, cx))
             .when(self.home.resizing.is_some(), |it| {
                 it.child(self.track_resize(cx))
@@ -489,7 +514,7 @@ impl Dashboard {
                             move |window, cx| {
                                 view.update(cx, |this, cx| {
                                     this.focus_dashboard(window, cx);
-                                    this.home.layout.add(kind);
+                                    this.home.layout_mut().add(kind);
                                     this.save_home(cx);
                                 })
                             },
@@ -533,12 +558,10 @@ impl Dashboard {
                         view.update(cx, |this, cx| {
                             this.focus_dashboard(window, cx);
                             this.home.resizing = None;
-                            this.home
-                                .layout
-                                .widgets
-                                .retain(|widget| widget.id != tile.widget.id);
-                            this.home.layout.sensors.remove(&tile.widget.id);
-                            this.home.layout.viewers.remove(&tile.widget.id);
+                            let layout = this.home.layout_mut();
+                            layout.widgets.retain(|widget| widget.id != tile.widget.id);
+                            layout.sensors.remove(&tile.widget.id);
+                            layout.viewers.remove(&tile.widget.id);
                             this.viewers.remove(&tile.widget.id);
                             this.home.sensor_editor = None;
                             this.save_home(cx);
@@ -646,7 +669,7 @@ impl Dashboard {
         bind(control, move |_, cx| {
             view.update(cx, |this, cx| {
                 this.home.resizing = None;
-                let widgets = &mut this.home.layout.widgets;
+                let widgets = &mut this.home.layout_mut().widgets;
                 if let Some(index) = widgets.iter().position(|widget| widget.id == id)
                     && let Some(next) = index
                         .checked_add_signed(direction)
@@ -745,7 +768,7 @@ impl Dashboard {
     }
 
     fn adjust_widget(&mut self, id: u32, columns: u8, delta: (i32, i32), cx: &mut Context<Self>) {
-        if let Some(current) = self.home.layout.widgets.iter().find(|item| item.id == id)
+        if let Some(current) = self.home.layout().widgets.iter().find(|item| item.id == id)
             && self.home.resize(adjusted(*current, columns, delta))
         {
             self.save_home(cx);
@@ -810,7 +833,7 @@ impl Dashboard {
     pub(super) fn sync_viewers(&mut self, cx: &mut Context<Self>) {
         for widget in self
             .home
-            .layout
+            .layout()
             .widgets
             .iter()
             .filter(|w| w.kind == Kind::Viewer)
@@ -819,7 +842,7 @@ impl Dashboard {
             self.viewers.entry(id).or_insert_with(|| {
                 let options = self
                     .home
-                    .layout
+                    .layout()
                     .viewers
                     .get(&id)
                     .cloned()
@@ -836,23 +859,19 @@ impl Dashboard {
         options: crate::viewer::ViewerOptions,
         cx: &mut Context<Self>,
     ) {
-        self.home.layout.viewers.insert(id, options);
+        self.home.layout_mut().viewers.insert(id, options);
         self.save_home(cx);
     }
 
     fn save_home(&mut self, cx: &mut Context<Self>) {
-        match &self.home.path {
-            Some(path) => {
-                if let Err(error) = self.home.layout.write(path) {
-                    self.error = Some((Instant::now(), format!("{error:#}")));
-                }
-            }
-            None => {
-                self.error = Some((
-                    Instant::now(),
-                    "Home layout has no configuration directory.".into(),
-                ))
-            }
+        let result = self
+            .home
+            .path
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("Home profiles have no configuration directory."))
+            .and_then(|path| self.home.profiles.write(path));
+        if let Err(error) = result {
+            self.error = Some((Instant::now(), format!("{error:#}")));
         }
         cx.notify();
     }
