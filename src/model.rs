@@ -167,16 +167,20 @@ pub struct VoiceState {
 
 #[derive(Clone)]
 pub struct VoiceChannel {
+    pub id: String,
     pub name: String,
     pub members: Vec<VoiceMember>,
 }
 
 #[derive(Clone)]
 pub struct VoiceMember {
+    pub id: Option<String>,
     pub name: String,
     pub avatar_url: Option<String>,
     pub muted: bool,
     pub deafened: bool,
+    pub speaking: bool,
+    pub streaming: bool,
 }
 
 pub enum DiscordAction {

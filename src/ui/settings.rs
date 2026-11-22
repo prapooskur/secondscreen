@@ -265,7 +265,6 @@ impl Dashboard {
                 )
             })
             .clone();
-        let units = cx.entity();
         let view = cx.entity();
         let save = bind(
             button("save-widget-settings", Some(TEAL)).child("Save locations"),
@@ -298,6 +297,16 @@ impl Dashboard {
                 }
             },
         );
+        let weather_option = |id, text, toggle: fn(&mut Preferences)| {
+            let view = cx.entity();
+            bind(button(id, None).child(text), move |_, cx| {
+                view.update(cx, |this, cx| {
+                    let mut preferences = this.preferences.clone();
+                    toggle(&mut preferences);
+                    this.save_preferences(preferences, cx);
+                })
+            })
+        };
         col()
             .gap(r(9.))
             .flex_none()
@@ -306,20 +315,39 @@ impl Dashboard {
                 "Separate IANA time zones with commas. Local time is always shown.",
             ))
             .child(field("Weather and air quality location", location))
-            .child(row().gap(r(8.)).child(save).child(bind(
-                button("weather-units", None).child(if self.preferences.fahrenheit {
-                    "Temperature · °F"
-                } else {
-                    "Temperature · °C"
-                }),
-                move |_, cx| {
-                    units.update(cx, |this, cx| {
-                        let mut prefs = this.preferences.clone();
-                        prefs.fahrenheit = !prefs.fahrenheit;
-                        this.save_preferences(prefs, cx);
-                    })
-                },
-            )))
+            .child(row().child(save))
+            .child(
+                row()
+                    .flex_wrap()
+                    .gap(r(7.))
+                    .child(weather_option(
+                        "weather-units",
+                        if self.preferences.fahrenheit {
+                            "Temperature · °F"
+                        } else {
+                            "Temperature · °C"
+                        },
+                        |prefs| prefs.fahrenheit = !prefs.fahrenheit,
+                    ))
+                    .child(weather_option(
+                        "weather-wind",
+                        if self.preferences.weather_mph {
+                            "Wind · mph"
+                        } else {
+                            "Wind · km/h"
+                        },
+                        |prefs| prefs.weather_mph = !prefs.weather_mph,
+                    ))
+                    .child(weather_option(
+                        "weather-time",
+                        if self.preferences.weather_12_hour {
+                            "Sun times · 12-hour"
+                        } else {
+                            "Sun times · 24-hour"
+                        },
+                        |prefs| prefs.weather_12_hour = !prefs.weather_12_hour,
+                    )),
+            )
             .child(
                 row()
                     .justify_between()

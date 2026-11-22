@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, ensure};
+use jiff::civil::{Date, DateTime, Time};
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use std::time::Duration;
@@ -6,6 +7,9 @@ use std::time::Duration;
 const GEOCODING: &str = "https://geocoding-api.open-meteo.com/v1/search";
 const FORECAST: &str = "https://api.open-meteo.com/v1/forecast";
 const AIR_QUALITY: &str = "https://air-quality-api.open-meteo.com/v1/air-quality";
+const CURRENT_FIELDS: &str = "temperature_2m,weather_code,is_day,wind_speed_10m";
+const DAILY_FIELDS: &str = "weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset";
+pub(super) const FORECAST_DAYS: usize = 10;
 
 #[derive(Clone, Deserialize)]
 pub(super) struct Place {
@@ -72,11 +76,93 @@ fn locate(client: &Client, query: &str) -> Result<Place> {
 struct Current<T> {
     current: T,
 }
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 pub(super) struct Conditions {
-    pub temperature_2m: f32,
+    pub temperature_2m: Option<f32>,
     pub weather_code: Option<u8>,
+    pub is_day: Option<u8>,
+    pub wind_speed_10m: Option<f32>,
 }
+
+pub(super) struct Day {
+    pub date: Date,
+    pub weather_code: Option<u8>,
+    pub high: Option<f32>,
+    pub low: Option<f32>,
+    pub sunrise: Option<Time>,
+    pub sunset: Option<Time>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct DailyReading {
+    time: Vec<String>,
+    weather_code: Vec<Option<u8>>,
+    temperature_2m_max: Vec<Option<f32>>,
+    temperature_2m_min: Vec<Option<f32>>,
+    sunrise: Vec<Option<String>>,
+    sunset: Vec<Option<String>>,
+}
+
+impl DailyReading {
+    fn days(&self) -> Vec<Day> {
+        let local_time = |values: &[Option<String>], index: usize| {
+            values
+                .get(index)
+                .and_then(Option::as_deref)
+                .and_then(|value| value.parse::<DateTime>().ok())
+                .map(|value| value.time())
+        };
+        self.time
+            .iter()
+            .take(FORECAST_DAYS)
+            .enumerate()
+            .filter_map(|(index, date)| {
+                Some(Day {
+                    date: date.parse().ok()?,
+                    weather_code: self.weather_code.get(index).copied().flatten(),
+                    high: self.temperature_2m_max.get(index).copied().flatten(),
+                    low: self.temperature_2m_min.get(index).copied().flatten(),
+                    sunrise: local_time(&self.sunrise, index),
+                    sunset: local_time(&self.sunset, index),
+                })
+            })
+            .collect()
+    }
+}
+
+#[derive(Deserialize)]
+struct ForecastResponse {
+    current: Option<Conditions>,
+    daily: Option<DailyReading>,
+}
+
+pub(super) struct Weather {
+    pub current: Option<Conditions>,
+    pub days: Vec<Day>,
+    pub today: Option<Date>,
+}
+
+impl ForecastResponse {
+    fn weather(self) -> Option<Weather> {
+        let current = self.current.filter(|reading| {
+            reading.temperature_2m.is_some()
+                || reading.weather_code.is_some()
+                || reading.wind_speed_10m.is_some()
+        });
+        let today = self
+            .daily
+            .as_ref()
+            .and_then(|daily| daily.time.first()?.parse().ok());
+        let days = self.daily.map_or_else(Vec::new, |daily| daily.days());
+        (current.is_some() || !days.is_empty()).then_some(Weather {
+            current,
+            days,
+            today,
+        })
+    }
+}
+
 #[derive(Deserialize)]
 struct Air {
     us_aqi: f32,
@@ -84,7 +170,7 @@ struct Air {
 
 pub(super) struct Report {
     pub place: Place,
-    pub weather: Option<Conditions>,
+    pub weather: Option<Weather>,
     pub aqi: Option<f32>,
 }
 
@@ -98,20 +184,28 @@ pub(super) fn fetch(query: &str, known: Option<Place>) -> Result<Report> {
 }
 
 fn fetch_at(client: &Client, place: Place, forecast: &str, air_quality: &str) -> Result<Report> {
-    let request = |url: &str, current: &str| {
+    let request = |url: &str| {
         client
             .get(url)
             .query(&[("latitude", place.latitude), ("longitude", place.longitude)])
-            .query(&[("current", current)])
-            .send()?
-            .error_for_status()
     };
-    let weather = request(forecast, "temperature_2m,weather_code")
-        .and_then(|r| r.json::<Current<Conditions>>())
+    let weather = request(forecast)
+        .query(&[
+            ("timezone", "auto"),
+            ("current", CURRENT_FIELDS),
+            ("daily", DAILY_FIELDS),
+            ("temperature_unit", "celsius"),
+            ("wind_speed_unit", "kmh"),
+        ])
+        .query(&[("forecast_days", FORECAST_DAYS)])
+        .send()
+        .and_then(|r| r.error_for_status()?.json::<ForecastResponse>())
         .ok()
-        .map(|v| v.current);
-    let aqi = request(air_quality, "us_aqi")
-        .and_then(|r| r.json::<Current<Air>>())
+        .and_then(ForecastResponse::weather);
+    let aqi = request(air_quality)
+        .query(&[("current", "us_aqi")])
+        .send()
+        .and_then(|r| r.error_for_status()?.json::<Current<Air>>())
         .ok()
         .map(|v| v.current.us_aqi);
     ensure!(
@@ -139,7 +233,7 @@ pub(super) fn condition(code: Option<u8>) -> &'static str {
         Some(80..=82) => "Rain showers",
         Some(85 | 86) => "Snow showers",
         Some(95..=99) => "Thunderstorms",
-        _ => "Current temperature",
+        _ => "Conditions unavailable",
     }
 }
 
@@ -167,11 +261,25 @@ mod tests {
         let server = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", server.local_addr().unwrap());
         let worker = std::thread::spawn(move || {
+            let forecast = r#"{
+                "current":{"weather_code":2,"temperature_2m":12.5,"is_day":1,"wind_speed_10m":16},
+                "daily":{
+                    "time":["2026-12-28","2026-12-29","2026-12-30","2026-12-31","2027-01-01",
+                            "2027-01-02","2027-01-03","2027-01-04","2027-01-05","2027-01-06"],
+                    "temperature_2m_max":[15,null,12],
+                    "temperature_2m_min":[8,7,4],
+                    "weather_code":[2,45,63],
+                    "sunrise":["2026-12-28T08:04",null],
+                    "sunset":["2026-12-28T15:58",null]
+                }
+            }"#;
             for response in [
-                r#"{"current":{"weather_code":2,"temperature_2m":12.5}}"#,
+                forecast,
                 r#"{"current":{"us_aqi":42}}"#,
-                r#"{"current":{"weather_code":2,"temperature_2m":12.5}}"#,
+                forecast,
                 r#"{"current":{"us_aqi":null}}"#,
+                r#"{"current":null,"daily":null}"#,
+                r#"{"current":{"us_aqi":52}}"#,
             ] {
                 let (mut conn, _) = server.accept().unwrap();
                 let mut request = String::new();
@@ -180,7 +288,13 @@ mod tests {
                 if response.contains("us_aqi") {
                     assert!(request.contains("current=us_aqi"));
                 } else {
-                    assert!(request.contains("current=temperature_2m%2Cweather_code"));
+                    assert!(
+                        request.contains("timezone=auto") && request.contains("forecast_days=10")
+                    );
+                    assert!(
+                        request.contains("current=temperature_2m%2Cweather_code%2Cis_day%2Cwind_speed_10m")
+                            && request.contains("daily=weather_code%2Ctemperature_2m_max%2Ctemperature_2m_min%2Csunrise%2Csunset")
+                    );
                 }
                 write!(
                     &mut conn,
@@ -199,9 +313,31 @@ mod tests {
         let place = locate(&client, "51.5, -0.12").unwrap();
         for expected in [Some(42.), None] {
             let report = fetch_at(&client, place.clone(), &base, &base).unwrap();
-            assert_eq!(report.weather.unwrap().temperature_2m, 12.5);
             assert_eq!(report.aqi, expected);
+            let weather = report.weather.unwrap();
+            let current = weather.current.unwrap();
+            assert_eq!(current.temperature_2m, Some(12.5));
+            assert_eq!(current.wind_speed_10m, Some(16.));
+            assert_eq!(weather.days.len(), FORECAST_DAYS);
+            assert_eq!(weather.today, Some(weather.days[0].date));
+            let first = &weather.days[0];
+            assert_eq!(
+                first.sunrise.unwrap().strftime("%H:%M").to_string(),
+                "08:04"
+            );
+            assert_eq!(
+                first.sunset.unwrap().strftime("%-I:%M %p").to_string(),
+                "3:58 PM"
+            );
+            assert_eq!(weather.days[1].high, None);
+            assert_eq!(weather.days[1].low, Some(7.));
+            assert_eq!(weather.days[2].high, Some(12.));
+            assert_eq!(weather.days[2].weather_code, Some(63));
+            assert_eq!(weather.days[9].date.to_string(), "2027-01-06");
         }
+        let air_only = fetch_at(&client, place, &base, &base).unwrap();
+        assert!(air_only.weather.is_none());
+        assert_eq!(air_only.aqi, Some(52.));
         worker.join().unwrap();
         assert!(coordinates("91, 10").is_err());
     }

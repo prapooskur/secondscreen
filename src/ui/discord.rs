@@ -10,6 +10,8 @@ use super::{
 use crate::model::{DiscordAction, DiscordState, VoiceMember, VoiceState};
 use crate::viewer::DISCORD_HOME;
 
+const DISCORD_SPEAKING_GREEN: u32 = 0x23a55a;
+
 impl Dashboard {
     pub(super) fn discord_widget(&self, cx: &Context<Self>) -> impl IntoElement {
         let (content, controls) = match &self.discord {
@@ -149,13 +151,19 @@ impl Dashboard {
                     }),
             )
             .when_some(channel, |it, channel| {
-                it.children(channel.members.iter().map(member_row))
+                it.children(
+                    channel
+                        .members
+                        .iter()
+                        .enumerate()
+                        .map(|(index, member)| member_row(index, member)),
+                )
             });
         (content, controls)
     }
 }
 
-fn member_row(member: &VoiceMember) -> Div {
+fn member_row(index: usize, member: &VoiceMember) -> Div {
     let initial = member
         .name
         .chars()
@@ -163,6 +171,7 @@ fn member_row(member: &VoiceMember) -> Div {
         .map(|letter| letter.to_uppercase().to_string())
         .unwrap_or_else(|| "?".into());
     let avatar = row()
+        .id(("discord-avatar", index))
         .size(r(25.))
         .flex_none()
         .relative()
@@ -182,6 +191,17 @@ fn member_row(member: &VoiceMember) -> Div {
                     .rounded_full()
                     .object_fit(ObjectFit::Cover),
             )
+        })
+        .when(member.speaking, |it| {
+            it.child(
+                div()
+                    .absolute()
+                    .inset(r(-2.))
+                    .rounded_full()
+                    .border_2()
+                    .border_color(c(DISCORD_SPEAKING_GREEN)),
+            )
+            .tooltip(|_, cx| cx.new(|_| Tooltip("Speaking".into())).into())
         });
     row()
         .h(r(38.))
@@ -192,6 +212,9 @@ fn member_row(member: &VoiceMember) -> Div {
         .bg(c(BACK).opacity(0.45))
         .child(avatar)
         .child(div().flex_1().truncate().child(member.name.clone()))
+        .when(member.streaming, |it| {
+            it.child(chip("LIVE", RED).h(r(21.)).px(r(5.)))
+        })
         .when(member.muted, |it| {
             it.child(icon(Icon::MicOff, c(AMBER), 15.))
         })

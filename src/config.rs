@@ -17,6 +17,8 @@ pub struct Preferences {
     pub clock_zones: Option<Vec<String>>,
     pub weather_location: String,
     pub fahrenheit: bool,
+    pub weather_mph: bool,
+    pub weather_12_hour: bool,
     pub hidden_media: BTreeMap<String, String>,
     pub hidden_audio: BTreeMap<String, String>,
     pub hidden_drives: BTreeMap<String, String>,

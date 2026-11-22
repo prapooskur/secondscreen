@@ -1,6 +1,8 @@
+mod auth;
+
 use anyhow::{Context, Result, bail, ensure};
 use async_channel::Sender;
-use serde::Deserialize;
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use serde_json::{Value, json};
 use std::{
     env,
@@ -12,145 +14,93 @@ use std::{
 
 use super::Integration;
 use crate::{
-    config::{DISCORD_REDIRECT_URI, DiscordCredentials as Credentials},
+    config::{self, DiscordCredentials as Credentials},
     model::{DiscordAction, DiscordState, Update, VoiceChannel, VoiceMember, VoiceState},
 };
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(2);
-const AUTH_TIMEOUT: Duration = Duration::from_secs(90);
-const SCOPES: &[&str] = &["identify", "rpc", "rpc.voice.read", "rpc.voice.write"];
-const TOKEN_URL: &str = "https://discord.com/api/oauth2/token";
+const EVENT_INTERVAL: Duration = Duration::from_millis(50);
+const CHANNEL_EVENTS: &[&str] = &[
+    "SPEAKING_START",
+    "SPEAKING_STOP",
+    "VOICE_STATE_CREATE",
+    "VOICE_STATE_UPDATE",
+    "VOICE_STATE_DELETE",
+];
 const CDN_URL: &str = "https://cdn.discordapp.com";
 
 pub(super) struct Discord {
     credentials: Option<Credentials>,
+    auth: auth::Authorization,
+    resume: bool,
     session: Option<Session>,
     error: Option<String>,
 }
 
 struct Session {
     rpc: Rpc,
-    account: String,
+    voice: VoiceState,
+    subscriptions: Vec<&'static str>,
 }
 
 impl Discord {
     pub fn new(credentials: Option<Credentials>) -> Self {
         Self {
-            credentials: credentials
-                .or_else(Credentials::from_env)
-                .filter(Credentials::valid),
+            credentials: effective_credentials(credentials),
+            auth: auth::Authorization::new(config::path("discord-session.lock")),
+            resume: true,
             session: None,
             error: None,
         }
     }
 
-    fn connect(&mut self) -> Result<Session> {
+    fn connect(&mut self, interactive: Option<&Sender<Update>>) -> Result<()> {
         let credentials = self
             .credentials
-            .as_mut()
+            .as_ref()
             .context("Configure Discord RPC before connecting.")?;
-        let rpc = Rpc::connect(&credentials.client_id)?;
-        credentials.authenticate_session(rpc, |id, secret, code| {
-            let client = reqwest::blocking::Client::builder()
-                .timeout(Duration::from_secs(12))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?;
-            exchange_code(&client, TOKEN_URL, id, secret, code)
-        })
-    }
-}
-
-impl Credentials {
-    fn authenticate_session(
-        &mut self,
-        mut rpc: Rpc,
-        exchange: impl FnOnce(&str, &str, &str) -> Result<String>,
-    ) -> Result<Session> {
-        if let Some(token) = &self.access_token {
-            match authenticate(&mut rpc, token) {
-                Ok(account) => return Ok(Session { rpc, account }),
-                Err(error) if self.secret.is_none() => return Err(error),
-                Err(_) => self.access_token = None,
+        let Some(rpc) = Rpc::connect(&credentials.client_id)? else {
+            if interactive.is_some() {
+                bail!(
+                    "Discord desktop is not listening for local RPC. Open Discord and try again."
+                );
             }
+            return Ok(());
+        };
+
+        self.resume = false;
+        let mut login = self.auth.login(credentials, interactive.is_some())?;
+        if interactive.is_some() || login.can_resume() {
+            self.session = Some(login.authenticate(rpc, auth::TOKEN_URL, interactive)?);
         }
+        Ok(())
+    }
 
-        let secret = self.secret.as_deref().context(
-            "A Discord application secret is required to exchange the authorization code.",
-        )?;
-        // Discord uses the application's registered redirect for desktop RPC.
-        let authorized = rpc
-            .call(
-                "AUTHORIZE",
-                json!({
-                    "client_id": self.client_id,
-                    "scopes": SCOPES,
-                }),
-                AUTH_TIMEOUT,
-            )
-            .map_err(|error| {
-                if error.to_string().to_ascii_lowercase().contains("missing \"redirect_uri\"") {
-                    anyhow::anyhow!(
-                        "{error} Register {DISCORD_REDIRECT_URI} under OAuth2 → Redirects for this application in the Discord Developer Portal."
-                    )
-                } else {
-                    error
-                }
-            })?;
-        let code = authorized["code"]
-            .as_str()
-            .context("Discord did not return an authorization code.")?;
-        let token = exchange(&self.client_id, secret, code)?;
-        let account = authenticate(&mut rpc, &token)?;
-        self.access_token = Some(token);
-        Ok(Session { rpc, account })
+    fn configure(&mut self, credentials: Option<Credentials>) {
+        let next = effective_credentials(credentials);
+        if self.credentials != next {
+            if let Some(old) = &self.credentials {
+                self.auth.clear(old);
+            }
+            self.credentials = next;
+            self.session = None;
+            self.error = None;
+            self.resume = true;
+        }
+    }
+
+    fn disconnect(&mut self, error: anyhow::Error) -> DiscordState {
+        self.session = None;
+        let message = error.to_string();
+        self.error = Some(message.clone());
+        DiscordState::Error(message)
     }
 }
 
-fn exchange_code(
-    client: &reqwest::blocking::Client,
-    endpoint: &str,
-    id: &str,
-    secret: &str,
-    code: &str,
-) -> Result<String> {
-    #[derive(Deserialize)]
-    struct Token {
-        access_token: String,
-    }
-
-    let response = client
-        .post(endpoint)
-        .form(&[
-            ("grant_type", "authorization_code"),
-            ("client_id", id),
-            ("client_secret", secret),
-            ("code", code),
-            ("redirect_uri", DISCORD_REDIRECT_URI),
-        ])
-        .send()
-        .context("Could not reach Discord's OAuth2 endpoint.")?;
-    ensure!(
-        response.status().is_success(),
-        "Discord rejected the OAuth2 code exchange ({}).",
-        response.status()
-    );
-    Ok(response
-        .json::<Token>()
-        .context("Discord returned an invalid OAuth2 response.")?
-        .access_token)
-}
-
-fn authenticate(rpc: &mut Rpc, token: &str) -> Result<String> {
-    let result = rpc.call(
-        "AUTHENTICATE",
-        json!({ "access_token": token }),
-        RPC_TIMEOUT,
-    )?;
-    Ok(result["user"]["global_name"]
-        .as_str()
-        .or_else(|| result["user"]["username"].as_str())
-        .unwrap_or("Discord account")
-        .to_owned())
+fn effective_credentials(saved: Option<Credentials>) -> Option<Credentials> {
+    saved
+        .or_else(Credentials::from_env)
+        .filter(Credentials::valid)
 }
 
 fn avatar_url(user: &Value) -> Option<String> {
@@ -174,7 +124,51 @@ fn avatar_url(user: &Value) -> Option<String> {
     Some(format!("{CDN_URL}/embed/avatars/{index}.png"))
 }
 
+fn member_id(member: &Value) -> Option<&str> {
+    member["user"]["id"]
+        .as_str()
+        .or_else(|| member["user_id"].as_str())
+}
+
+fn member_streaming(member: &Value) -> Option<bool> {
+    member["voice_state"]["self_stream"]
+        .as_bool()
+        .or_else(|| member["self_stream"].as_bool())
+}
+
+fn voice_member(member: &Value) -> VoiceMember {
+    let state = &member["voice_state"];
+    let flag = |name: &str| state[name].as_bool().unwrap_or(false);
+    VoiceMember {
+        id: member_id(member).map(str::to_owned),
+        name: member["nick"]
+            .as_str()
+            .or_else(|| member["user"]["global_name"].as_str())
+            .or_else(|| member["user"]["username"].as_str())
+            .unwrap_or("Discord user")
+            .to_owned(),
+        avatar_url: avatar_url(&member["user"]),
+        muted: flag("self_mute") || flag("mute"),
+        deafened: flag("self_deaf") || flag("deaf"),
+        speaking: false,
+        streaming: member_streaming(member).unwrap_or(false),
+    }
+}
+
 impl Session {
+    fn new(rpc: Rpc, account: String) -> Self {
+        Self {
+            rpc,
+            voice: VoiceState {
+                account,
+                muted: false,
+                deafened: false,
+                channel: None,
+            },
+            subscriptions: Vec::new(),
+        }
+    }
+
     fn voice_settings(&mut self) -> Result<(bool, bool)> {
         let data = self
             .rpc
@@ -190,34 +184,60 @@ impl Session {
 
     fn poll(&mut self) -> Result<VoiceState> {
         let (muted, deafened) = self.voice_settings()?;
-        let channel = self
+        let selected = self
             .rpc
             .call("GET_SELECTED_VOICE_CHANNEL", json!({}), RPC_TIMEOUT)?;
-        let channel = channel["id"].as_str().map(|_| {
-            let members = channel["voice_states"]
+
+        let previous_id = self
+            .voice
+            .channel
+            .as_ref()
+            .map(|channel| channel.id.as_str());
+        let next_id = selected["id"].as_str();
+        let switching = previous_id != next_id;
+        if switching {
+            if let Some(id) = previous_id {
+                let args = json!({ "channel_id": id });
+                for event in self.subscriptions.drain(..) {
+                    if let Err(error) = self.rpc.subscription("UNSUBSCRIBE", event, &args) {
+                        log::debug!("Could not unsubscribe from Discord {event}: {error:#}");
+                    }
+                }
+            }
+            self.rpc.events.clear();
+        } else {
+            self.apply_events();
+        }
+
+        let previous = self.voice.channel.as_ref().filter(|_| !switching);
+        let subscribed_to_voice = self.subscriptions.contains(&"VOICE_STATE_UPDATE");
+        self.voice.muted = muted;
+        self.voice.deafened = deafened;
+        self.voice.channel = next_id.map(|id| {
+            let members = selected["voice_states"]
                 .as_array()
                 .into_iter()
                 .flatten()
-                .map(|member| VoiceMember {
-                    name: member["nick"]
-                        .as_str()
-                        .or_else(|| member["user"]["global_name"].as_str())
-                        .or_else(|| member["user"]["username"].as_str())
-                        .unwrap_or("Discord user")
-                        .to_owned(),
-                    avatar_url: avatar_url(&member["user"]),
-                    muted: member["voice_state"]["self_mute"]
-                        .as_bool()
-                        .unwrap_or(false)
-                        || member["voice_state"]["mute"].as_bool().unwrap_or(false),
-                    deafened: member["voice_state"]["self_deaf"]
-                        .as_bool()
-                        .unwrap_or(false)
-                        || member["voice_state"]["deaf"].as_bool().unwrap_or(false),
+                .map(|data| {
+                    let mut member = voice_member(data);
+                    if let Some(old) = member.id.as_ref().and_then(|id| {
+                        previous?
+                            .members
+                            .iter()
+                            .find(|member| member.id.as_ref() == Some(id))
+                    }) {
+                        member.speaking = old.speaking;
+                        // Some desktop clients omit self_stream in channel snapshots.
+                        if subscribed_to_voice && member_streaming(data).is_none() {
+                            member.streaming = old.streaming;
+                        }
+                    }
+                    member
                 })
                 .collect();
             VoiceChannel {
-                name: channel["name"]
+                id: id.to_owned(),
+                name: selected["name"]
                     .as_str()
                     .filter(|name| !name.is_empty())
                     .unwrap_or("Voice call")
@@ -225,12 +245,77 @@ impl Session {
                 members,
             }
         });
-        Ok(VoiceState {
-            account: self.account.clone(),
-            muted,
-            deafened,
-            channel,
-        })
+        if switching && let Some(id) = next_id {
+            let args = json!({ "channel_id": id });
+            for &event in CHANNEL_EVENTS {
+                match self.rpc.subscription("SUBSCRIBE", event, &args) {
+                    Ok(()) => self.subscriptions.push(event),
+                    Err(error) => log::debug!("Could not subscribe to Discord {event}: {error:#}"),
+                }
+            }
+            self.apply_events();
+        }
+        Ok(self.voice.clone())
+    }
+
+    fn poll_events(&mut self) -> Result<Option<VoiceState>> {
+        self.rpc.drain_events()?;
+        Ok(self.apply_events().then(|| self.voice.clone()))
+    }
+
+    fn apply_events(&mut self) -> bool {
+        let mut changed = false;
+        for event in std::mem::take(&mut self.rpc.events) {
+            if let Some(channel) = &mut self.voice.channel {
+                changed |= channel.apply_event(&event);
+            }
+        }
+        changed
+    }
+}
+
+impl VoiceChannel {
+    fn apply_event(&mut self, event: &Value) -> bool {
+        let data = &event["data"];
+        if data["channel_id"]
+            .as_str()
+            .or_else(|| data["voice_state"]["channel_id"].as_str())
+            .is_some_and(|id| id != self.id)
+        {
+            return false;
+        }
+        let Some(id) = member_id(data) else {
+            return false;
+        };
+        let index = self
+            .members
+            .iter()
+            .position(|member| member.id.as_deref() == Some(id));
+        match (event["evt"].as_str(), index) {
+            (Some("SPEAKING_START" | "SPEAKING_STOP"), Some(index)) => {
+                let speaking = event["evt"] == "SPEAKING_START";
+                let member = &mut self.members[index];
+                std::mem::replace(&mut member.speaking, speaking) != speaking
+            }
+            (Some("VOICE_STATE_UPDATE"), Some(index)) => {
+                // A full voice state with no Go Live flag means the share stopped.
+                let streaming = member_streaming(data)
+                    .or_else(|| data["voice_state"].is_object().then_some(false));
+                streaming.is_some_and(|streaming| {
+                    let member = &mut self.members[index];
+                    std::mem::replace(&mut member.streaming, streaming) != streaming
+                })
+            }
+            (Some("VOICE_STATE_CREATE"), None) => {
+                self.members.push(voice_member(data));
+                true
+            }
+            (Some("VOICE_STATE_DELETE"), Some(index)) => {
+                self.members.remove(index);
+                true
+            }
+            _ => false,
+        }
     }
 }
 
@@ -238,13 +323,17 @@ impl Integration for Discord {
     type Action = DiscordAction;
 
     fn poll(&mut self) -> Update {
+        if self.resume
+            && self.session.is_none()
+            && self.credentials.is_some()
+            && let Err(error) = self.connect(None)
+        {
+            self.resume = false;
+            self.error = Some(error.to_string());
+        }
         let state = match self.session.as_mut().map(Session::poll) {
             Some(Ok(voice)) => DiscordState::Connected(voice),
-            Some(Err(error)) => {
-                self.session = None;
-                self.error = Some(error.to_string());
-                DiscordState::Error(error.to_string())
-            }
+            Some(Err(error)) => self.disconnect(error),
             None if self.credentials.is_none() => DiscordState::Unconfigured,
             None => self
                 .error
@@ -254,17 +343,29 @@ impl Integration for Discord {
         Update::Discord(state)
     }
 
+    fn event_interval(&self) -> Option<Duration> {
+        self.session
+            .as_ref()
+            .is_some_and(|session| !session.subscriptions.is_empty())
+            .then_some(EVENT_INTERVAL)
+    }
+
+    fn poll_events(&mut self) -> Option<Update> {
+        match self.session.as_mut()?.poll_events() {
+            Ok(voice) => voice.map(|voice| Update::Discord(DiscordState::Connected(voice))),
+            Err(error) => Some(Update::Discord(self.disconnect(error))),
+        }
+    }
+
     fn handle(&mut self, action: DiscordAction, updates: &Sender<Update>) -> Result<()> {
         match action {
-            DiscordAction::Configure(credentials) => *self = Self::new(credentials),
+            DiscordAction::Configure(credentials) => self.configure(credentials),
             DiscordAction::Connect => {
                 if self.session.is_none() {
-                    let _ = updates.send_blocking(Update::Discord(DiscordState::Authorizing));
-                    self.error = None;
-                    match self.connect() {
-                        Ok(session) => self.session = Some(session),
-                        Err(error) => self.error = Some(error.to_string()),
-                    }
+                    self.error = self
+                        .connect(Some(updates))
+                        .err()
+                        .map(|error| error.to_string());
                 }
             }
             DiscordAction::ToggleMute | DiscordAction::ToggleDeafen | DiscordAction::Leave => {
@@ -293,13 +394,36 @@ impl Integration for Discord {
     }
 }
 
+#[derive(Debug)]
+struct RpcError {
+    code: Option<i64>,
+    message: String,
+}
+
+impl std::fmt::Display for RpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Discord RPC: {}", self.message)
+    }
+}
+
+impl std::error::Error for RpcError {}
+
 struct Rpc {
     socket: UnixStream,
     nonce: u64,
+    events: Vec<Value>,
 }
 
 impl Rpc {
-    fn connect(client_id: &str) -> Result<Self> {
+    fn new(socket: UnixStream) -> Self {
+        Self {
+            socket,
+            nonce: 0,
+            events: Vec::new(),
+        }
+    }
+
+    fn connect(client_id: &str) -> Result<Option<Self>> {
         let mut directories: Vec<PathBuf> = ["XDG_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP"]
             .into_iter()
             .filter_map(env::var_os)
@@ -319,15 +443,15 @@ impl Rpc {
         }
         directories.push(PathBuf::from("/tmp"));
 
-        let socket = directories
+        let Some(socket) = directories
             .iter()
             .flat_map(|path| (0..10).map(move |n| path.join(format!("discord-ipc-{n}"))))
             .find_map(|path| UnixStream::connect(path).ok())
-            .context(
-                "Discord desktop is not listening for local RPC. Open Discord and try again.",
-            )?;
+        else {
+            return Ok(None);
+        };
         socket.set_write_timeout(Some(RPC_TIMEOUT))?;
-        let mut rpc = Self { socket, nonce: 0 };
+        let mut rpc = Self::new(socket);
         rpc.send(
             0,
             &serde_json::to_vec(&json!({ "v": 1, "client_id": client_id }))?,
@@ -337,25 +461,48 @@ impl Rpc {
             ready["evt"] == "READY",
             "Discord did not accept the RPC handshake."
         );
-        Ok(rpc)
+        Ok(Some(rpc))
     }
 
     fn call(&mut self, command: &str, args: Value, timeout: Duration) -> Result<Value> {
+        self.request(command, args, None, timeout)
+    }
+
+    fn subscription(&mut self, command: &str, event: &str, args: &Value) -> Result<()> {
+        self.request(command, args.clone(), Some(event), RPC_TIMEOUT)
+            .map(|_| ())
+    }
+
+    fn request(
+        &mut self,
+        command: &str,
+        args: Value,
+        event: Option<&str>,
+        timeout: Duration,
+    ) -> Result<Value> {
         self.nonce += 1;
         let nonce = self.nonce.to_string();
-        let payload = serde_json::to_vec(&json!({ "cmd": command, "args": args, "nonce": nonce }))?;
-        self.send(1, &payload)?;
+        let mut payload = json!({ "cmd": command, "args": args, "nonce": nonce });
+        if let Some(event) = event {
+            payload["evt"] = json!(event);
+        }
+        self.send(1, &serde_json::to_vec(&payload)?)?;
         let deadline = Instant::now() + timeout;
         loop {
             let response = self.receive(deadline)?;
             if response["nonce"].as_str() != Some(&nonce) {
+                self.queue_event(response);
                 continue;
             }
             if response["evt"] == "ERROR" {
                 let message = response["data"]["message"]
                     .as_str()
                     .unwrap_or("The command failed.");
-                bail!("Discord RPC: {message}");
+                return Err(RpcError {
+                    code: response["data"]["code"].as_i64(),
+                    message: message.to_owned(),
+                }
+                .into());
             }
             ensure!(
                 response["cmd"] == command,
@@ -363,6 +510,34 @@ impl Rpc {
             );
             return Ok(response["data"].clone());
         }
+    }
+
+    fn queue_event(&mut self, message: Value) {
+        if message["cmd"] == "DISPATCH"
+            && message["evt"]
+                .as_str()
+                .is_some_and(|event| CHANNEL_EVENTS.contains(&event))
+        {
+            self.events.push(message);
+        }
+    }
+
+    fn drain_events(&mut self) -> Result<()> {
+        let deadline = Instant::now() + RPC_TIMEOUT;
+        for _ in 0..64 {
+            let mut fd = [PollFd::new(&self.socket, PollFlags::IN)];
+            match poll(&mut fd, Some(&Timespec::default())) {
+                Ok(0) | Err(rustix::io::Errno::INTR) => break,
+                Ok(_) => {}
+                Err(error) => {
+                    return Err(error).context("Could not check for Discord voice events.");
+                }
+            }
+            if let Some(message) = self.receive_frame(deadline)? {
+                self.queue_event(message);
+            }
+        }
+        Ok(())
     }
 
     fn send(&mut self, opcode: u32, body: &[u8]) -> Result<()> {
@@ -380,40 +555,48 @@ impl Rpc {
 
     fn receive(&mut self, deadline: Instant) -> Result<Value> {
         loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            ensure!(!remaining.is_zero(), "Discord RPC timed out.");
-            self.socket.set_read_timeout(Some(remaining))?;
-            let mut header = [0u8; 8];
-            self.socket
-                .read_exact(&mut header)
-                .context("Discord desktop did not send a reply.")?;
-            let opcode = u32::from_le_bytes(header[..4].try_into()?);
-            let size = u32::from_le_bytes(header[4..].try_into()?) as usize;
-            ensure!(
-                size <= 8 * 1024 * 1024,
-                "Discord sent an oversized RPC frame."
-            );
-            let mut payload = vec![0; size];
-            self.socket
-                .read_exact(&mut payload)
-                .context("Discord desktop closed an RPC frame early.")?;
-            match opcode {
-                1 => {
-                    return serde_json::from_slice(&payload)
-                        .context("Discord sent invalid RPC data.");
-                }
-                2 => {
-                    let message = serde_json::from_slice::<Value>(&payload)
-                        .ok()
-                        .and_then(|value| value["message"].as_str().map(str::to_owned))
-                        .unwrap_or_else(|| "Discord closed its RPC connection.".into());
-                    bail!("{message}");
-                }
-                3 => self.send(4, &payload)?,
-                4 => {}
-                _ => bail!("Discord sent an unknown RPC frame."),
+            if let Some(message) = self.receive_frame(deadline)? {
+                return Ok(message);
             }
         }
+    }
+
+    fn receive_frame(&mut self, deadline: Instant) -> Result<Option<Value>> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        ensure!(!remaining.is_zero(), "Discord RPC timed out.");
+        self.socket.set_read_timeout(Some(remaining))?;
+        let mut header = [0u8; 8];
+        self.socket
+            .read_exact(&mut header)
+            .context("Discord desktop did not send a reply.")?;
+        let opcode = u32::from_le_bytes(header[..4].try_into()?);
+        let size = u32::from_le_bytes(header[4..].try_into()?) as usize;
+        ensure!(
+            size <= 8 * 1024 * 1024,
+            "Discord sent an oversized RPC frame."
+        );
+        let mut payload = vec![0; size];
+        self.socket
+            .read_exact(&mut payload)
+            .context("Discord desktop closed an RPC frame early.")?;
+        match opcode {
+            1 => {
+                return serde_json::from_slice(&payload)
+                    .map(Some)
+                    .context("Discord sent invalid RPC data.");
+            }
+            2 => {
+                let message = serde_json::from_slice::<Value>(&payload)
+                    .ok()
+                    .and_then(|value| value["message"].as_str().map(str::to_owned))
+                    .unwrap_or_else(|| "Discord closed its RPC connection.".into());
+                bail!("{message}");
+            }
+            3 => self.send(4, &payload)?,
+            4 => {}
+            _ => bail!("Discord sent an unknown RPC frame."),
+        }
+        Ok(None)
     }
 }
 
@@ -439,6 +622,125 @@ mod tests {
     }
 
     #[test]
+    fn tracks_voice_activity_across_rpc_replies_and_channel_changes() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let mut dispatch = Rpc::new(server.try_clone().unwrap());
+        let ipc = thread::spawn(move || {
+            let mut rpc = Rpc::new(server);
+            let reply = |rpc: &mut Rpc, request: Value, data: Value| {
+                send(
+                    rpc,
+                    json!({ "cmd": request["cmd"], "nonce": request["nonce"], "data": data }),
+                );
+            };
+            for (index, channel_id) in ["40", "40", "50"].into_iter().enumerate() {
+                let request = assert_rpc(&mut rpc, "GET_VOICE_SETTINGS", json!({}));
+                reply(&mut rpc, request, json!({ "mute": false, "deaf": false }));
+                let request = assert_rpc(&mut rpc, "GET_SELECTED_VOICE_CHANNEL", json!({}));
+                if index == 1 {
+                    send(
+                        &mut rpc,
+                        json!({
+                            "cmd": "DISPATCH", "evt": "SPEAKING_STOP", "data": { "user_id": "1" }
+                        }),
+                    );
+                    send(
+                        &mut rpc,
+                        json!({
+                            "cmd": "DISPATCH", "evt": "VOICE_STATE_UPDATE",
+                            "data": { "user": { "id": "2" }, "voice_state": { "self_stream": true } }
+                        }),
+                    );
+                }
+                reply(
+                    &mut rpc,
+                    request,
+                    json!({
+                        "id": channel_id,
+                        "voice_states": [
+                            { "nick": "Alex", "user": { "id": "1" }, "voice_state": { "self_stream": index == 0 } },
+                            { "nick": "Alex", "user": { "id": "2" }, "voice_state": { "self_video": true } },
+                        ]
+                    }),
+                );
+                if index == 2 {
+                    for &event in CHANNEL_EVENTS {
+                        let request =
+                            assert_rpc(&mut rpc, "UNSUBSCRIBE", json!({ "channel_id": "40" }));
+                        assert_eq!(request["evt"], event);
+                        reply(&mut rpc, request, json!({ "evt": event }));
+                    }
+                }
+                if index != 1 {
+                    for &event in CHANNEL_EVENTS {
+                        let request =
+                            assert_rpc(&mut rpc, "SUBSCRIBE", json!({ "channel_id": channel_id }));
+                        assert_eq!(request["evt"], event);
+                        if index == 0 && event == "SPEAKING_STOP" {
+                            send(
+                                &mut rpc,
+                                json!({
+                                    "cmd": "DISPATCH", "evt": "SPEAKING_START", "data": { "user_id": "1" }
+                                }),
+                            );
+                        }
+                        if index == 2 && event == "VOICE_STATE_UPDATE" {
+                            send(
+                                &mut rpc,
+                                json!({
+                                    "cmd": "SUBSCRIBE", "evt": "ERROR", "nonce": request["nonce"],
+                                    "data": { "message": "Event unavailable" }
+                                }),
+                            );
+                        } else {
+                            reply(&mut rpc, request, json!({ "evt": event }));
+                        }
+                    }
+                }
+            }
+        });
+        let mut session = Session::new(Rpc::new(client), "Local user".into());
+        let members = session.poll().unwrap().channel.unwrap().members;
+        assert!(members[0].speaking && members[0].streaming);
+        assert!(!members[1].speaking && !members[1].streaming);
+        assert!(session.poll_events().unwrap().is_none());
+
+        let members = session.poll().unwrap().channel.unwrap().members;
+        assert!(!members[0].speaking && !members[0].streaming);
+        assert!(members[1].streaming && !members[1].speaking);
+        for event in [
+            json!({ "evt": "SPEAKING_START", "data": { "channel_id": "404", "user_id": "1" } }),
+            json!({ "evt": "SPEAKING_START", "data": { "user_id": "2" } }),
+            json!({ "evt": "VOICE_STATE_UPDATE", "data": { "user_id": "2", "voice_state": { "self_video": true } } }),
+        ] {
+            let mut event = event;
+            event["cmd"] = json!("DISPATCH");
+            send(&mut dispatch, event);
+        }
+        let members = session
+            .poll_events()
+            .unwrap()
+            .unwrap()
+            .channel
+            .unwrap()
+            .members;
+        assert!(!members[0].speaking && !members[0].streaming);
+        assert!(members[1].speaking && !members[1].streaming);
+        let channel = session.poll().unwrap().channel.unwrap();
+        assert_eq!(channel.id, "50");
+        assert!(
+            channel
+                .members
+                .iter()
+                .all(|member| !member.speaking && !member.streaming)
+        );
+        assert!(!session.subscriptions.contains(&"VOICE_STATE_UPDATE"));
+        ipc.join().unwrap();
+        drop(dispatch);
+        assert!(session.poll_events().is_err());
+    }
+
+    #[test]
     fn discord_avatar_urls_use_profile_hash_or_default_index() {
         let hash = "a_0123456789abcdef0123456789abcdef";
         assert_eq!(
@@ -460,10 +762,7 @@ mod tests {
     fn rejected_token_reauthorizes_and_caches_the_new_token() {
         let (client, server) = UnixStream::pair().unwrap();
         let ipc = thread::spawn(move || {
-            let mut rpc = Rpc {
-                socket: server,
-                nonce: 0,
-            };
+            let mut rpc = Rpc::new(server);
             let request = assert_rpc(
                 &mut rpc,
                 "AUTHENTICATE",
@@ -481,7 +780,7 @@ mod tests {
                 "AUTHORIZE",
                 json!({
                     "client_id": "123456",
-                    "scopes": SCOPES,
+                    "scopes": ["identify", "rpc", "rpc.voice.read", "rpc.voice.write"],
                 }),
             );
             send(
@@ -536,28 +835,39 @@ mod tests {
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
         });
 
-        let mut credentials = Credentials {
+        let credentials = Credentials {
             client_id: "123456".into(),
             secret: Some("app+&secret".into()),
             access_token: Some("expired".into()),
         };
-        let http_client = reqwest::blocking::Client::builder()
-            .no_proxy()
-            .timeout(RPC_TIMEOUT)
-            .build()
+        let (updates, _) = async_channel::unbounded();
+        let mut authorization = auth::Authorization::new(None);
+        let mut login = authorization.login(&credentials, true).unwrap();
+        let session = login
+            .authenticate(Rpc::new(client), &endpoint, Some(&updates))
             .unwrap();
-        let session = credentials
-            .authenticate_session(
-                Rpc {
-                    socket: client,
-                    nonce: 0,
-                },
-                |id, secret, code| exchange_code(&http_client, &endpoint, id, secret, code),
-            )
-            .unwrap();
-        assert_eq!(session.account, "Test account");
-        assert_eq!(credentials.access_token.as_deref(), Some("new-token"));
+        assert_eq!(session.voice.account, "Test account");
         http.join().unwrap();
+        ipc.join().unwrap();
+
+        let (client, server) = UnixStream::pair().unwrap();
+        let ipc = thread::spawn(move || {
+            let mut rpc = Rpc::new(server);
+            let request = assert_rpc(
+                &mut rpc,
+                "AUTHENTICATE",
+                json!({ "access_token": "new-token" }),
+            );
+            send(
+                &mut rpc,
+                json!({
+                    "cmd": "AUTHENTICATE", "nonce": request["nonce"], "data": { "user": { "global_name": "Test account" } }
+                }),
+            );
+        });
+        login
+            .authenticate(Rpc::new(client), &endpoint, None)
+            .unwrap();
         ipc.join().unwrap();
     }
 }

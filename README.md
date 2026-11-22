@@ -7,7 +7,7 @@ The app opens to a single resizable widget grid. Use **Edit layout** in the righ
 - **Performance** shows selected sensors as a chart, a pair, or a list. **Memory** and **Network** show live system readings and usage history. **Storage** shows each drive's capacity and the space used by mounted filesystems that can be attributed to that drive.
 - **Now playing** shows track details, album art, and playback controls. When multiple players are available, click the player name in the card header to switch. Make the widget at least three rows tall to see the seek bar.
 - **Audio** adjusts device volume and mute and lets you set the default output or microphone. Add **App mixer** to adjust playback and recording streams using app icons, mute buttons, and volume sliders. Hover over an icon to see the app and stream names.
-- **Discord** shows voice participants and provides controls to connect, mute, deafen, and leave a call.
+- **Discord** shows a green ring around each speaker’s avatar and a **LIVE** badge when the desktop client reports a Go Live stream. The widget also provides controls to connect, mute, deafen, and leave a call.
 - **Viewer** displays web pages, iframes, YouTube, Twitch, and local media inside the grid. Discord voice channel links open in Discord.
 
 ## Run on Linux
@@ -55,7 +55,7 @@ Paste a Discord voice channel link into the Viewer. The dashboard leaves fullscr
 
 For client-secret login, add exactly `http://127.0.0.1` under **OAuth2 → Redirects** for your application in the Discord Developer Portal. Discord desktop uses the registered redirect and returns the authorization code over RPC. Second Screen sends the URI to Discord's token endpoint when exchanging the code.
 
-Discord voice RPC requires an approved Discord application or access as an authorized tester of the application. Open Discord desktop with the authorized account. In **Settings → Discord**, enter your application ID and its client secret, then save and click **Connect** in the Discord widget to authorize access. Add it from **Edit layout** if needed. You can supply a Discord OAuth access token with the `identify`, `rpc`, `rpc.voice.read`, and `rpc.voice.write` scopes in place of the client secret. Second Screen keeps tokens obtained during authorization in memory. Discord can restore prior voice settings when the RPC connection closes. [Discord RPC documentation](https://docs.discord.com/developers/topics/rpc)
+Discord voice RPC requires an approved Discord application or access as an authorized tester of the application. Open Discord desktop with the authorized account. In **Settings → Discord**, enter your application ID and its client secret, then save and click **Connect** in the Discord widget to authorize access. Add it from **Edit layout** if needed. You can supply a Discord OAuth access token with the `identify`, `rpc`, `rpc.voice.read`, and `rpc.voice.write` scopes in place of the client secret. Second Screen saves OAuth authorization in the desktop keyring through Secret Service and reconnects when Discord opens. It refreshes expired tokens using the saved grant. On desktops without a working keyring, OAuth credentials obtained during authorization last until the app exits. Discord can restore prior voice settings when the RPC connection closes. [Discord RPC documentation](https://docs.discord.com/developers/topics/rpc)
 
 Use the **Media apps**, **Audio devices**, and **Storage** sections of Settings to choose which sources appear in the widgets. Settings saves credentials and visibility preferences to the user-only file `${XDG_CONFIG_HOME:-~/.config}/secondscreen/settings.json`. Existing deployments can still use `SECONDSCREEN_DISCORD_CLIENT_ID` with `SECONDSCREEN_DISCORD_CLIENT_SECRET` or `SECONDSCREEN_DISCORD_ACCESS_TOKEN`. Saved Discord credentials take precedence.
 
@@ -67,11 +67,11 @@ See [BENCHMARK.md](BENCHMARK.md) for the performance results and reproduction st
 
 ## Clock, calendar, weather, notifications, and FPS
 
-Add these tiles from **Edit layout → Add widget**. Open **Settings → Widgets** to change time zones, weather location, or temperature units.
+Add these tiles from **Edit layout → Add widget**. Open **Settings → Widgets** to change time zones, weather location, or the weather units and time format.
 
 - **World clock** shows local time and your chosen IANA time zones. Enter names such as `America/New_York, Asia/Kolkata`. Each clock follows its zone’s daylight-saving rules.
 - **Calendar** shows the local month and highlights today. Use the arrows to browse months. Click the month name to return to today.
-- **Weather / AQI** shows current conditions, temperature, and the US Air Quality Index for one location. Enter a city name or exact latitude and longitude. City search uses the first matching location. The widget refreshes every 15 minutes and retries after five minutes when data is unavailable. [Open-Meteo weather](https://open-meteo.com/) · [Air quality data from CAMS via Open-Meteo](https://open-meteo.com/en/docs/air-quality-api)
+- **Weather / AQI** shows current conditions, wind, sunrise and sunset, US AQI, and a ten-day forecast with daily highs and lows. Widen the tile for forecast cards or scroll through the days in a narrow tile. Enter a city name or exact latitude and longitude. City search uses the first matching location. The widget refreshes every 15 minutes and retries after five minutes when data is unavailable. [Open-Meteo weather](https://open-meteo.com/) · [Air quality data from CAMS via Open-Meteo](https://open-meteo.com/en/docs/air-quality-api)
 - **Notifications** shows the latest 30 incoming Freedesktop desktop notifications while the tile is on Home. The history stays in memory. **Clear** clears the tile’s history. The desktop session bus must allow notification monitoring.
 - **FPS** displays the Gamescope session’s reported frame rate and a 60-second graph. Add the tile, then launch a game through Gamescope with the Steam launch options below. For a standalone game, replace `%command%` with its executable. Gamescope writes a sample every 300 frames.
 

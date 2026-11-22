@@ -67,6 +67,14 @@ trait Integration {
 
     fn poll(&mut self) -> Update;
     fn handle(&mut self, action: Self::Action, updates: &Sender<Update>) -> anyhow::Result<()>;
+
+    fn event_interval(&self) -> Option<Duration> {
+        None
+    }
+
+    fn poll_events(&mut self) -> Option<Update> {
+        None
+    }
 }
 
 fn worker<I: Integration>(
@@ -80,11 +88,23 @@ fn worker<I: Integration>(
         let mut integration = create();
         let mut next_poll = Instant::now();
         while !updates.is_closed() {
-            match receiver.recv_timeout(next_poll.saturating_duration_since(Instant::now())) {
+            let until_poll = next_poll.saturating_duration_since(Instant::now());
+            let wait = integration
+                .event_interval()
+                .map_or(until_poll, |interval| until_poll.min(interval));
+            match receiver.recv_timeout(wait) {
                 Ok(action) => {
                     if let Err(error) = integration.handle(action, &updates) {
                         let _ = updates.send_blocking(Update::ActionError(error.to_string()));
                     }
+                }
+                Err(RecvTimeoutError::Timeout) if Instant::now() < next_poll => {
+                    if let Some(update) = integration.poll_events()
+                        && updates.send_blocking(update).is_err()
+                    {
+                        break;
+                    }
+                    continue;
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,

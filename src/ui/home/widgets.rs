@@ -45,7 +45,7 @@ impl Kind {
             Self::Viewer => "Web, video, Twitch, and slideshows",
             Self::WorldClock => "Time and date across time zones",
             Self::Calendar => "Monthly calendar and today’s date",
-            Self::Weather => "Local conditions and air quality",
+            Self::Weather => "10-day forecast and air quality",
             Self::Notifications => "Recent desktop notifications",
             Self::Fps => "Live Gamescope frame rate",
         }
@@ -105,7 +105,7 @@ impl Dashboard {
             Kind::Storage => storage_list("home-storage", self.visible_disks()).into_any_element(),
             Kind::WorldClock => self.world_clock(height).into_any_element(),
             Kind::Calendar => self.calendar(height, cx).into_any_element(),
-            Kind::Weather => self.weather_widget(height).into_any_element(),
+            Kind::Weather => self.weather_widget(tile.columns, height).into_any_element(),
             Kind::Notifications => self.notification_widget().into_any_element(),
             Kind::Fps => self.fps_widget(height).into_any_element(),
             Kind::Viewer => div()

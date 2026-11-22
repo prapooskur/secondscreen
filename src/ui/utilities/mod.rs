@@ -1,6 +1,7 @@
 mod fps;
 mod notifications;
 mod weather;
+mod weather_tile;
 
 use super::{Dashboard, HISTORY, append, home::Kind, monitor::graph, theme::*};
 use futures_lite::StreamExt;
@@ -132,9 +133,12 @@ impl Dashboard {
                 let query = query.clone();
                 let known = place.clone();
                 let result = blocking::unblock(move || weather::fetch(&query, known)).await;
-                let complete = result
-                    .as_ref()
-                    .is_ok_and(|r| r.weather.is_some() && r.aqi.is_some());
+                let complete = result.as_ref().is_ok_and(|r| {
+                    r.weather
+                        .as_ref()
+                        .is_some_and(|w| w.current.is_some() && !w.days.is_empty())
+                        && r.aqi.is_some()
+                });
                 if this
                     .update(cx, |this, cx| {
                         match result {
@@ -147,7 +151,7 @@ impl Dashboard {
                             Err(e) => {
                                 this.utilities.weather_error =
                                     Some(if this.utilities.report.is_some() {
-                                        "Refresh failed · showing last reading".into()
+                                        "Refresh failed · showing the last forecast".into()
                                     } else {
                                         e.to_string()
                                     })
@@ -309,56 +313,6 @@ impl Dashboard {
             })));
         }
         col().flex_1().gap(r(3.)).child(nav).child(grid)
-    }
-
-    pub(super) fn weather_widget(&self, height: f32) -> impl IntoElement {
-        let state = &self.utilities;
-        let mut tile = col()
-            .id("weather-readings")
-            .flex_1()
-            .overflow_y_scroll()
-            .gap(r(5.));
-        if let Some(report) = &state.report {
-            tile = tile.child(label(report.place.name.clone()).truncate());
-            if let Some(reading) = &report.weather {
-                let (value, unit) = if self.preferences.fahrenheit {
-                    (reading.temperature_2m * 1.8 + 32., "°F")
-                } else {
-                    (reading.temperature_2m, "°C")
-                };
-                tile = tile.child(
-                    row()
-                        .items_baseline()
-                        .gap(r(8.))
-                        .child(
-                            mono(format!("{value:.0}{unit}"))
-                                .text_size(r(if height > 100. { 28. } else { 20. }))
-                                .text_color(c(AMBER)),
-                        )
-                        .child(label(weather::condition(reading.weather_code))),
-                );
-            } else {
-                tile = tile.child(quiet("Weather unavailable"));
-            }
-            tile = tile.child(if let Some(aqi) = report.aqi {
-                label(format!("US AQI {aqi:.0} · {}", weather::air_category(aqi)))
-            } else {
-                label("Air quality unavailable")
-            });
-            if let Some(at) = state.weather_at {
-                tile = tile.child(quiet(format!(
-                    "Open-Meteo / CAMS · {} min ago",
-                    at.elapsed().as_secs() / 60
-                )));
-            }
-        } else if state.weather_error.is_none() {
-            tile = tile.child(quiet(if state.weather_query.is_empty() {
-                "Choose a location in Settings → Widgets."
-            } else {
-                "Fetching weather and air quality…"
-            }));
-        }
-        tile.children(state.weather_error.as_ref().map(|e| quiet(e.clone())))
     }
 
     pub(super) fn notification_widget(&self) -> impl IntoElement {
