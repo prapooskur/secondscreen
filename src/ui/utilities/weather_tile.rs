@@ -1,4 +1,4 @@
-use gpui::{Div, IntoElement, Styled, div, linear_color_stop, linear_gradient, prelude::*};
+use gpui::{Div, IntoElement, Styled, div, prelude::*};
 
 use super::weather;
 use crate::ui::{
@@ -47,10 +47,10 @@ impl Dashboard {
             .child(
                 row()
                     .gap(r(9.))
-                    .child(icon(
+                    .child(icon_tile(
                         symbol,
-                        c(accent),
-                        if wide && height >= 160. { 40. } else { 29. },
+                        accent,
+                        if wide && height >= 160. { 46. } else { 36. },
                     ))
                     .child(
                         mono(temperature(
@@ -98,49 +98,62 @@ impl Dashboard {
         } else {
             (None, Some(details))
         };
-        let hero = row()
-            .flex_none()
-            .p(r(8.))
-            .gap(r(12.))
-            .rounded(r(8.))
-            .bg(linear_gradient(
-                110.,
-                linear_color_stop(c(accent).opacity(0.13), 0.),
-                linear_color_stop(c(HEADER), 1.),
-            ))
-            .child(summary)
-            .children(hero_details);
-        tile = tile.child(hero);
+        tile = tile.child(
+            row()
+                .flex_none()
+                .gap(r(12.))
+                .child(summary)
+                .children(hero_details),
+        );
 
         let air = report.aqi.map_or_else(
             || "Air quality unavailable".into(),
             |aqi| format!("US AQI {aqi:.0} · {}", weather::air_category(aqi)),
         );
-        tile = tile.child(quiet(air));
+        tile = tile.child(
+            quiet(air)
+                .flex_none()
+                .pb(r(7.))
+                .border_b_1()
+                .border_color(c(STROKE)),
+        );
         if let Some(forecast) = forecast.filter(|weather| !weather.days.is_empty()) {
             let heading = label(format!("{}-day forecast", forecast.days.len()));
             if wide {
                 tile = tile.child(heading);
                 for days in forecast.days.chunks(if columns >= 4 { 10 } else { 5 }) {
-                    tile = tile.child(split().flex_none().gap(r(6.)).children(days.iter().map(
-                        |day| forecast_card(day, Some(day.date) == forecast.today, fahrenheit),
-                    )));
+                    tile = tile.child(
+                        split()
+                            .flex_none()
+                            .gap(r(4.))
+                            .p(r(4.))
+                            .rounded(r(7.))
+                            .bg(c(BACK).opacity(0.45))
+                            .children(days.iter().map(|day| {
+                                forecast_card(day, Some(day.date) == forecast.today, fahrenheit)
+                            })),
+                    );
                 }
             } else {
                 tile = tile.child(
                     row()
                         .flex_none()
+                        .px(r(10.))
                         .child(heading.flex_1())
                         .child(temperature_column("High", INK))
                         .child(temperature_column("Low", MUTED)),
                 );
-                for day in &forecast.days {
-                    tile = tile.child(forecast_row(
-                        day,
-                        Some(day.date) == forecast.today,
-                        fahrenheit,
-                    ));
-                }
+                tile = tile.child(
+                    col()
+                        .flex_none()
+                        .gap(r(2.))
+                        .p(r(4.))
+                        .rounded(r(7.))
+                        .bg(c(BACK).opacity(0.45))
+                        .children(forecast.days.iter().map(|day| {
+                            forecast_row(day, Some(day.date) == forecast.today, fahrenheit)
+                        })),
+                );
             }
         } else {
             tile = tile.child(quiet("Daily forecast unavailable"));
@@ -186,11 +199,8 @@ fn forecast_card(day: &weather::Day, today: bool, fahrenheit: bool) -> impl Into
         .items_center()
         .gap(r(2.))
         .py(r(5.))
-        .rounded(r(7.))
-        .border_1()
-        .border_color(c(STROKE))
-        .bg(c(HEADER))
-        .when(today, |card| card.border_color(c(AMBER).opacity(0.46)))
+        .rounded(r(5.))
+        .when(today, |card| card.bg(c(HOVER)))
         .child(label(day_label(day, today)).text_color(c(INK)))
         .child(quiet(day.date.strftime("%b %e").to_string()))
         .child(icon(symbol, c(accent), 22.))
@@ -210,8 +220,9 @@ fn forecast_row(day: &weather::Day, today: bool, fahrenheit: bool) -> impl IntoE
         .id(("weather-day", day.date.day_of_year() as usize))
         .flex_none()
         .h(r(25.))
+        .px(r(6.))
         .rounded(r(5.))
-        .when(today, |line| line.bg(c(AMBER).opacity(0.08)))
+        .when(today, |line| line.bg(c(HOVER)))
         .child(
             row()
                 .flex_1()
