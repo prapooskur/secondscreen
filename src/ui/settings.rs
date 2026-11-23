@@ -2,7 +2,6 @@ use std::{
     collections::BTreeMap,
     io::{ErrorKind, Write},
     process::{Command, Stdio},
-    time::Instant,
 };
 
 use gpui::{
@@ -154,7 +153,7 @@ impl Dashboard {
         {
             match autostart::enabled() {
                 Ok(enabled) => self.settings.start_at_login = enabled,
-                Err(error) => self.error = Some((Instant::now(), format!("{error:#}"))),
+                Err(error) => self.set_error(format!("{error:#}"), cx),
             }
             if launch_display::supported() {
                 self.settings.launch_displays = None;
@@ -434,7 +433,7 @@ impl Dashboard {
         match badge.and_then(|badge| self.set_profile_badge(index, badge, cx)) {
             Ok(()) => self.settings.profile_label = None,
             Err(error) => {
-                self.error = Some((Instant::now(), format!("{error:#}")));
+                self.set_error(format!("{error:#}"), cx);
                 cx.notify();
             }
         }
@@ -493,7 +492,7 @@ impl Dashboard {
                                 }
                             }
                             Err(err) => {
-                                this.error = Some((Instant::now(), err.to_string()));
+                                this.set_error(err.to_string(), cx);
                                 cx.notify();
                             }
                         }
@@ -709,7 +708,7 @@ impl Dashboard {
                                     this.error = None;
                                 }
                                 Err(error) => {
-                                    this.error = Some((Instant::now(), format!("{error:#}")));
+                                    this.set_error(format!("{error:#}"), cx);
                                 }
                             }
                             cx.notify();
@@ -971,7 +970,7 @@ impl Dashboard {
                     view.update(cx, |this, cx| match result {
                         Ok(credentials) => this.save_discord(Some(credentials), window, cx),
                         Err(error) => {
-                            this.error = Some((Instant::now(), error.to_string()));
+                            this.set_error(error.to_string(), cx);
                             cx.notify();
                         }
                     });
@@ -1065,7 +1064,7 @@ impl Dashboard {
                 true
             }
             Err(error) => {
-                self.error = Some((Instant::now(), format!("{error:#}")));
+                self.set_error(format!("{error:#}"), cx);
                 false
             }
         };

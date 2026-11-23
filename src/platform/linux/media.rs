@@ -1,24 +1,103 @@
 use anyhow::{Context, Result, ensure};
 use async_channel::Sender;
-use std::{collections::HashMap, time::Duration};
+use futures_lite::{StreamExt, future};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 use zbus::{
+    MatchRule, Message, MessageStream,
     blocking::{Connection, Proxy, connection::Builder, fdo::DBusProxy},
+    message::Type,
     zvariant::{OwnedObjectPath, OwnedValue},
 };
 
 use super::Integration;
-use crate::model::{Artwork, MediaAction, MediaState, Playback, Player, Track, Update};
+use crate::model::{
+    Artwork, MediaAction, MediaState, Playback, PlaybackPosition, Player, Track, Update,
+};
 
 const PREFIX: &str = "org.mpris.MediaPlayer2.";
 const ROOT: &str = "org.mpris.MediaPlayer2";
 const PATH: &str = "/org/mpris/MediaPlayer2";
 const PLAYER: &str = "org.mpris.MediaPlayer2.Player";
+const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
+const POSITION_POLL: Duration = Duration::from_millis(900);
+const RECOVERY_POLL: Duration = Duration::from_secs(2);
+const RECONCILE_POLL: Duration = Duration::from_secs(10);
 
 type Properties = HashMap<String, OwnedValue>;
 
 #[derive(Default)]
 pub(super) struct Media {
     connection: Option<Connection>,
+    signals: Option<Signals>,
+    players: Vec<Player>,
+    next_discovery: Option<Instant>,
+    seeking: Option<(String, Instant)>,
+}
+
+struct Signals {
+    owners: MessageStream,
+    players: MessageStream,
+}
+
+impl Signals {
+    async fn new(connection: &zbus::Connection) -> Result<Self> {
+        let owners = MatchRule::builder()
+            .msg_type(Type::Signal)
+            .sender("org.freedesktop.DBus")?
+            .interface("org.freedesktop.DBus")?
+            .member("NameOwnerChanged")?
+            .arg0ns(ROOT)?
+            .build();
+        let players = MatchRule::builder()
+            .msg_type(Type::Signal)
+            .path(PATH)?
+            .build();
+        Ok(Self {
+            owners: MessageStream::for_match_rule(owners, connection, None).await?,
+            players: MessageStream::for_match_rule(players, connection, None).await?,
+        })
+    }
+
+    async fn changed(&mut self) -> bool {
+        loop {
+            let message = future::or(self.owners.next(), self.players.next()).await;
+            match message {
+                Some(Ok(message)) if media_event(&message) => return true,
+                Some(Ok(_)) => {}
+                _ => return false,
+            }
+        }
+    }
+}
+
+fn media_event(message: &Message) -> bool {
+    let header = message.header();
+    match (
+        header.interface().map(|name| name.as_str()),
+        header.member().map(|name| name.as_str()),
+    ) {
+        (Some("org.freedesktop.DBus"), Some("NameOwnerChanged")) => true,
+        (Some(PLAYER), Some("Seeked")) => true,
+        (Some(PROPERTIES), Some("PropertiesChanged")) => {
+            let Ok((interface, changed, invalidated)) =
+                message
+                    .body()
+                    .deserialize::<(String, Properties, Vec<String>)>()
+            else {
+                return false;
+            };
+            interface == ROOT
+                || (interface == PLAYER
+                    && changed
+                        .keys()
+                        .chain(invalidated.iter())
+                        .any(|property| property != "Position"))
+        }
+        _ => false,
+    }
 }
 
 impl Media {
@@ -35,14 +114,23 @@ impl Media {
             .context("The D-Bus session is unavailable.")
     }
 
-    fn sample(&mut self) -> Result<Vec<Player>> {
-        let connection = self.connection()?;
-        let bus = DBusProxy::new(connection)?;
+    fn discover(&mut self) -> Result<Vec<Player>> {
+        let connection = self.connection()?.clone();
+        if self.signals.is_none() {
+            self.signals = match async_io::block_on(Signals::new(connection.inner())) {
+                Ok(signals) => Some(signals),
+                Err(error) => {
+                    log::debug!("Could not watch MPRIS signals: {error:#}");
+                    None
+                }
+            };
+        }
+        let bus = DBusProxy::new(&connection)?;
         let mut players: Vec<_> = bus
             .list_names()?
             .into_iter()
             .filter(|name| name.as_str().starts_with(PREFIX))
-            .filter_map(|name| read_player(connection, name.as_str()).ok())
+            .filter_map(|name| read_player(&connection, name.as_str()).ok())
             .collect();
 
         players.sort_by(|a, b| {
@@ -52,6 +140,59 @@ impl Media {
                 .then_with(|| a.id.cmp(&b.id))
         });
         Ok(players)
+    }
+
+    fn discover_update(&mut self) -> Update {
+        let issue = match self.discover() {
+            Ok(players) => {
+                self.players = players;
+                let interval = if self.signals.is_some() {
+                    RECONCILE_POLL
+                } else {
+                    RECOVERY_POLL
+                };
+                self.next_discovery = Some(Instant::now() + interval);
+                None
+            }
+            Err(error) => {
+                self.signals = None;
+                self.connection = None;
+                self.players.clear();
+                self.next_discovery = None;
+                Some(format!("D-Bus media discovery failed. {error:#}"))
+            }
+        };
+        Update::Media(MediaState {
+            players: self.players.clone(),
+            issue,
+        })
+    }
+
+    fn refresh_positions(&mut self) {
+        let Some(connection) = &self.connection else {
+            return;
+        };
+        if self
+            .seeking
+            .as_ref()
+            .is_some_and(|(_, until)| Instant::now() >= *until)
+        {
+            self.seeking = None;
+        }
+        for player in &mut self.players {
+            let seeking = self
+                .seeking
+                .as_ref()
+                .is_some_and(|(id, _)| *id == player.id);
+            if (player.playback == Playback::Playing || seeking)
+                && let Ok(properties) = Proxy::new(connection, player.id.as_str(), PATH, PROPERTIES)
+            {
+                player.position = read_position(&properties).or_else(|| {
+                    let values: Properties = properties.call("GetAll", &(PLAYER,)).ok()?;
+                    position(integer(&values, "Position")?, Instant::now())
+                });
+            }
+        }
     }
 
     fn command(&mut self, id: &str, action: MediaAction) -> Result<()> {
@@ -75,8 +216,9 @@ impl Media {
 }
 
 fn read_player(connection: &Connection, id: &str) -> Result<Player> {
-    let properties = Proxy::new(connection, id, PATH, "org.freedesktop.DBus.Properties")?;
+    let properties = Proxy::new(connection, id, PATH, PROPERTIES)?;
     let values: Properties = properties.call("GetAll", &(PLAYER,))?;
+    let sampled_at = Instant::now();
     let root: Properties = properties.call("GetAll", &(ROOT,)).unwrap_or_default();
     let name = string(&root, "Identity")
         .map(str::to_owned)
@@ -99,12 +241,13 @@ fn read_player(connection: &Connection, id: &str) -> Result<Player> {
         .and_then(|value| Properties::try_from(value).ok())
         .and_then(metadata);
     let position = integer(&values, "Position")
-        .or_else(|| {
-            track.as_ref()?;
-            let value: OwnedValue = properties.call("Get", &(PLAYER, "Position")).ok()?;
-            i64::try_from(&value).ok()
-        })
-        .filter(|position| *position >= 0);
+        .and_then(|value| position(value, sampled_at))
+        .or_else(|| track.as_ref().and_then(|_| read_position(&properties)));
+    let rate = values
+        .get("Rate")
+        .and_then(|value| f64::try_from(value).ok())
+        .filter(|rate| rate.is_finite() && *rate != 0.)
+        .unwrap_or(1.);
     let control = flag(&values, "CanControl");
 
     Ok(Player {
@@ -114,12 +257,22 @@ fn read_player(connection: &Connection, id: &str) -> Result<Player> {
         playback,
         track,
         position,
+        rate,
         can_play: control && flag(&values, "CanPlay"),
         can_pause: control && flag(&values, "CanPause"),
         can_previous: control && flag(&values, "CanGoPrevious"),
         can_next: control && flag(&values, "CanGoNext"),
         can_seek: control && flag(&values, "CanSeek"),
     })
+}
+
+fn position(value: i64, at: Instant) -> Option<PlaybackPosition> {
+    (value >= 0).then(|| PlaybackPosition::new(value, at))
+}
+
+fn read_position(properties: &Proxy<'_>) -> Option<PlaybackPosition> {
+    let value: OwnedValue = properties.call("Get", &(PLAYER, "Position")).ok()?;
+    position(i64::try_from(&value).ok()?, Instant::now())
 }
 
 fn application_id(bus_name: &str, desktop_entry: Option<&str>) -> String {
@@ -223,31 +376,62 @@ impl Integration for Media {
     type Action = (String, MediaAction);
 
     fn poll(&mut self) -> Update {
-        Update::Media(match self.sample() {
-            Ok(players) => MediaState {
-                players,
+        if self.next_discovery.is_none_or(|at| Instant::now() >= at) {
+            self.discover_update()
+        } else {
+            self.refresh_positions();
+            Update::Media(MediaState {
+                players: self.players.clone(),
                 issue: None,
-            },
-            Err(error) => {
-                self.connection = None;
-                MediaState {
-                    players: Vec::new(),
-                    issue: Some(format!("D-Bus media discovery failed. {error}")),
-                }
-            }
-        })
+            })
+        }
+    }
+
+    fn poll_interval(&self) -> Duration {
+        let Some(at) = self.next_discovery else {
+            return RECOVERY_POLL;
+        };
+        let until_discovery = at.saturating_duration_since(Instant::now());
+        if self.seeking.is_some()
+            || self
+                .players
+                .iter()
+                .any(|player| player.playback == Playback::Playing)
+        {
+            until_discovery.min(POSITION_POLL)
+        } else {
+            until_discovery
+        }
+    }
+
+    async fn wait_for_event(&mut self) {
+        let Some(signals) = &mut self.signals else {
+            return future::pending().await;
+        };
+        if !signals.changed().await {
+            self.signals = None;
+            self.connection = None;
+        }
+    }
+
+    fn on_event(&mut self) -> Option<Update> {
+        Some(self.discover_update())
     }
 
     fn handle(&mut self, (id, action): Self::Action, updates: &Sender<Update>) -> Result<()> {
+        self.next_discovery = None;
         let MediaAction::Seek { requested_at, .. } = &action else {
             return self.command(&id, action);
         };
         let requested_at = *requested_at;
-        if let Err(error) = self.command(&id, action) {
-            let _ = updates.send_blocking(Update::MediaSeekFailed {
-                requested_at,
-                error: format!("Could not seek. {error:#}"),
-            });
+        match self.command(&id, action) {
+            Ok(()) => self.seeking = Some((id, requested_at + Duration::from_secs(3))),
+            Err(error) => {
+                let _ = updates.send_blocking(Update::MediaSeekFailed {
+                    requested_at,
+                    error: format!("Could not seek. {error:#}"),
+                });
+            }
         }
         Ok(())
     }

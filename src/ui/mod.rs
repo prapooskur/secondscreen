@@ -11,6 +11,8 @@ mod theme;
 mod utilities;
 mod viewer;
 
+pub(crate) use icons::IconAssets;
+
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
@@ -19,24 +21,39 @@ use std::{
 };
 
 use async_channel::Receiver;
+use futures_lite::future;
 use gpui::{
-    Context, FocusHandle, FontWeight, IntoElement, KeyDownEvent, Render, SharedString, Window,
-    prelude::*, px,
+    Context, FocusHandle, FontWeight, IntoElement, KeyDownEvent, Render, SharedString, Task,
+    Window, prelude::*, px,
 };
 
 use crate::{
     config::Preferences,
     model::{
         AudioAction, AudioChannel, AudioKind, AudioState, DiscordAction, DiscordState, DiskUsage,
-        MediaAction, MediaState, Metrics, Player, Update,
+        MediaAction, MediaState, Metrics, Playback, Player, Update,
     },
     platform::Controls,
 };
 use theme::*;
+use {home::Kind, settings::Section};
 
 const HISTORY: usize = 60;
+const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const NOTICE_DURATION: Duration = Duration::from_secs(9);
 const CONTENT_X: f32 = 18.;
 const CONTENT_Y: f32 = 16.;
+
+enum Refresh {
+    None,
+    Periodic,
+    Immediate,
+}
+
+struct ErrorNotice {
+    message: String,
+    _dismissal: Task<()>,
+}
 
 #[derive(Default)]
 struct History {
@@ -74,7 +91,7 @@ pub struct Dashboard {
     controls: Controls,
     focus: FocusHandle,
     gesture: slider::Gesture,
-    error: Option<(Instant, String)>,
+    error: Option<ErrorNotice>,
 }
 
 impl Dashboard {
@@ -92,11 +109,42 @@ impl Dashboard {
         .detach();
 
         cx.spawn(async move |this, cx| {
-            while let Ok(update) = updates.recv().await {
+            let mut next_refresh = Instant::now();
+            let mut pending = false;
+            loop {
+                let incoming = async { Some(updates.recv().await) };
+                let update = if pending {
+                    let delay = next_refresh.saturating_duration_since(Instant::now());
+                    let timer = cx.background_executor().timer(delay);
+                    future::or(
+                        async {
+                            timer.await;
+                            None
+                        },
+                        incoming,
+                    )
+                    .await
+                } else {
+                    incoming.await
+                };
+                let update = match update {
+                    Some(Ok(update)) => Some(update),
+                    Some(Err(_)) => break,
+                    None => None,
+                };
                 if this
                     .update(cx, |this, cx| {
-                        if this.apply(update) {
-                            cx.notify();
+                        let refresh =
+                            update.map_or(Refresh::Periodic, |update| this.apply(update, cx));
+                        let now = Instant::now();
+                        match refresh {
+                            Refresh::None => return,
+                            Refresh::Periodic if now < next_refresh => pending = true,
+                            Refresh::Periodic | Refresh::Immediate => {
+                                pending = false;
+                                next_refresh = now + REFRESH_INTERVAL;
+                                cx.notify();
+                            }
                         }
                     })
                     .is_err()
@@ -133,9 +181,19 @@ impl Dashboard {
         }
     }
 
-    fn apply(&mut self, update: Update) -> bool {
+    fn showing_settings(&self, section: Section) -> bool {
+        self.settings.open && self.settings.section == section
+    }
+
+    fn apply(&mut self, update: Update, cx: &mut Context<Self>) -> Refresh {
         match update {
             Update::Metrics(metrics) => {
+                let redraw = [Kind::Performance, Kind::Memory, Kind::Network]
+                    .into_iter()
+                    .any(|kind| self.home.shows(kind))
+                    || ((self.home.shows(Kind::Storage)
+                        || self.showing_settings(Section::Storage))
+                        && self.metrics.storage != metrics.storage);
                 let mut previous = std::mem::take(&mut self.history.sensors);
                 for sensor in &metrics.sensors {
                     let mut samples = previous.remove(&sensor.id).unwrap_or_default();
@@ -155,15 +213,51 @@ impl Dashboard {
                     metrics.network_available.then_some(metrics.upload),
                 );
                 self.metrics = metrics;
-                true
+                if redraw {
+                    Refresh::Periodic
+                } else {
+                    Refresh::None
+                }
             }
             Update::Audio(state) => {
+                if self.audio == state {
+                    return Refresh::None;
+                }
                 self.audio = state;
-                self.settings.open
-                    || self.home.contains(home::Kind::Audio)
-                    || self.home.contains(home::Kind::Mixer)
+                if self.showing_settings(Section::Audio)
+                    || self.home.shows(Kind::Audio)
+                    || self.home.shows(Kind::Mixer)
+                {
+                    Refresh::Immediate
+                } else {
+                    Refresh::None
+                }
             }
-            Update::Media(state) => {
+            Update::Media(mut state) => {
+                let show_media = self.home.shows(Kind::Media);
+                let details_changed = (show_media || self.showing_settings(Section::Media))
+                    && (self.media.issue != state.issue
+                        || self.media.players.len() != state.players.len()
+                        || self
+                            .media
+                            .players
+                            .iter()
+                            .zip(&state.players)
+                            .any(|(previous, next)| !previous.same_details(next)));
+                let refresh_progress = show_media
+                    && self.home.shows_media_progress()
+                    && self.current_player().is_some_and(|player| {
+                        state
+                            .players
+                            .iter()
+                            .find(|next| next.id == player.id)
+                            .is_some_and(|next| {
+                                (next.playback == Playback::Playing && next.position.is_some())
+                                    || next.position.map(|position| position.reported)
+                                        != player.position.map(|position| position.reported)
+                            })
+                    });
+                self.follow_media_positions(&mut state);
                 self.media = state;
                 if self
                     .player
@@ -172,8 +266,15 @@ impl Dashboard {
                 {
                     self.player = None;
                 }
+                let had_seek = self.pending_seek.is_some();
                 self.update_seek();
-                self.settings.open || self.home.contains(home::Kind::Media)
+                if details_changed || (show_media && had_seek && self.pending_seek.is_none()) {
+                    Refresh::Immediate
+                } else if refresh_progress {
+                    Refresh::Periodic
+                } else {
+                    Refresh::None
+                }
             }
             Update::MediaSeekFailed {
                 requested_at,
@@ -184,19 +285,29 @@ impl Dashboard {
                     .as_ref()
                     .is_none_or(|seek| seek.requested_at != requested_at)
                 {
-                    return false;
+                    return Refresh::None;
                 }
                 self.pending_seek = None;
-                self.error = Some((Instant::now(), error));
-                true
+                self.set_error(error, cx);
+                Refresh::Immediate
             }
             Update::Discord(state) => {
+                if self.discord == state {
+                    return Refresh::None;
+                }
                 self.discord = state;
-                self.home.contains(home::Kind::Discord) || self.home.contains(home::Kind::Viewer)
+                if self.home.shows(Kind::Discord)
+                    || self.home.shows(Kind::Viewer)
+                    || self.showing_settings(Section::Discord)
+                {
+                    Refresh::Immediate
+                } else {
+                    Refresh::None
+                }
             }
             Update::ActionError(error) => {
-                self.error = Some((Instant::now(), error));
-                true
+                self.set_error(error, cx);
+                Refresh::Immediate
             }
         }
     }
@@ -242,19 +353,19 @@ impl Dashboard {
     }
 
     fn send_audio(&self, action: AudioAction) {
-        if self.controls.audio.send(action).is_err() {
+        if self.controls.audio.try_send(action).is_err() {
             log::error!("The audio worker stopped.");
         }
     }
 
     fn send_media(&self, id: String, action: MediaAction) {
-        if self.controls.media.send((id, action)).is_err() {
+        if self.controls.media.try_send((id, action)).is_err() {
             log::error!("The media worker stopped.");
         }
     }
 
     fn send_discord(&self, action: DiscordAction) {
-        if self.controls.discord.send(action).is_err() {
+        if self.controls.discord.try_send(action).is_err() {
             log::error!("The Discord worker stopped.");
         }
     }
@@ -303,11 +414,22 @@ impl Dashboard {
         cx.stop_propagation();
     }
 
+    fn set_error(&mut self, message: String, cx: &mut Context<Self>) {
+        let dismissal = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(NOTICE_DURATION).await;
+            let _ = this.update(cx, |this, cx| {
+                this.error = None;
+                cx.notify();
+            });
+        });
+        self.error = Some(ErrorNotice {
+            message,
+            _dismissal: dismissal,
+        });
+    }
+
     fn notice(&self, theme: Theme) -> Option<impl IntoElement> {
-        let (_, message) = self
-            .error
-            .as_ref()
-            .filter(|(at, _)| at.elapsed() < Duration::from_secs(9))?;
+        let message = &self.error.as_ref()?.message;
         Some(
             theme
                 .quiet(message.clone())
@@ -335,6 +457,14 @@ impl Render for Dashboard {
         let theme = Theme::current(cx);
         self.sync_viewers(cx);
         self.sync_utilities(cx);
+        let artwork = self
+            .home
+            .shows(Kind::Media)
+            .then(|| self.current_player())
+            .flatten()
+            .and_then(|player| player.track.as_ref())
+            .and_then(|track| track.artwork.as_ref());
+        media::retain_album_art(artwork, window, cx);
         let size = window.viewport_size();
         let scale = (f32::from(size.width) / 1400.)
             .min(f32::from(size.height) / 430.)

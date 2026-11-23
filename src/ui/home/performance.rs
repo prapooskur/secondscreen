@@ -129,6 +129,7 @@ impl Dashboard {
                 {
                     let (low, high) = chart_range(samples.iter().copied(), sensor.unit);
                     card = card.child(graph(
+                        (id, index),
                         theme,
                         samples.iter().map(|n| n - low).collect(),
                         None,

@@ -92,7 +92,7 @@ fn main() -> anyhow::Result<()> {
     let app = gpui::Application::new();
     #[cfg(not(feature = "ui-gpui"))]
     let app = gpui_platform::application();
-    app.run(move |cx: &mut App| {
+    app.with_assets(ui::IconAssets).run(move |cx: &mut App| {
         if let Err(error) = cx.text_system().add_fonts(vec![
             Cow::Borrowed(include_bytes!("../assets/fonts/Inter.ttf")),
             Cow::Borrowed(include_bytes!("../assets/fonts/IBMPlexMono-Regular.ttf")),

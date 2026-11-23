@@ -102,8 +102,12 @@ impl Dashboard {
             Kind::Audio => self.audio_widget(cx).into_any_element(),
             Kind::Mixer => self.mixer_widget(cx).into_any_element(),
             Kind::Discord => self.discord_widget(cx).into_any_element(),
-            Kind::Memory => self.memory_widget(theme, height).into_any_element(),
-            Kind::Network => self.network_widget(theme, height).into_any_element(),
+            Kind::Memory => self
+                .memory_widget(tile.widget.id, theme, height)
+                .into_any_element(),
+            Kind::Network => self
+                .network_widget(tile.widget.id, theme, height)
+                .into_any_element(),
             Kind::Storage => {
                 storage_list(theme, "home-storage", self.visible_disks()).into_any_element()
             }
@@ -111,7 +115,9 @@ impl Dashboard {
             Kind::Calendar => self.calendar(height, cx).into_any_element(),
             Kind::Weather => self.weather_widget(theme, width, height).into_any_element(),
             Kind::Notifications => self.notification_widget(theme).into_any_element(),
-            Kind::Fps => self.fps_widget(theme, width, height).into_any_element(),
+            Kind::Fps => self
+                .fps_widget(tile.widget.id, theme, width, height)
+                .into_any_element(),
             Kind::Viewer => div()
                 .flex()
                 .flex_1()
@@ -121,7 +127,7 @@ impl Dashboard {
         }
     }
 
-    fn memory_widget(&self, theme: Theme, height: f32) -> impl IntoElement {
+    fn memory_widget(&self, id: u32, theme: Theme, height: f32) -> impl IntoElement {
         let memory = percent(self.metrics.memory_used, self.metrics.memory_total);
         col()
             .flex_1()
@@ -135,6 +141,7 @@ impl Dashboard {
             ))
             .when(height >= 60., |it| {
                 it.child(graph(
+                    (id, 0),
                     theme,
                     self.history.memory.clone(),
                     None,
@@ -156,7 +163,7 @@ impl Dashboard {
             })
     }
 
-    fn network_widget(&self, theme: Theme, height: f32) -> impl IntoElement {
+    fn network_widget(&self, id: u32, theme: Theme, height: f32) -> impl IntoElement {
         let top = self
             .history
             .download
@@ -202,6 +209,7 @@ impl Dashboard {
             )
             .when(height >= 75., |it| {
                 it.child(graph(
+                    (id, 0),
                     theme,
                     self.history.download.clone(),
                     Some(self.history.upload.clone()),

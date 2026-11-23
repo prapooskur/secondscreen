@@ -374,14 +374,23 @@ impl Integration for Discord {
         Update::Discord(state)
     }
 
-    fn event_interval(&self) -> Option<Duration> {
-        self.session
-            .as_ref()
-            .is_some_and(|session| !session.subscriptions.is_empty())
-            .then_some(EVENT_INTERVAL)
+    fn poll_interval(&self) -> Duration {
+        Duration::from_secs(2)
     }
 
-    fn poll_events(&mut self) -> Option<Update> {
+    async fn wait_for_event(&mut self) {
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| !session.subscriptions.is_empty())
+        {
+            async_io::Timer::after(EVENT_INTERVAL).await;
+        } else {
+            futures_lite::future::pending().await
+        }
+    }
+
+    fn on_event(&mut self) -> Option<Update> {
         match self.session.as_mut()?.poll_events() {
             Ok(voice) => voice.map(|voice| Update::Discord(DiscordState::Connected(voice))),
             Err(error) => Some(Update::Discord(self.disconnect(error))),

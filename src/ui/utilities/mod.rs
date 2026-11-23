@@ -7,7 +7,7 @@ mod weather_tile;
 use super::{Dashboard, HISTORY, append, home::Kind, monitor::graph, theme::*};
 use futures_lite::StreamExt;
 use gpui::{Context, IntoElement, Styled, Task, div, prelude::*};
-use jiff::{Span, Zoned, civil::Date, tz::TimeZone};
+use jiff::{Span, Timestamp, Zoned, civil::Date, tz::TimeZone};
 use std::{
     collections::VecDeque,
     time::{Duration, Instant},
@@ -39,7 +39,7 @@ pub(super) use weather::coordinates;
 #[derive(Default)]
 pub(super) struct Utilities {
     month: Option<Date>,
-    ticker: Option<Task<()>>,
+    ticker: Option<(bool, Task<()>)>,
     fps_task: Option<Task<()>>,
     fps_reading: Option<fps::Reading>,
     fps_history: VecDeque<f32>,
@@ -78,20 +78,31 @@ impl Utilities {
 
 impl Dashboard {
     pub(super) fn sync_utilities(&mut self, cx: &mut Context<Self>) {
-        let ticking = [Kind::WorldClock, Kind::Calendar]
-            .into_iter()
-            .any(|k| self.home.contains(k));
-        if !ticking {
+        let clock = self.home.shows(Kind::WorldClock);
+        if !clock && !self.home.shows(Kind::Calendar) {
             self.utilities.ticker = None;
-        } else if self.utilities.ticker.is_none() {
-            self.utilities.ticker = Some(cx.spawn(async move |this, cx| {
+        } else if self
+            .utilities
+            .ticker
+            .as_ref()
+            .is_none_or(|(previous, _)| *previous != clock)
+        {
+            let ticker = cx.spawn(async move |this, cx| {
+                let mut date = Zoned::now().date();
                 loop {
-                    cx.background_executor().timer(Duration::from_secs(1)).await;
-                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    let now = Timestamp::now();
+                    const MINUTE_NS: i128 = 60_000_000_000;
+                    let elapsed_ns = now.as_nanosecond().rem_euclid(MINUTE_NS);
+                    let until_minute = Duration::from_nanos((MINUTE_NS - elapsed_ns) as u64);
+                    cx.background_executor().timer(until_minute).await;
+                    let next = Zoned::now().date();
+                    if (clock || next != date) && this.update(cx, |_, cx| cx.notify()).is_err() {
                         break;
                     }
+                    date = next;
                 }
-            }));
+            });
+            self.utilities.ticker = Some((clock, ticker));
         }
         self.sync_fps(cx);
         self.sync_weather(cx);
@@ -392,7 +403,13 @@ impl Dashboard {
         )
     }
 
-    pub(super) fn fps_widget(&self, theme: Theme, width: f32, height: f32) -> impl IntoElement {
+    pub(super) fn fps_widget(
+        &self,
+        id: u32,
+        theme: Theme,
+        width: f32,
+        height: f32,
+    ) -> impl IntoElement {
         let state = &self.utilities;
         let tile = col().flex_1().gap(r(6.));
         if let Some(reading) = &state.fps_reading {
@@ -439,6 +456,7 @@ impl Dashboard {
             )
             .when(height >= 75., |it| {
                 it.child(graph(
+                    (id, 0),
                     theme,
                     state.fps_history.clone(),
                     None,

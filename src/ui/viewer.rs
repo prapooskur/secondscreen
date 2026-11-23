@@ -1,11 +1,28 @@
 use super::{Dashboard, text_input::TextInput, theme::*};
 use crate::viewer::{Source, ViewerMode, ViewerOptions, WebTile, discord_target};
+use async_channel::Sender;
+use futures_lite::future;
 use gpui::{
     AnyElement, App, Bounds, Context, Entity, FocusHandle, IntoElement, KeyDownEvent, Keystroke,
     Modifiers, MouseButton, ObjectFit, PathPromptOptions, Pixels, Point, Render, RenderImage, Task,
     WeakEntity, Window, canvas, div, img, prelude::*, px,
 };
-use std::{cell::Cell, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    cell::Cell,
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+const FRAME_INTERVAL: Duration = Duration::from_millis(33);
+const IDLE_INTERVAL: Duration = Duration::from_millis(250);
+const STILL_FRAMES: u8 = 3;
+
+#[derive(Clone, Copy, Default)]
+struct Viewport {
+    bounds: Bounds<Pixels>,
+    visible: bool,
+}
 
 pub(super) struct Viewer {
     id: u32,
@@ -20,7 +37,8 @@ pub(super) struct Viewer {
     web: Option<WebTile>,
     frame: Option<Arc<RenderImage>>,
     pump: Option<Task<()>>,
-    bounds: Rc<Cell<Bounds<Pixels>>>,
+    viewport: Rc<Cell<Viewport>>,
+    activity: Option<Sender<()>>,
     focus: FocusHandle,
     pressed: u32,
     focused: bool,
@@ -52,7 +70,8 @@ impl Viewer {
             external: None,
             frame: None,
             pump: None,
-            bounds: Rc::default(),
+            viewport: Rc::default(),
+            activity: None,
             focus: cx.focus_handle().tab_stop(true),
             pressed: 0,
             focused: false,
@@ -76,11 +95,28 @@ impl Viewer {
     }
 
     fn viewport(&self) -> (i32, i32) {
-        let size = self.bounds.get().size;
+        let size = self.viewport.get().bounds.size;
         (
             f32::from(size.width).round().clamp(1., 4096.) as i32,
             f32::from(size.height).round().clamp(1., 2160.) as i32,
         )
+    }
+
+    fn wake_capture(&self) {
+        if let Some(activity) = &self.activity {
+            let _ = activity.try_send(());
+        }
+    }
+
+    pub(super) fn hide(&self) {
+        let viewport = self.viewport.get();
+        if viewport.visible {
+            self.viewport.set(Viewport {
+                visible: false,
+                ..viewport
+            });
+            self.wake_capture();
+        }
     }
 
     fn start(&mut self, source: Source, cx: &mut Context<Self>) -> anyhow::Result<()> {
@@ -92,26 +128,52 @@ impl Viewer {
         self.pressed = 0;
         self.focused = false;
         self.clear_frame(cx);
+        let (activity, wake) = async_channel::bounded(1);
+        self.activity = Some(activity);
         self.pump = Some(cx.spawn(async move |this, cx| {
+            let mut delay = FRAME_INTERVAL;
+            let mut still = 0u8;
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(33))
-                    .await;
-                if this
-                    .update(cx, |this, cx| {
-                        let size = this.viewport();
-                        if let Some(web) = &mut this.web
-                            && let Some(frame) =
-                                web.update(size, this.frame.as_deref(), !this.editing)
-                        {
-                            this.clear_frame(cx);
-                            this.frame = Some(frame);
-                            cx.notify();
-                        }
-                    })
-                    .is_err()
-                {
+                let started = Instant::now();
+                let Ok((visible, changed)) = this.update(cx, |this, cx| {
+                    let visible = this.viewport.get().visible && !this.editing;
+                    let size = this.viewport();
+                    let frame = this
+                        .web
+                        .as_mut()
+                        .and_then(|web| web.update(size, this.frame.as_deref(), visible));
+                    let changed = frame.is_some();
+                    if let Some(frame) = frame {
+                        this.clear_frame(cx);
+                        this.frame = Some(frame);
+                        cx.notify();
+                    }
+                    (visible, changed)
+                }) else {
                     break;
+                };
+                still = if changed { 0 } else { still.saturating_add(1) };
+                delay = if !visible {
+                    IDLE_INTERVAL
+                } else if still < STILL_FRAMES {
+                    FRAME_INTERVAL
+                } else {
+                    (delay * 2).min(IDLE_INTERVAL)
+                };
+                let executor = cx.background_executor();
+                let activity = future::or(async { wake.recv().await.is_ok() }, async {
+                    executor
+                        .timer(delay.saturating_sub(started.elapsed()))
+                        .await;
+                    false
+                })
+                .await;
+                if activity {
+                    delay = FRAME_INTERVAL;
+                    still = 0;
+                    executor
+                        .timer(FRAME_INTERVAL.saturating_sub(started.elapsed()))
+                        .await;
                 }
             }
         }));
@@ -269,7 +331,7 @@ impl Viewer {
     }
 
     fn event_point(&self, p: Point<Pixels>) -> (f64, f64) {
-        let bounds = self.bounds.get();
+        let bounds = self.viewport.get().bounds;
         let (w, h) = self.viewport();
         let offset = p - bounds.origin;
         (
@@ -308,6 +370,7 @@ impl Viewer {
         } else {
             0
         };
+        self.wake_capture();
         if let Some(web) = &self.web {
             web.key(name, unicode, modifiers(key.modifiers), down)
         }
@@ -316,7 +379,8 @@ impl Viewer {
 
     fn surface(&self, cx: &Context<Self>) -> impl IntoElement {
         let theme = Theme::current(cx);
-        let bounds = self.bounds.clone();
+        let viewport = self.viewport.clone();
+        let activity = self.activity.clone();
         let mut tile = div()
             .id("web-surface")
             .relative()
@@ -327,9 +391,22 @@ impl Viewer {
             .bg(theme.color(BACK))
             .track_focus(&self.focus)
             .child(
-                canvas(move |area, _, _| bounds.set(area), |_, _, _, _| {})
-                    .absolute()
-                    .inset_0(),
+                canvas(
+                    move |bounds, window, _| {
+                        let clipped = bounds.intersect(&window.content_mask().bounds);
+                        let visible = clipped.size.width > px(0.) && clipped.size.height > px(0.);
+                        let previous = viewport.replace(Viewport { bounds, visible });
+                        if (visible != previous.visible
+                            || (visible && bounds.size != previous.bounds.size))
+                            && let Some(activity) = &activity
+                        {
+                            let _ = activity.try_send(());
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
             )
             .when_some(self.frame.clone(), |it, frame| {
                 it.child(
@@ -341,6 +418,7 @@ impl Viewer {
                 )
             })
             .on_mouse_move(cx.listener(|v, e: &gpui::MouseMoveEvent, _, _| {
+                v.wake_capture();
                 if let Some(web) = &v.web {
                     web.pointer(
                         0,
@@ -352,6 +430,7 @@ impl Viewer {
                 }
             }))
             .on_scroll_wheel(cx.listener(|v, e: &gpui::ScrollWheelEvent, _, cx| {
+                v.wake_capture();
                 let d = e.delta.pixel_delta(px(40.));
                 if let Some(web) = &v.web {
                     web.pointer(
@@ -387,6 +466,7 @@ impl Viewer {
                         window.focus(&v.focus);
                         #[cfg(not(feature = "ui-gpui"))]
                         window.focus(&v.focus, cx);
+                        v.wake_capture();
                         if let Some(web) = &v.web {
                             if !v.focused {
                                 web.focus(true);
@@ -429,6 +509,7 @@ impl Viewer {
     fn release(&mut self, button: i32, point: Point<Pixels>, mods: Modifiers) {
         let mask = 1 << (button + 7);
         if self.pressed & mask != 0 {
+            self.wake_capture();
             if let Some(web) = &self.web {
                 web.pointer(
                     2,
@@ -460,6 +541,7 @@ impl Render for Viewer {
             self.focused = focused;
         }
         let content: AnyElement = if self.editing {
+            self.hide();
             self.editor(cx).into_any_element()
         } else {
             self.surface(cx).into_any_element()

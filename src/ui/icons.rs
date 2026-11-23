@@ -1,4 +1,6 @@
-use gpui::{Hsla, IntoElement, PathBuilder, Styled, canvas, point, px};
+use std::{borrow::Cow, collections::HashMap, fmt::Write, sync::LazyLock};
+
+use gpui::{AssetSource, Hsla, IntoElement, SharedString, Styled, svg};
 
 use super::theme::r;
 
@@ -18,8 +20,26 @@ const CLOUD: &[(f32, f32)] = &[
     (6., 18.),
 ];
 
-#[derive(Clone, Copy)]
-pub enum Icon {
+macro_rules! icons {
+    ($($name:ident),+ $(,)?) => {
+        #[derive(Clone, Copy)]
+        pub enum Icon {
+            $($name),+
+        }
+
+        const ICONS: &[Icon] = &[$(Icon::$name),+];
+
+        impl Icon {
+            fn asset_path(self) -> &'static str {
+                match self {
+                    $(Self::$name => concat!("icons/", stringify!($name), ".svg")),+
+                }
+            }
+        }
+    };
+}
+
+icons! {
     Home,
     Clock,
     Calendar,
@@ -539,32 +559,60 @@ impl Icon {
     }
 }
 
-pub fn icon(kind: Icon, color: Hsla, side: f32) -> impl IntoElement {
-    canvas(
-        |_, _, _| (),
-        move |bounds, _, window, _| {
-            let scale = bounds.size.width / px(24.);
-            let mut path = match kind {
-                Icon::Play | Icon::Previous | Icon::Next => PathBuilder::fill(),
-                Icon::Pause => PathBuilder::stroke(px(2.8 * scale)),
-                _ => PathBuilder::stroke(px(1.8 * scale)),
-            };
-            for points in kind.strokes() {
-                let mut points = points
-                    .iter()
-                    .map(|&(x, y)| bounds.origin + point(px(x * scale), px(y * scale)));
-                if let Some(start) = points.next() {
-                    path.move_to(start);
-                    for point in points {
-                        path.line_to(point);
-                    }
+static ICON_ASSETS: LazyLock<HashMap<&'static str, String>> = LazyLock::new(|| {
+    ICONS
+        .iter()
+        .map(|&icon| (icon.asset_path(), icon.vector_data()))
+        .collect()
+});
+
+impl Icon {
+    fn vector_data(self) -> String {
+        let style = match self {
+            Self::Play | Self::Previous | Self::Next => r#"fill="white""#,
+            Self::Pause => r#"fill="none" stroke="white" stroke-width="2.8""#,
+            _ => r#"fill="none" stroke="white" stroke-width="1.8""#,
+        };
+        let mut svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path {style} d=""#
+        );
+        for points in self.strokes() {
+            if let Some((&(x, y), rest)) = points.split_first() {
+                write!(svg, "M{x} {y}").unwrap();
+                for &(x, y) in rest {
+                    write!(svg, "L{x} {y}").unwrap();
                 }
             }
-            if let Ok(path) = path.build() {
-                window.paint_path(path, color);
-            }
-        },
-    )
-    .size(r(side))
-    .flex_none()
+        }
+        svg.push_str(r#""/></svg>"#);
+        svg
+    }
+}
+
+pub(crate) struct IconAssets;
+
+impl AssetSource for IconAssets {
+    fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        Ok(ICON_ASSETS
+            .get(path)
+            .map(|svg| Cow::Borrowed(svg.as_bytes())))
+    }
+
+    fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
+        Ok(ICONS
+            .iter()
+            .map(|icon| icon.asset_path())
+            .filter(|asset| asset.starts_with(path))
+            .map(SharedString::from)
+            .collect())
+    }
+}
+
+pub fn icon(kind: Icon, color: Hsla, side: f32) -> impl IntoElement {
+    // GPUI rasterizes each size once and reuses a monochrome sprite across themes.
+    svg()
+        .path(kind.asset_path())
+        .text_color(color)
+        .size(r(side))
+        .flex_none()
 }

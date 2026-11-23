@@ -277,6 +277,7 @@ impl Dashboard {
         self.home.leave();
         self.home.scroll = ScrollHandle::new();
         self.viewers.clear();
+        super::super::monitor::discard_charts(None, window, cx);
         self.gesture.borrow_mut().take();
         self.focus_dashboard(window, cx);
         self.save_home(cx);

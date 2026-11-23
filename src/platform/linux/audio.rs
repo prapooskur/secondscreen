@@ -1,17 +1,124 @@
 use anyhow::{Context, Result, bail};
 use async_channel::Sender;
+use async_io::{Async, Timer};
+use futures_lite::{
+    StreamExt, future,
+    io::{AsyncBufReadExt, BufReader, Lines},
+};
+use rustix::process::{Signal, getpid, getppid, set_parent_process_death_signal};
 use serde::Deserialize;
-use std::{collections::BTreeMap, process::Command};
+use std::{
+    collections::BTreeMap,
+    os::unix::process::CommandExt,
+    process::{Child, ChildStdout, Command, Stdio},
+    time::{Duration, Instant},
+};
 
 use super::{Integration, app_icons::AppIcons};
 use crate::model::{AudioAction, AudioChannel, AudioId, AudioKind, AudioState, Update};
 
 const NORMAL_VOLUME: u64 = 65_536;
+const RECOVERY_POLL: Duration = Duration::from_secs(2);
+const RECONCILE_POLL: Duration = Duration::from_secs(10);
+const EVENT_BATCH: Duration = Duration::from_millis(50);
 
 #[derive(Default)]
 pub(super) struct Mixer {
     channels: Vec<AudioChannel>,
     icons: AppIcons,
+    subscription: Option<Subscription>,
+    retry_subscription_at: Option<Instant>,
+}
+
+struct Subscription {
+    process: Child,
+    lines: Lines<BufReader<Async<ChildStdout>>>,
+    changed_at: Option<Instant>,
+}
+
+impl Subscription {
+    fn start() -> std::io::Result<Self> {
+        let parent = getpid();
+        let mut command = Command::new("pactl");
+        command
+            .arg("subscribe")
+            .env("LC_ALL", "C")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        // These syscalls run after fork. Check for a parent exit before the signal was installed.
+        unsafe {
+            command.pre_exec(move || {
+                set_parent_process_death_signal(Some(Signal::TERM))?;
+                if getppid() != Some(parent) {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                Ok(())
+            });
+        }
+        let mut process = command.spawn()?;
+        let stdout = process.stdout.take().expect("subscription stdout is piped");
+        match Async::new(stdout) {
+            Ok(stdout) => Ok(Self {
+                process,
+                lines: BufReader::new(stdout).lines(),
+                changed_at: None,
+            }),
+            Err(error) => {
+                stop(&mut process);
+                Err(error)
+            }
+        }
+    }
+
+    async fn changed(&mut self) -> bool {
+        loop {
+            let line = if let Some(at) = self.changed_at {
+                future::or(
+                    async {
+                        Timer::at(at + EVENT_BATCH).await;
+                        None
+                    },
+                    async { Some(self.lines.next().await) },
+                )
+                .await
+            } else {
+                Some(self.lines.next().await)
+            };
+            match line {
+                None => {
+                    self.changed_at = None;
+                    return true;
+                }
+                Some(Some(Ok(line))) if mixer_event(&line) => {
+                    self.changed_at.get_or_insert_with(Instant::now);
+                }
+                Some(Some(Ok(_))) => {}
+                Some(_) => return false,
+            }
+        }
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        stop(&mut self.process);
+    }
+}
+
+fn stop(process: &mut Child) {
+    let _ = process.kill();
+    let _ = process.wait();
+}
+
+fn mixer_event(line: &str) -> bool {
+    let Some((_, object)) = line.split_once(" on ") else {
+        return false;
+    };
+    matches!(
+        object.split_ascii_whitespace().next(),
+        Some("sink" | "source" | "sink-input" | "source-output" | "server")
+    )
 }
 
 #[derive(Deserialize)]
@@ -242,10 +349,18 @@ impl Integration for Mixer {
         let issue = match self.sample() {
             Ok(channels) => {
                 self.channels = channels;
+                let now = Instant::now();
+                if self.subscription.is_none()
+                    && self.retry_subscription_at.is_none_or(|retry| now >= retry)
+                {
+                    self.retry_subscription_at = Some(now + RECOVERY_POLL);
+                    self.subscription = Subscription::start().ok();
+                }
                 None
             }
             Err(error) => {
                 self.channels.clear();
+                self.subscription = None;
                 Some(error.to_string())
             }
         };
@@ -253,6 +368,23 @@ impl Integration for Mixer {
             channels: self.channels.clone(),
             issue,
         })
+    }
+
+    fn poll_interval(&self) -> Duration {
+        if self.subscription.is_some() {
+            RECONCILE_POLL
+        } else {
+            RECOVERY_POLL
+        }
+    }
+
+    async fn wait_for_event(&mut self) {
+        let Some(subscription) = &mut self.subscription else {
+            return future::pending().await;
+        };
+        if !subscription.changed().await {
+            self.subscription = None;
+        }
     }
 
     fn handle(&mut self, action: AudioAction, _: &Sender<Update>) -> Result<()> {

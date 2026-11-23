@@ -4,7 +4,7 @@ mod performance;
 mod profiles;
 mod widgets;
 
-use std::{path::PathBuf, time::Instant};
+use std::path::PathBuf;
 
 use gpui::{
     AnyElement, Context, DispatchPhase, HitboxBehavior, IntoElement, MouseButton, MouseMoveEvent,
@@ -118,6 +118,17 @@ impl Home {
             .widgets
             .iter()
             .any(|widget| widget.kind == kind)
+    }
+
+    pub(super) fn shows(&self, kind: Kind) -> bool {
+        !self.catalog && self.contains(kind)
+    }
+
+    pub(super) fn shows_media_progress(&self) -> bool {
+        !self.catalog
+            && self
+                .widgets()
+                .any(|widget| widget.kind == Kind::Media && widget.rows >= 3)
     }
 
     pub(super) fn active_profile(&self) -> (usize, &Profile) {
@@ -675,6 +686,7 @@ impl Dashboard {
                             layout.sensors.remove(&id);
                             layout.viewers.remove(&id);
                             this.viewers.remove(&id);
+                            super::monitor::discard_charts(Some(id), window, cx);
                             this.home.sensor_editor = None;
                             this.save_home(cx);
                         })
@@ -875,6 +887,12 @@ impl Dashboard {
     }
 
     pub(super) fn sync_viewers(&mut self, cx: &mut Context<Self>) {
+        if self.home.catalog {
+            for viewer in self.viewers.values() {
+                viewer.read(cx).hide();
+            }
+            return;
+        }
         for widget in self
             .home
             .layout()
@@ -915,7 +933,7 @@ impl Dashboard {
             .ok_or_else(|| anyhow::anyhow!("Home profiles have no configuration directory."))
             .and_then(|path| self.home.profiles.write(path));
         if let Err(error) = result {
-            self.error = Some((Instant::now(), format!("{error:#}")));
+            self.set_error(format!("{error:#}"), cx);
         }
         cx.notify();
     }

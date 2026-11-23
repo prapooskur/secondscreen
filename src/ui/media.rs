@@ -4,13 +4,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures_lite::future::Boxed;
-use image::{Frame, ImageBuffer, Rgba, RgbaImage};
+use image::{Frame, ImageBuffer, Rgba, imageops};
 
-use crate::model::{Artwork, MediaAction, Playback, Player, Track};
+use crate::model::{Artwork, MediaAction, MediaState, Playback, Player, Track};
 use gpui::{
-    AnyElement, App, Asset, Context, Img, ImgResourceLoader, IntoElement, ObjectFit, RenderImage,
-    Styled, div, img, prelude::*,
+    AnyElement, App, Asset, Context, Global, Img, ImgResourceLoader, IntoElement, ObjectFit,
+    RenderImage, Styled, Window, div, img, prelude::*,
 };
 
 use super::{
@@ -21,6 +20,8 @@ use super::{
 };
 
 const SEEK_TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_ALBUM_SIDE: u32 = 768;
+const MAX_ALBUM_BYTES: usize = 8 * 1024 * 1024;
 
 pub(super) struct PendingSeek {
     player_id: String,
@@ -41,18 +42,47 @@ impl PendingSeek {
     fn confirmed(&self, player: &Player, elapsed: Duration) -> bool {
         const TOLERANCE: i64 = 500_000;
         let advance = if player.playback == Playback::Playing {
-            elapsed.as_micros() as i64
+            (elapsed.as_secs_f64() * player.rate * 1_000_000.) as i64
         } else {
             0
         };
-        let limit = self.position.saturating_add(advance + TOLERANCE);
+        let predicted = self.position.saturating_add(advance);
+        let lower = self.position.min(predicted).saturating_sub(TOLERANCE);
+        let upper = self.position.max(predicted).saturating_add(TOLERANCE);
         player
             .position
-            .is_some_and(|reported| (self.position - TOLERANCE..=limit).contains(&reported))
+            .is_some_and(|position| (lower..=upper).contains(&position.reported))
     }
 }
 
 impl Dashboard {
+    pub(super) fn follow_media_positions(&self, state: &mut MediaState) {
+        for next in &mut state.players {
+            if next.playback != Playback::Playing
+                || self
+                    .pending_seek
+                    .as_ref()
+                    .is_some_and(|seek| seek.matches(next))
+            {
+                continue;
+            }
+            let previous = self
+                .media
+                .players
+                .iter()
+                .find(|player| player.id == next.id);
+            if let Some(previous) = previous
+                && previous.playback == Playback::Playing
+                && previous.rate == next.rate
+                && previous.track == next.track
+                && let (Some(position), Some(previous)) =
+                    (next.position.as_mut(), previous.position)
+            {
+                position.follow(previous, next.rate);
+            }
+        }
+    }
+
     pub(super) fn update_seek(&mut self) {
         if let Some(seek) = &self.pending_seek {
             let elapsed = seek.requested_at.elapsed();
@@ -96,7 +126,7 @@ impl Dashboard {
         if self
             .controls
             .media
-            .send((player_id.to_owned(), action))
+            .try_send((player_id.to_owned(), action))
             .is_ok()
         {
             self.pending_seek = Some(PendingSeek {
@@ -108,7 +138,7 @@ impl Dashboard {
             self.error = None;
         } else {
             self.pending_seek = None;
-            self.error = Some((requested_at, "The media worker stopped.".into()));
+            self.set_error("The media worker stopped.".into(), cx);
         }
         cx.notify();
     }
@@ -123,7 +153,14 @@ impl Dashboard {
             .as_ref()
             .filter(|seek| seek.matches(player))
             .map(|seek| seek.position)
-            .or(player.position);
+            .or_else(|| {
+                let position = player.position?;
+                Some(if player.playback == Playback::Playing {
+                    position.at(Instant::now(), player.rate)
+                } else {
+                    position.reported
+                })
+            });
         let progress = current
             .zip(length)
             .map_or(0., |(at, total)| (at as f32 / total as f32).clamp(0., 1.));
@@ -313,9 +350,18 @@ fn timecode(micros: i64) -> String {
 pub(super) fn album_art(theme: Theme, artwork: Option<Artwork>, side: f32) -> impl IntoElement {
     let radius = 10.;
     let art = artwork.map(|artwork| {
-        img(move |window: &mut gpui::Window, cx: &mut App| {
+        img(move |window: &mut Window, cx: &mut App| {
+            let pixels = side * (f32::from(window.rem_size()) / 16.) * window.scale_factor();
+            let source = AlbumSource {
+                artwork: artwork.clone(),
+                pixels: (pixels.ceil() as u32).clamp(1, MAX_ALBUM_SIDE),
+            };
+            if cx.default_global::<AlbumCache>().0.as_ref() != Some(&source) {
+                release_album_art(window, cx);
+                cx.default_global::<AlbumCache>().0 = Some(source.clone());
+            }
             window
-                .use_asset::<AlbumThumbnail>(&artwork, cx)
+                .use_asset::<AlbumThumbnail>(&source, cx)
                 .flatten()
                 .map(Ok)
         })
@@ -360,13 +406,47 @@ pub(super) fn album_art(theme: Theme, artwork: Option<Artwork>, side: f32) -> im
         .children(art)
 }
 
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct AlbumSource {
+    artwork: Artwork,
+    pixels: u32,
+}
+
+// Only one media widget can appear in the current profile.
+#[derive(Default)]
+struct AlbumCache(Option<AlbumSource>);
+impl Global for AlbumCache {}
+
+pub(super) fn retain_album_art(artwork: Option<&Artwork>, window: &mut Window, cx: &mut App) {
+    if cx
+        .try_global::<AlbumCache>()
+        .and_then(|cache| cache.0.as_ref())
+        .is_some_and(|source| Some(&source.artwork) != artwork)
+    {
+        release_album_art(window, cx);
+    }
+}
+
+fn release_album_art(window: &mut Window, cx: &mut App) {
+    if let Some(source) = cx.default_global::<AlbumCache>().0.take() {
+        let image = window.get_asset::<AlbumThumbnail>(&source, cx).flatten();
+        cx.remove_asset::<AlbumThumbnail>(&source);
+        if let Some(image) = image {
+            cx.drop_image(image, Some(window));
+        }
+    }
+}
+
 struct AlbumThumbnail;
 impl Asset for AlbumThumbnail {
-    type Source = Artwork;
+    type Source = AlbumSource;
     type Output = Option<Arc<RenderImage>>;
 
-    fn load(artwork: Artwork, cx: &mut App) -> impl Future<Output = Self::Output> + Send + 'static {
-        let load: Boxed<_> = match artwork {
+    fn load(
+        source: AlbumSource,
+        cx: &mut App,
+    ) -> impl Future<Output = Self::Output> + Send + 'static {
+        let load: futures_lite::future::Boxed<_> = match source.artwork {
             Artwork::File(path) => {
                 let load = ImgResourceLoader::load(path.into(), cx);
                 Box::pin(async move { load.await.ok() })
@@ -375,32 +455,36 @@ impl Asset for AlbumThumbnail {
         };
         async move {
             let image = load.await.filter(|image| image.frame_count() > 0)?;
-            let size = image.size(0);
-            if size.width == size.height {
-                return Some(image);
-            }
-
-            // GPUI 0.2 rounds the image before applying the rectangular cover crop.
-            let frames = (0..image.frame_count())
-                .map(|index| {
-                    let size = image.size(index);
-                    let (width, height) = (u32::from(size.width), u32::from(size.height));
-                    let pixels = ImageBuffer::<Rgba<u8>, _>::from_raw(
-                        width,
-                        height,
-                        image.as_bytes(index)?,
-                    )?;
-                    let side = width.min(height);
-                    let left = (width - side) / 2;
-                    let top = (height - side) / 2;
-                    let cropped =
-                        RgbaImage::from_fn(side, side, |x, y| *pixels.get_pixel(left + x, top + y));
-                    Some(Frame::from_parts(cropped, 0, 0, image.delay(index)))
-                })
-                .collect::<Option<Vec<_>>>()?;
-            Some(Arc::new(RenderImage::new(frames)))
+            thumbnail(image, source.pixels)
         }
     }
+}
+
+fn thumbnail(image: Arc<RenderImage>, pixels: u32) -> Option<Arc<RenderImage>> {
+    let size = image.size(0);
+    if image.frame_count() == 1 && size.width == size.height && u32::from(size.width) <= pixels {
+        return Some(image);
+    }
+    let mut frames = Vec::new();
+    let mut bytes = 0;
+    for index in 0..image.frame_count() {
+        let size = image.size(index);
+        let (width, height) = (u32::from(size.width), u32::from(size.height));
+        let input = ImageBuffer::<Rgba<u8>, _>::from_raw(width, height, image.as_bytes(index)?)?;
+        let side = width.min(height);
+        let target = side.min(pixels);
+        // Large animations fall back to the still cover within the decoded cache limit.
+        bytes += target as usize * target as usize * 4 + std::mem::size_of::<Frame>();
+        if bytes > MAX_ALBUM_BYTES {
+            frames.truncate(1);
+            break;
+        }
+        // GPUI rounds the image before applying a rectangular cover crop.
+        let crop = imageops::crop_imm(&input, (width - side) / 2, (height - side) / 2, side, side);
+        let frame = imageops::thumbnail(&*crop, target, target);
+        frames.push(Frame::from_parts(frame, 0, 0, image.delay(index)));
+    }
+    Some(Arc::new(RenderImage::new(frames)))
 }
 
 pub(super) fn remote_image(url: String) -> Img {
@@ -441,4 +525,31 @@ fn load_image(url: &str) -> anyhow::Result<RenderImage> {
         pixel.0.swap(0, 2);
     }
     Ok(RenderImage::new([image::Frame::new(image)]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn album_thumbnail_crops_to_the_center_at_the_display_size() {
+        let cover = ImageBuffer::from_fn(12, 8, |x, _| {
+            if (2..10).contains(&x) {
+                Rgba([30, 60, 90, 255])
+            } else {
+                Rgba([0, 0, 0, 255])
+            }
+        });
+        let image = Arc::new(RenderImage::new([Frame::new(cover)]));
+        let resized = thumbnail(image, 4).unwrap();
+        assert_eq!(u32::from(resized.size(0).width), 4);
+        assert_eq!(u32::from(resized.size(0).height), 4);
+        assert!(
+            resized
+                .as_bytes(0)
+                .unwrap()
+                .chunks_exact(4)
+                .all(|pixel| pixel == [30, 60, 90, 255])
+        );
+    }
 }

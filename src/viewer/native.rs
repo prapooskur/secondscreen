@@ -1,5 +1,5 @@
 use std::{
-    ffi::{CString, c_char, c_int, c_uint, c_void},
+    ffi::{CStr, CString, c_char, c_int, c_uint, c_void},
     marker::PhantomData,
     ptr::NonNull,
     rc::Rc,
@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use gpui::RenderImage;
 
 unsafe extern "C" {
+    fn ss_web_load() -> *const c_char;
     fn ss_web_new(
         uri: *const c_char,
         html: *const c_char,
@@ -56,6 +57,11 @@ fn create(
     let (uri, html) = source.document()?;
     let uri = CString::new(uri)?;
     let html = html.map(CString::new).transpose()?;
+    let load_error = unsafe { ss_web_load() };
+    if !load_error.is_null() {
+        let error = unsafe { CStr::from_ptr(load_error) }.to_string_lossy();
+        anyhow::bail!("Could not load WebKitGTK 4.1. {error}");
+    }
     NonNull::new(unsafe {
         ss_web_new(
             uri.as_ptr(),

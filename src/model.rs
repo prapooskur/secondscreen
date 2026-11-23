@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 #[derive(Clone, Default)]
 pub struct Metrics {
     pub host: String,
@@ -12,7 +14,7 @@ pub struct Metrics {
     pub storage: Vec<DiskUsage>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DiskUsage {
     pub id: String,
     pub label: String,
@@ -60,7 +62,7 @@ pub struct AudioId {
     pub name: String,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AudioChannel {
     pub id: AudioId,
     pub label: String,
@@ -71,7 +73,7 @@ pub struct AudioChannel {
     pub is_default: bool,
 }
 
-#[derive(Default)]
+#[derive(Default, PartialEq, Eq)]
 pub struct AudioState {
     pub channels: Vec<AudioChannel>,
     pub issue: Option<String>,
@@ -90,13 +92,13 @@ pub enum Playback {
     Stopped,
 }
 
-#[derive(Clone, Hash)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub enum Artwork {
     File(std::path::PathBuf),
     Remote(String),
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Track {
     pub id: String,
     pub title: String,
@@ -113,7 +115,8 @@ pub struct Player {
     pub name: String,
     pub playback: Playback,
     pub track: Option<Track>,
-    pub position: Option<i64>,
+    pub position: Option<PlaybackPosition>,
+    pub rate: f64,
     pub can_play: bool,
     pub can_pause: bool,
     pub can_previous: bool,
@@ -122,10 +125,84 @@ pub struct Player {
 }
 
 impl Player {
+    pub fn same_details(&self, other: &Self) -> bool {
+        let Self {
+            id,
+            app_id,
+            name,
+            playback,
+            track,
+            position: _,
+            rate,
+            can_play,
+            can_pause,
+            can_previous,
+            can_next,
+            can_seek,
+        } = self;
+        *id == other.id
+            && *app_id == other.app_id
+            && *name == other.name
+            && *playback == other.playback
+            && *track == other.track
+            && *rate == other.rate
+            && *can_play == other.can_play
+            && *can_pause == other.can_pause
+            && *can_previous == other.can_previous
+            && *can_next == other.can_next
+            && *can_seek == other.can_seek
+    }
+
     pub fn can_toggle_playback(&self) -> bool {
         match self.playback {
             Playback::Playing => self.can_pause,
             _ => self.can_play,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct PlaybackPosition {
+    pub reported: i64,
+    sampled_at: Instant,
+    anchor: (i64, Instant),
+}
+
+impl PlaybackPosition {
+    pub fn new(reported: i64, sampled_at: Instant) -> Self {
+        Self {
+            reported,
+            sampled_at,
+            anchor: (reported, sampled_at),
+        }
+    }
+
+    fn projected(self, now: Instant, rate: f64) -> i64 {
+        let (position, at) = self.anchor;
+        let advance = now.saturating_duration_since(at).as_secs_f64() * rate * 1_000_000.;
+        position.saturating_add(advance as i64).max(0)
+    }
+
+    pub fn follow(&mut self, previous: Self, rate: f64) {
+        let toward = rate.signum() as i64;
+        let reported_delta = (self.reported - previous.reported) * toward;
+        let drift = self
+            .reported
+            .abs_diff(previous.projected(self.sampled_at, rate));
+        // Keep a stable clock through repeated or rounded samples. Resync on a jump.
+        if reported_delta == 0 || (reported_delta > 0 && (drift as f64) < rate.abs() * 1_000_000.) {
+            self.anchor = previous.anchor;
+        }
+    }
+
+    pub fn at(self, now: Instant, rate: f64) -> i64 {
+        let projected = self.projected(now, rate);
+        // Players can report Playing while position is stalled, for example when buffering.
+        let limit = self.reported.saturating_add((rate * 3_000_000.) as i64);
+        if rate > 0. {
+            projected.min(limit)
+        } else {
+            projected.max(limit)
         }
     }
 }
@@ -147,7 +224,7 @@ pub enum MediaAction {
     },
 }
 
-#[derive(Default)]
+#[derive(Default, PartialEq, Eq)]
 pub enum DiscordState {
     #[default]
     Unconfigured,
@@ -157,7 +234,7 @@ pub enum DiscordState {
     Error(String),
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct VoiceState {
     pub account: String,
     pub muted: bool,
@@ -165,14 +242,14 @@ pub struct VoiceState {
     pub channel: Option<VoiceChannel>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct VoiceChannel {
     pub id: String,
     pub name: String,
     pub members: Vec<VoiceMember>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct VoiceMember {
     pub id: Option<String>,
     pub name: String,
@@ -201,4 +278,44 @@ pub enum Update {
     },
     Discord(DiscordState),
     ActionError(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn playback_progress_advances_between_two_second_reports() {
+        let start = Instant::now();
+        let mut position = PlaybackPosition::new(0, start);
+        let mut next_sample = 900;
+        for second in 1..=15 {
+            while next_sample <= second * 1_000 {
+                let report = next_sample / 2_000 * 2_000_000;
+                let mut sample = PlaybackPosition::new(
+                    report,
+                    start + Duration::from_millis(next_sample as u64),
+                );
+                sample.follow(position, 1.);
+                position = sample;
+                next_sample += 900;
+            }
+            assert_eq!(
+                position.at(start + Duration::from_secs(second as u64), 1.),
+                second * 1_000_000
+            );
+        }
+    }
+
+    #[test]
+    fn playback_position_resyncs_after_a_seek_and_limits_stalled_projection() {
+        let start = Instant::now();
+        let old = PlaybackPosition::new(12_000_000, start);
+        let at = start + Duration::from_secs(1);
+        let mut seek = PlaybackPosition::new(4_000_000, at);
+        seek.follow(old, 2.);
+        assert_eq!(seek.at(at + Duration::from_millis(500), 2.), 5_000_000);
+        assert_eq!(seek.at(at + Duration::from_secs(12), 2.), 10_000_000);
+    }
 }

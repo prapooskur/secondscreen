@@ -34,3 +34,23 @@ XDG_CONFIG_HOME="$bench_dir/config" \
 ```
 
 Replace `HEADLESS-2` with an active output from `swaymsg -t get_outputs`. The temporary configuration path loads the default Home layout for both builds. The script prints one JSON record per measured run and per latency trace. Keep the same active applications, audio streams, and renderer for both builds.
+
+## Default dashboard after reducing redraws
+
+The standard GPUI release builds ran fullscreen at 2560 × 720 on a 12-vCPU AMD EPYC VM with headless Sway, Pixman, and Mesa lavapipe. Each app ran alone with a fresh default dashboard, without media playback, an audio server, or a Discord session. CPU is relative to one logical core and includes child processes reaped during the sample. Memory is median proportional set size (PSS), sampled twice per second. The early figures are medians from two runs per build. The late figures come from one run per build.
+
+| Default dashboard | Before (`7a579c6`) | Updated |
+| --- | ---: | ---: |
+| CPU at 10–24 seconds | 65.9% | 20.6% |
+| CPU at 76–90 seconds | 69.1% | 21.8% |
+| PSS at 10–24 seconds | 207.4 MiB | 180.2 MiB |
+| PSS at 76–90 seconds | 210.1 MiB | 179.8 MiB |
+| Buffer submissions per second | 3.3 | 1.0 |
+
+The updated release submitted zero buffers during a 14-second idle sample on an empty dashboard.
+
+On this software renderer, the updated release used 8.2% CPU and 158.4 MiB PSS in a separate 10–24 second sample with the following options. One sample per path reduces antialiasing on chart paths. The cached icon sprites retain their own antialiasing.
+
+```sh
+ZED_PATH_SAMPLE_COUNT=1 LP_NUM_THREADS=4 ./target/release/secondscreen --fullscreen
+```

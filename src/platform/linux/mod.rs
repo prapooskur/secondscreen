@@ -5,9 +5,10 @@ mod discord;
 pub mod launch_display;
 mod media;
 
-use async_channel::Sender;
+use async_channel::{RecvError, Sender};
+use async_io::Timer;
+use futures_lite::future;
 use std::{
-    sync::mpsc::{self, RecvTimeoutError},
     thread,
     time::{Duration, Instant},
 };
@@ -41,20 +42,9 @@ pub fn start(
             thread::sleep(Duration::from_secs(1));
         }
     })?;
-    let audio = worker(
-        "audio-mixer",
-        Duration::from_millis(1250),
-        updates.clone(),
-        audio::Mixer::default,
-    )?;
-    let media = worker(
-        "media-player",
-        Duration::from_millis(900),
-        updates.clone(),
-        media::Media::default,
-    )?;
-
-    let discord = worker("discord-rpc", Duration::from_secs(2), updates, move || {
+    let audio = worker("audio-mixer", updates.clone(), audio::Mixer::default)?;
+    let media = worker("media-player", updates.clone(), media::Media::default)?;
+    let discord = worker("discord-rpc", updates, move || {
         discord::Discord::new(discord_credentials)
     })?;
     Ok(Controls {
@@ -70,51 +60,80 @@ trait Integration {
     fn poll(&mut self) -> Update;
     fn handle(&mut self, action: Self::Action, updates: &Sender<Update>) -> anyhow::Result<()>;
 
-    fn event_interval(&self) -> Option<Duration> {
-        None
-    }
+    fn poll_interval(&self) -> Duration;
 
-    fn poll_events(&mut self) -> Option<Update> {
-        None
+    async fn wait_for_event(&mut self);
+
+    fn on_event(&mut self) -> Option<Update> {
+        Some(self.poll())
     }
+}
+
+enum Wake<A> {
+    Action(Result<A, RecvError>),
+    Poll,
+    Event,
 }
 
 fn worker<I: Integration>(
     name: &str,
-    interval: Duration,
     updates: Sender<Update>,
     create: impl FnOnce() -> I + Send + 'static,
-) -> std::io::Result<mpsc::Sender<I::Action>> {
-    let (commands, receiver) = mpsc::channel();
+) -> std::io::Result<Sender<I::Action>> {
+    let (commands, receiver) = async_channel::unbounded();
     thread::Builder::new().name(name.into()).spawn(move || {
         let mut integration = create();
-        let mut next_poll = Instant::now();
+        if updates.send_blocking(integration.poll()).is_err() {
+            return;
+        }
+        let interval = integration.poll_interval();
+        let mut next_poll = Instant::now() + interval;
         while !updates.is_closed() {
-            let until_poll = next_poll.saturating_duration_since(Instant::now());
-            let wait = integration
-                .event_interval()
-                .map_or(until_poll, |interval| until_poll.min(interval));
-            match receiver.recv_timeout(wait) {
-                Ok(action) => {
-                    if let Err(error) = integration.handle(action, &updates) {
-                        let _ = updates.send_blocking(Update::ActionError(error.to_string()));
-                    }
-                }
-                Err(RecvTimeoutError::Timeout) if Instant::now() < next_poll => {
-                    if let Some(update) = integration.poll_events()
-                        && updates.send_blocking(update).is_err()
+            let wake = future::block_on(future::or(
+                async { Wake::Action(receiver.recv().await) },
+                future::or(
+                    async {
+                        Timer::at(next_poll).await;
+                        Wake::Poll
+                    },
+                    async {
+                        integration.wait_for_event().await;
+                        Wake::Event
+                    },
+                ),
+            ));
+            let event = match wake {
+                Wake::Action(Ok(action)) => {
+                    if let Err(error) = integration.handle(action, &updates)
+                        && updates
+                            .send_blocking(Update::ActionError(error.to_string()))
+                            .is_err()
                     {
                         break;
                     }
-                    continue;
+                    false
                 }
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => break,
-            }
-            if updates.send_blocking(integration.poll()).is_err() {
+                Wake::Action(Err(_)) => break,
+                Wake::Poll => false,
+                Wake::Event => true,
+            };
+            let update = if event {
+                integration.on_event()
+            } else {
+                Some(integration.poll())
+            };
+            let interval = integration.poll_interval();
+            let deadline = Instant::now() + interval;
+            next_poll = if event {
+                next_poll.min(deadline)
+            } else {
+                deadline
+            };
+            if let Some(update) = update
+                && updates.send_blocking(update).is_err()
+            {
                 break;
             }
-            next_poll = Instant::now() + interval;
         }
     })?;
     Ok(commands)
