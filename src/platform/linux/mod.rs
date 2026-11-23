@@ -1,6 +1,8 @@
 mod app_icons;
 mod audio;
+pub mod autostart;
 mod discord;
+pub mod launch_display;
 mod media;
 
 use async_channel::Sender;

@@ -90,7 +90,7 @@ pub enum Playback {
     Stopped,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Hash)]
 pub enum Artwork {
     File(std::path::PathBuf),
     Remote(String),

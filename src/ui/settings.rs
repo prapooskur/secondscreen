@@ -13,6 +13,7 @@ use gpui::{
 use crate::{
     config::{DISCORD_REDIRECT_URI, DiscordCredentials, Preferences, ThemePreference},
     model::{AudioChannel, AudioKind, DiscordAction},
+    platform::{autostart, launch_display},
 };
 
 use super::{
@@ -75,6 +76,9 @@ pub(super) struct SettingsView {
     pub(super) section: Section,
     pub(super) focus: FocusHandle,
     previous_focus: Option<FocusHandle>,
+    start_at_login: bool,
+    launch_displays: Option<Result<Vec<launch_display::Display>, String>>,
+    display_query: Option<Task<()>>,
     discord_fields: Option<DiscordFields>,
     discord_saved: bool,
     widget_fields: Option<(Entity<TextInput>, Entity<TextInput>)>,
@@ -90,6 +94,9 @@ impl SettingsView {
             section: Section::default(),
             focus,
             previous_focus: None,
+            start_at_login: false,
+            launch_displays: None,
+            display_query: None,
             discord_fields: None,
             discord_saved: false,
             widget_fields: None,
@@ -143,6 +150,25 @@ impl Dashboard {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if section == Section::General && (!self.settings.open || self.settings.section != section)
+        {
+            match autostart::enabled() {
+                Ok(enabled) => self.settings.start_at_login = enabled,
+                Err(error) => self.error = Some((Instant::now(), format!("{error:#}"))),
+            }
+            if launch_display::supported() {
+                self.settings.launch_displays = None;
+                self.settings.display_query = Some(cx.spawn(async move |this, cx| {
+                    let displays = blocking::unblock(launch_display::connected)
+                        .await
+                        .map_err(|error| format!("{error:#}"));
+                    let _ = this.update(cx, |this, cx| {
+                        this.settings.launch_displays = Some(displays);
+                        cx.notify();
+                    });
+                }));
+            }
+        }
         self.settings.section = section;
         if !self.settings.open {
             self.settings.previous_focus = window.focused(cx);
@@ -163,6 +189,7 @@ impl Dashboard {
     pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings.open {
             self.settings.open = false;
+            self.settings.display_query = None;
             self.settings.widget_fields = None;
             if !matches!(
                 self.settings.launch_options_copy,
@@ -619,7 +646,8 @@ impl Dashboard {
 
     fn general_settings(&self, cx: &Context<Self>) -> impl IntoElement {
         let theme = Theme::current(cx);
-        let view = cx.entity();
+        let fullscreen_view = cx.entity();
+        let autostart_view = cx.entity();
         let themes = row().flex_none().gap(r(5.)).children(
             [
                 (ThemePreference::System, "System"),
@@ -628,7 +656,7 @@ impl Dashboard {
             ]
             .map(|(preference, name)| {
                 let active = self.preferences.theme == preference;
-                let view = view.clone();
+                let view = cx.entity();
                 theme.bind(
                     theme
                         .button(name, active.then_some(TEAL))
@@ -650,15 +678,44 @@ impl Dashboard {
             }),
         );
         col()
-            .gap(r(12.))
+            .gap(r(8.))
             .flex_none()
-            .child(theme.title("General"))
             .child(preference_row(
                 theme,
                 "theme-row",
                 "Theme",
                 "System follows your desktop appearance.",
                 themes,
+            ))
+            .child(preference_row(
+                theme,
+                "start-at-login-row",
+                "Start at login",
+                "Open Second Screen when you sign in.",
+                theme.bind(
+                    choice_button(
+                        theme,
+                        "startup-at-login",
+                        self.settings.start_at_login,
+                        "On",
+                        "Off",
+                    ),
+                    move |_, cx| {
+                        autostart_view.update(cx, |this, cx| {
+                            let enabled = !this.settings.start_at_login;
+                            match autostart::set_enabled(enabled) {
+                                Ok(()) => {
+                                    this.settings.start_at_login = enabled;
+                                    this.error = None;
+                                }
+                                Err(error) => {
+                                    this.error = Some((Instant::now(), format!("{error:#}")));
+                                }
+                            }
+                            cx.notify();
+                        });
+                    },
+                ),
             ))
             .child(preference_row(
                 theme,
@@ -674,7 +731,7 @@ impl Dashboard {
                         "Off",
                     ),
                     move |_, cx| {
-                        view.update(cx, |this, cx| {
+                        fullscreen_view.update(cx, |this, cx| {
                             let mut preferences = this.preferences.clone();
                             preferences.start_fullscreen = !preferences.start_fullscreen;
                             this.save_preferences(preferences, cx);
@@ -682,6 +739,69 @@ impl Dashboard {
                     },
                 ),
             ))
+            .child(self.launch_display_settings(theme, cx))
+    }
+
+    fn launch_display_settings(&self, theme: Theme, cx: &Context<Self>) -> impl IntoElement {
+        let saved = self.preferences.launch_display.as_deref();
+        let supported = launch_display::supported();
+        let (displays, note) = match &self.settings.launch_displays {
+            _ if !supported => (
+                &[][..],
+                "Display selection is available on Sway and KDE Plasma 6.".into(),
+            ),
+            None => (&[][..], "Looking for displays…".into()),
+            Some(Err(error)) => (&[][..], SharedString::from(error.clone())),
+            Some(Ok(displays)) => {
+                let note = match saved {
+                    Some(name) if !displays.iter().any(|display| display.name == name) => {
+                        format!("{name} is disconnected. The desktop will choose a display.").into()
+                    }
+                    _ => "Applies on next launch.".into(),
+                };
+                (displays.as_slice(), note)
+            }
+        };
+
+        let choices = std::iter::once((None, "Desktop default", None)).chain(displays.iter().map(
+            |display| {
+                (
+                    Some(display.name.clone()),
+                    display.name.as_str(),
+                    Some(SharedString::from(display.description.clone())),
+                )
+            },
+        ));
+        let buttons = row()
+            .justify_end()
+            .max_w(gpui::relative(0.72))
+            .gap(r(5.))
+            .flex_wrap()
+            .when(supported || saved.is_some(), |row| {
+                row.children(choices.map(|(name, label, detail)| {
+                    let selected = name.as_deref() == saved;
+                    let view = cx.entity();
+                    let label = SharedString::from(label.to_owned());
+                    let button = theme
+                        .button(label.clone(), selected.then_some(TEAL))
+                        .h(r(30.))
+                        .px(r(9.))
+                        .child(label)
+                        .when_some(detail, |button, detail| {
+                            button.tooltip(move |_, cx| cx.new(|_| Tooltip(detail.clone())).into())
+                        });
+                    theme.bind(button, move |_, cx| {
+                        view.update(cx, |this, cx| {
+                            if this.preferences.launch_display != name {
+                                let mut preferences = this.preferences.clone();
+                                preferences.launch_display = name.clone();
+                                this.save_preferences(preferences, cx);
+                            }
+                        });
+                    })
+                }))
+            });
+        preference_row(theme, "launch-display-row", "Launch display", note, buttons)
     }
 
     fn visibility_settings(&self, section: Section, cx: &Context<Self>) -> impl IntoElement {

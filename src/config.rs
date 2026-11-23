@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 pub struct Preferences {
     pub theme: ThemePreference,
     pub start_fullscreen: bool,
+    pub launch_display: Option<String>,
     pub clock_zones: Option<Vec<String>>,
     pub weather_location: String,
     pub fahrenheit: bool,
@@ -110,7 +111,7 @@ fn nonempty(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 
-pub fn path(file: &str) -> Option<PathBuf> {
+pub fn config_home() -> Option<PathBuf> {
     env::var_os("XDG_CONFIG_HOME")
         .filter(|path| Path::new(path).is_absolute())
         .map(PathBuf::from)
@@ -119,7 +120,10 @@ pub fn path(file: &str) -> Option<PathBuf> {
                 .filter(|path| Path::new(path).is_absolute())
                 .map(|home| PathBuf::from(home).join(".config"))
         })
-        .map(|directory| directory.join("secondscreen").join(file))
+}
+
+pub fn path(file: &str) -> Option<PathBuf> {
+    config_home().map(|directory| directory.join("secondscreen").join(file))
 }
 
 pub fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> Result<T> {
@@ -132,6 +136,14 @@ pub fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> Resul
 }
 
 pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    write_file(path, |file| {
+        serde_json::to_writer_pretty(&mut *file, value)?;
+        file.write_all(b"\n")?;
+        Ok(())
+    })
+}
+
+pub fn write_file(path: &Path, write: impl FnOnce(&mut fs::File) -> Result<()>) -> Result<()> {
     static NEXT_SAVE: AtomicU64 = AtomicU64::new(0);
     let directory = path
         .parent()
@@ -148,8 +160,7 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
         .mode(0o600)
         .open(&staging)?;
     let result = (|| -> Result<()> {
-        serde_json::to_writer_pretty(&mut file, value)?;
-        file.write_all(b"\n")?;
+        write(&mut file)?;
         file.sync_all()?;
         drop(file);
         fs::rename(&staging, path)?;

@@ -4,10 +4,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+use futures_lite::future::Boxed;
+use image::{Frame, ImageBuffer, Rgba, RgbaImage};
+
 use crate::model::{Artwork, MediaAction, Playback, Player, Track};
 use gpui::{
-    AnyElement, App, Asset, Context, Img, IntoElement, ObjectFit, RenderImage, Styled, div, img,
-    prelude::*,
+    AnyElement, App, Asset, Context, Img, ImgResourceLoader, IntoElement, ObjectFit, RenderImage,
+    Styled, div, img, prelude::*,
 };
 
 use super::{
@@ -308,28 +311,35 @@ fn timecode(micros: i64) -> String {
 }
 
 pub(super) fn album_art(theme: Theme, artwork: Option<Artwork>, side: f32) -> impl IntoElement {
+    let radius = 10.;
     let art = artwork.map(|artwork| {
-        match artwork {
-            Artwork::File(path) => img(path),
-            Artwork::Remote(url) => remote_image(url),
-        }
+        img(move |window: &mut gpui::Window, cx: &mut App| {
+            window
+                .use_asset::<AlbumThumbnail>(&artwork, cx)
+                .flatten()
+                .map(Ok)
+        })
         .absolute()
         .inset_0()
         .size_full()
-        .object_fit(ObjectFit::Cover)
+        .rounded(r(radius - 1.))
+        .object_fit(ObjectFit::Fill)
     });
 
-    row()
-        .size(r(side))
-        .max_h_full()
+    let mut thumbnail = row()
+        .h_full()
+        .max_h(r(side))
+        .max_w(r(side))
         .flex_none()
         .relative()
         .overflow_hidden()
         .justify_center()
-        .rounded(r(10.))
-        .border_1()
+        .rounded(r(radius))
+        .border(r(1.))
         .border_color(theme.color(STROKE))
-        .bg(theme.color(ARTWORK_BACK))
+        .bg(theme.color(ARTWORK_BACK));
+    thumbnail.style().aspect_ratio = Some(1.);
+    thumbnail
         .child(
             row()
                 .size(r(side * 0.675))
@@ -348,6 +358,49 @@ pub(super) fn album_art(theme: Theme, artwork: Option<Artwork>, side: f32) -> im
                 ),
         )
         .children(art)
+}
+
+struct AlbumThumbnail;
+impl Asset for AlbumThumbnail {
+    type Source = Artwork;
+    type Output = Option<Arc<RenderImage>>;
+
+    fn load(artwork: Artwork, cx: &mut App) -> impl Future<Output = Self::Output> + Send + 'static {
+        let load: Boxed<_> = match artwork {
+            Artwork::File(path) => {
+                let load = ImgResourceLoader::load(path.into(), cx);
+                Box::pin(async move { load.await.ok() })
+            }
+            Artwork::Remote(url) => Box::pin(RemoteImage::load(url, cx)),
+        };
+        async move {
+            let image = load.await.filter(|image| image.frame_count() > 0)?;
+            let size = image.size(0);
+            if size.width == size.height {
+                return Some(image);
+            }
+
+            // GPUI 0.2 rounds the image before applying the rectangular cover crop.
+            let frames = (0..image.frame_count())
+                .map(|index| {
+                    let size = image.size(index);
+                    let (width, height) = (u32::from(size.width), u32::from(size.height));
+                    let pixels = ImageBuffer::<Rgba<u8>, _>::from_raw(
+                        width,
+                        height,
+                        image.as_bytes(index)?,
+                    )?;
+                    let side = width.min(height);
+                    let left = (width - side) / 2;
+                    let top = (height - side) / 2;
+                    let cropped =
+                        RgbaImage::from_fn(side, side, |x, y| *pixels.get_pixel(left + x, top + y));
+                    Some(Frame::from_parts(cropped, 0, 0, image.delay(index)))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(Arc::new(RenderImage::new(frames)))
+        }
+    }
 }
 
 pub(super) fn remote_image(url: String) -> Img {

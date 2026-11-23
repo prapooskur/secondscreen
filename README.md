@@ -23,7 +23,11 @@ cargo run --release --locked
 
 The Wayland session needs a working Vulkan driver. The viewer builds against GTK 3 and WebKitGTK 4.1 (`gtk3-devel` and `webkit2gtk4.1-devel` on Fedora) and uses the system GStreamer codecs for playback. The audio mixer uses `pactl` with a PipeWire PulseAudio server or PulseAudio 15+. Media discovery uses the session D-Bus and works with players that advertise MPRIS. The Steam launch options **Copy** button uses `wl-clipboard` for mouse clicks in the default build.
 
-Drag the grip on the right-hand rail to move the window to your bar monitor. Press **F11** or click the fullscreen button near the bottom of the rail. **Esc** dismisses Settings or the active editing controls before leaving fullscreen. **Tab** moves between controls, **Enter** activates buttons, and arrow keys adjust a focused slider. Enable **Start fullscreen** in Settings or pass `--fullscreen` to open fullscreen on the compositor’s chosen output. The window’s Wayland app ID is `io.github.secondscreen`, which you can use in compositor window rules.
+Drag the grip on the right-hand rail to move the window to your bar monitor. Press **F11** or click the fullscreen button near the bottom of the rail. **Esc** dismisses Settings or the active editing controls before leaving fullscreen. **Tab** moves between controls, **Enter** activates buttons, and arrow keys adjust a focused slider. Enable **Start fullscreen** in **Settings → General** or pass `--fullscreen` to open fullscreen.
+
+In **Settings → General**, enable **Start at login** to register the current executable with your desktop’s XDG autostart service. Your session must process XDG autostart entries. If you move the executable, toggle **Start at login** off and back on to update its path.
+
+Use **Launch display** in **Settings → General** to choose a connected output on Sway or KDE Plasma 6 on Wayland. The selection applies to both windowed and fullscreen launches. If the display is disconnected, Second Screen opens on the desktop’s default output and keeps your selection. On GNOME, the desktop chooses the launch display.
 
 The same app can also be built with GPUI Fast:
 

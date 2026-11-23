@@ -2,7 +2,9 @@
 mod linux;
 
 #[cfg(target_os = "linux")]
-pub use linux::start;
+pub use linux::{autostart, launch_display, start};
+
+pub const APP_ID: &str = "io.github.secondscreen";
 
 use std::sync::mpsc::Sender;
 
