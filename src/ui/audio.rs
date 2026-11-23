@@ -10,8 +10,9 @@ use crate::model::{AudioAction, AudioChannel, AudioKind};
 
 impl Dashboard {
     pub(super) fn mixer_widget(&self, cx: &Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
         if let Some(error) = &self.audio.issue {
-            return quiet(error.clone()).into_any_element();
+            return theme.quiet(error.clone()).into_any_element();
         }
         let view = cx.entity();
         let tabs = row().gap(r(5.)).children(
@@ -22,8 +23,9 @@ impl Dashboard {
             .into_iter()
             .map(|(kind, text)| {
                 let view = view.clone();
-                bind(
-                    button(text, (self.audio_kind == kind).then_some(VIOLET))
+                theme.bind(
+                    theme
+                        .button(text, (self.audio_kind == kind).then_some(VIOLET))
                         .h(r(28.))
                         .child(text),
                     move |_, cx| {
@@ -48,7 +50,7 @@ impl Dashboard {
             .gap(r(6.))
             .child(tabs)
             .when(streams.is_empty(), |it| {
-                it.child(empty(
+                it.child(theme.empty(
                     Icon::Audio,
                     VIOLET,
                     if self.audio_kind == AudioKind::Playback {
@@ -74,6 +76,7 @@ impl Dashboard {
     }
 
     fn audio_levels(&self, channel: &AudioChannel, cx: &Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
         const LIMIT: f32 = 150.;
         let view = cx.entity();
         let kind = channel.id.kind;
@@ -90,11 +93,16 @@ impl Dashboard {
         };
         let mute_id = channel.id.clone();
         let muted = channel.muted;
-        let mute_button = bind(
-            button(scope("mute"), muted.then_some(AMBER))
+        let mute_button = theme.bind(
+            theme
+                .button(scope("mute"), muted.then_some(AMBER))
                 .size(r(31.))
                 .px_0()
-                .child(icon(mute_icon, c(if muted { AMBER } else { TEXT }), 16.)),
+                .child(icon(
+                    mute_icon,
+                    theme.color(if muted { AMBER } else { TEXT }),
+                    16.,
+                )),
             {
                 let view = view.clone();
                 move |_, cx| {
@@ -113,6 +121,7 @@ impl Dashboard {
             .map(|(_, fraction)| (fraction * LIMIT).round() as u16)
             .or(channel.volume);
         let volume = slider(
+            theme,
             slider_id,
             channel.volume.map_or(0., |value| f32::from(value) / LIMIT),
             if channel.muted { MUTED } else { accent },
@@ -134,7 +143,7 @@ impl Dashboard {
             .flex_none()
             .text_right()
             .text_size(r(12.))
-            .text_color(c(if muted { AMBER } else { TEXT }));
+            .text_color(theme.color(if muted { AMBER } else { TEXT }));
         row()
             .gap(r(6.))
             .flex_1()
@@ -144,6 +153,7 @@ impl Dashboard {
     }
 
     pub(super) fn channel(&self, channel: &AudioChannel, cx: &Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let view = cx.entity();
         let kind = channel.id.kind;
         let key = kind_key(kind);
@@ -155,9 +165,9 @@ impl Dashboard {
         let meter = self.audio_levels(channel, cx);
         let surface = col()
             .flex_none()
-            .bg(c(BACK).opacity(0.42))
+            .bg(theme.color(BACK).opacity(0.42))
             .border_1()
-            .border_color(c(STROKE))
+            .border_color(theme.color(STROKE))
             .rounded(r(8.))
             .px(r(7.))
             .py(r(5.));
@@ -177,9 +187,11 @@ impl Dashboard {
                     Some(path) => img(path.clone())
                         .size(r(28.))
                         .object_fit(ObjectFit::Contain)
-                        .with_fallback(move || icon(fallback, c(accent), 24.).into_any_element())
+                        .with_fallback(move || {
+                            icon(fallback, theme.color(accent), 24.).into_any_element()
+                        })
                         .into_any_element(),
-                    None => icon(fallback, c(accent), 24.).into_any_element(),
+                    None => icon(fallback, theme.color(accent), 24.).into_any_element(),
                 })
                 .tooltip(move |_, cx| cx.new(|_| Tooltip(description.clone().into())).into());
             return surface
@@ -187,28 +199,33 @@ impl Dashboard {
                 .into_any_element();
         }
         let control = if channel.is_default {
-            chip("Default", accent).into_any_element()
+            theme.chip("Default", accent).into_any_element()
         } else {
             let id = channel.id.clone();
-            bind(
-                button(scope("default"), None)
-                    .h(r(27.))
-                    .child("Set default"),
-                move |_, cx| {
-                    view.read(cx).send_audio(AudioAction::Default(id.clone()));
-                },
-            )
-            .into_any_element()
+            theme
+                .bind(
+                    theme
+                        .button(scope("default"), None)
+                        .h(r(27.))
+                        .child("Set default"),
+                    move |_, cx| {
+                        view.read(cx).send_audio(AudioAction::Default(id.clone()));
+                    },
+                )
+                .into_any_element()
         };
 
-        let name = label(channel.label.clone()).truncate().text_color(c(INK));
+        let name = theme
+            .label(channel.label.clone())
+            .truncate()
+            .text_color(theme.color(INK));
 
         surface
             .gap(r(3.))
             .child(
                 row()
                     .gap(r(5.))
-                    .child(col().flex_1().child(name).child(quiet(if recording {
+                    .child(col().flex_1().child(name).child(theme.quiet(if recording {
                         "Microphone"
                     } else {
                         "Output"

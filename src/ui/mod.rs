@@ -85,6 +85,12 @@ impl Dashboard {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        Theme::apply(preferences.theme, window.appearance(), cx);
+        cx.observe_window_appearance(window, |this, window, cx| {
+            Theme::apply(this.preferences.theme, window.appearance(), cx);
+        })
+        .detach();
+
         cx.spawn(async move |this, cx| {
             while let Ok(update) = updates.recv().await {
                 if this
@@ -297,13 +303,14 @@ impl Dashboard {
         cx.stop_propagation();
     }
 
-    fn notice(&self) -> Option<impl IntoElement> {
+    fn notice(&self, theme: Theme) -> Option<impl IntoElement> {
         let (_, message) = self
             .error
             .as_ref()
             .filter(|(at, _)| at.elapsed() < Duration::from_secs(9))?;
         Some(
-            quiet(message.clone())
+            theme
+                .quiet(message.clone())
                 .absolute()
                 .right(r(18.))
                 .bottom(r(18.))
@@ -312,9 +319,9 @@ impl Dashboard {
                 .py(r(8.))
                 .rounded(r(9.))
                 .border_1()
-                .border_color(c(RED).opacity(0.45))
-                .bg(c(HEADER))
-                .text_color(c(RED)),
+                .border_color(theme.color(RED).opacity(0.45))
+                .bg(theme.color(HEADER))
+                .text_color(theme.color(RED)),
         )
     }
 
@@ -325,6 +332,7 @@ impl Dashboard {
 
 impl Render for Dashboard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
         self.sync_viewers(cx);
         self.sync_utilities(cx);
         let size = window.viewport_size();
@@ -351,31 +359,33 @@ impl Render for Dashboard {
             .on_key_down(cx.listener(Self::key))
             .font_family("Inter")
             .text_size(r(14.))
-            .text_color(c(INK))
+            .text_color(theme.color(INK))
             .size_full()
-            .bg(c(BACK))
+            .bg(theme.color(BACK))
             .overflow_hidden()
             .child(home)
             .when(self.settings.open, |root| {
                 root.child(self.settings_overlay(cx))
             })
-            .children(self.notice())
+            .children(self.notice(theme))
     }
 }
 
 struct Tooltip(SharedString);
 
 impl Render for Tooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        label(self.0.clone())
-            .text_color(c(INK))
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
+        theme
+            .label(self.0.clone())
+            .text_color(theme.color(INK))
             .font_weight(FontWeight::MEDIUM)
             .px(r(9.))
             .py(r(5.))
             .rounded(r(7.))
             .border_1()
-            .border_color(c(STROKE))
-            .bg(c(PANEL))
+            .border_color(theme.color(STROKE))
+            .bg(theme.color(PANEL))
     }
 }
 

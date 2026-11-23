@@ -1,6 +1,6 @@
 use gpui::{
-    App, Bounds, Div, PathBuilder, Pixels, Point, Styled, TextRun, Window, canvas, div, fill, font,
-    linear_color_stop, linear_gradient, point, prelude::*, px, size,
+    App, Bounds, Div, Hsla, PathBuilder, Pixels, Point, Styled, TextRun, Window, canvas, div, fill,
+    font, linear_color_stop, linear_gradient, point, prelude::*, px, size,
 };
 use jiff::civil::Time;
 
@@ -10,6 +10,7 @@ use crate::ui::{Tooltip, theme::*};
 const INSET: f32 = 16.;
 
 pub(super) fn today_chart(
+    theme: Theme,
     weather: Option<&Weather>,
     height: f32,
     fahrenheit: bool,
@@ -18,11 +19,16 @@ pub(super) fn today_chart(
     let chart = col().flex_none().gap(r(3.)).child(
         row()
             .justify_between()
-            .child(label("Today’s temperature").text_color(c(INK)).truncate())
-            .child(quiet(temperature_unit(fahrenheit)).flex_none()),
+            .child(
+                theme
+                    .label("Today’s temperature")
+                    .text_color(theme.color(INK))
+                    .truncate(),
+            )
+            .child(theme.quiet(temperature_unit(fahrenheit)).flex_none()),
     );
     let Some(weather) = weather.filter(|weather| weather.has_hourly_temperatures()) else {
-        return chart.child(quiet("Hourly temperatures unavailable"));
+        return chart.child(theme.quiet("Hourly temperatures unavailable"));
     };
     let hourly = weather.hourly;
     let current_hour = weather.time.map(|time| time.hour() as usize);
@@ -60,19 +66,19 @@ pub(super) fn today_chart(
                         for y in [top, (top + bottom) * 0.5, bottom] {
                             window.paint_quad(fill(
                                 Bounds::new(point(left, y), size(width, px(1.))),
-                                c(TEXT).opacity(0.14),
+                                theme.color(TEXT).opacity(0.14),
                             ));
                         }
                         if let Some(now) = current_hour {
                             window.paint_quad(fill(
                                 Bounds::new(point(x(now), top), size(px(1.), bottom - top)),
-                                c(BLUE).opacity(0.48),
+                                theme.color(BLUE).opacity(0.48),
                             ));
                         }
                         for segment in points.split(Option::is_none) {
                             let mut segment = segment.iter().flatten().copied();
                             if let Some(first) = segment.next() {
-                                paint_curve(first, segment, bottom, units(1.65), window);
+                                paint_curve(theme, first, segment, bottom, units(1.65), window);
                             }
                         }
                         if let Some(now) = current_hour.and_then(|hour| points[hour]) {
@@ -83,7 +89,7 @@ pub(super) fn today_chart(
                                         now - point(diameter * 0.5, diameter * 0.5),
                                         size(diameter, diameter),
                                     ),
-                                    c(BLUE),
+                                    theme.color(BLUE),
                                 )
                                 .corner_radii(diameter * 0.5),
                             );
@@ -99,13 +105,20 @@ pub(super) fn today_chart(
                         let label_offset = units(18.);
                         for &hour in ticks {
                             let time = hour_label(hour, clock_12h);
-                            paint_label(time, point(x(hour), time_y), font_size, TEXT, window, cx);
+                            paint_label(
+                                time,
+                                point(x(hour), time_y),
+                                font_size,
+                                theme.color(TEXT),
+                                window,
+                                cx,
+                            );
                             if let Some(pos) = points[hour] {
                                 paint_label(
                                     temperature(hourly[hour], fahrenheit, false),
                                     point(pos.x, pos.y - label_offset),
                                     font_size,
-                                    INK,
+                                    theme.color(INK),
                                     window,
                                     cx,
                                 );
@@ -136,6 +149,7 @@ pub(super) fn today_chart(
 }
 
 fn paint_curve(
+    theme: Theme,
     first: Point<Pixels>,
     rest: impl Iterator<Item = Point<Pixels>>,
     bottom: Pixels,
@@ -163,7 +177,7 @@ fn paint_curve(
                     first - point(thickness, thickness),
                     size(diameter, diameter),
                 ),
-                c(INK),
+                theme.color(INK),
             )
             .corner_radii(thickness),
         );
@@ -177,13 +191,13 @@ fn paint_curve(
             path,
             linear_gradient(
                 180.,
-                linear_color_stop(c(BLUE).opacity(0.22), 0.),
-                linear_color_stop(c(BLUE).opacity(0.03), 1.),
+                linear_color_stop(theme.color(BLUE).opacity(0.22), 0.),
+                linear_color_stop(theme.color(BLUE).opacity(0.03), 1.),
             ),
         );
     }
     if let Ok(path) = line.build() {
-        window.paint_path(path, c(INK));
+        window.paint_path(path, theme.color(INK));
     }
 }
 
@@ -198,7 +212,7 @@ fn paint_label(
     text: String,
     position: Point<Pixels>,
     font_size: Pixels,
-    color: u32,
+    color: Hsla,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -209,7 +223,7 @@ fn paint_label(
         &[TextRun {
             len,
             font: font("Inter"),
-            color: c(color),
+            color,
             background_color: None,
             underline: None,
             strikethrough: None,

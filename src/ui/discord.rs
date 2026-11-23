@@ -10,8 +10,6 @@ use super::{
 use crate::model::{DiscordAction, DiscordState, VoiceMember, VoiceState};
 use crate::viewer::DISCORD_HOME;
 
-const DISCORD_SPEAKING_GREEN: u32 = 0x23a55a;
-
 impl Dashboard {
     pub(super) fn discord_widget(&self, cx: &Context<Self>) -> impl IntoElement {
         let (content, controls) = match &self.discord {
@@ -32,6 +30,7 @@ impl Dashboard {
     }
 
     fn disconnected(&self, state: &DiscordState, cx: &Context<Self>) -> (Div, Div) {
+        let theme = Theme::current(cx);
         let (headline, description) = match state {
             DiscordState::Unconfigured => ("Set up Discord RPC", "Configure a Discord application with voice RPC access to enable channel and microphone controls.".to_owned()),
             DiscordState::Disconnected => ("Connect Discord", "Open the desktop client and authorize Second Screen to access your voice settings.".to_owned()),
@@ -44,16 +43,17 @@ impl Dashboard {
             .flex_wrap()
             .gap(r(6.))
             .flex_none()
-            .child(bind(
-                control("open-discord", Icon::Discord, "Open Discord", None),
+            .child(theme.bind(
+                control(theme, "open-discord", Icon::Discord, "Open Discord", None),
                 move |window, cx| {
                     view.update(cx, |this, cx| this.open_discord(DISCORD_HOME, window, cx))
                 },
             ))
             .when(matches!(state, DiscordState::Unconfigured), |it| {
                 let view = cx.entity();
-                it.child(bind(
+                it.child(theme.bind(
                     control(
+                        theme,
                         "rpc-setup",
                         Icon::Settings,
                         "Discord settings",
@@ -70,8 +70,14 @@ impl Dashboard {
                 matches!(state, DiscordState::Disconnected | DiscordState::Error(_)),
                 |it| {
                     let view = cx.entity();
-                    it.child(bind(
-                        control("connect-discord", Icon::Link, "Connect", Some(VIOLET)),
+                    it.child(theme.bind(
+                        control(
+                            theme,
+                            "connect-discord",
+                            Icon::Link,
+                            "Connect",
+                            Some(VIOLET),
+                        ),
                         move |_, cx| {
                             view.read(cx).send_discord(DiscordAction::Connect);
                         },
@@ -82,13 +88,15 @@ impl Dashboard {
         let content = col()
             .flex_none()
             .gap(r(8.))
-            .child(label(headline).text_color(c(INK)))
-            .child(quiet(description));
+            .child(theme.label(headline).text_color(theme.color(INK)))
+            .child(theme.quiet(description));
         (content, controls)
     }
 
     fn connected(&self, voice: &VoiceState, cx: &Context<Self>) -> (Div, Div) {
+        let theme = Theme::current(cx);
         let mute = discord_button(
+            theme,
             "discord-mute",
             if voice.muted { Icon::MicOff } else { Icon::Mic },
             if voice.muted { "Unmute" } else { "Mute" },
@@ -97,6 +105,7 @@ impl Dashboard {
             cx,
         );
         let deafen = discord_button(
+            theme,
             "discord-deafen",
             Icon::Headphones,
             if voice.deafened { "Undeafen" } else { "Deafen" },
@@ -105,6 +114,7 @@ impl Dashboard {
             cx,
         );
         let leave = discord_button(
+            theme,
             "discord-leave",
             Icon::Phone,
             "Leave call",
@@ -127,8 +137,8 @@ impl Dashboard {
             .child(
                 row()
                     .gap(r(6.))
-                    .child(dot(TEAL))
-                    .child(quiet(voice.account.clone()).truncate()),
+                    .child(theme.dot(TEAL))
+                    .child(theme.quiet(voice.account.clone()).truncate()),
             );
         let content = col()
             .gap(r(7.))
@@ -138,16 +148,21 @@ impl Dashboard {
                     .justify_between()
                     .gap(r(8.))
                     .child(
-                        label(
-                            channel
-                                .map(|channel| channel.name.clone())
-                                .unwrap_or_else(|| "No active voice channel".into()),
-                        )
-                        .text_color(c(INK))
-                        .truncate(),
+                        theme
+                            .label(
+                                channel
+                                    .map(|channel| channel.name.clone())
+                                    .unwrap_or_else(|| "No active voice channel".into()),
+                            )
+                            .text_color(theme.color(INK))
+                            .truncate(),
                     )
                     .when_some(channel, |it, channel| {
-                        it.child(quiet(format!("{} in voice", channel.members.len())).flex_none())
+                        it.child(
+                            theme
+                                .quiet(format!("{} in voice", channel.members.len()))
+                                .flex_none(),
+                        )
                     }),
             )
             .when_some(channel, |it, channel| {
@@ -156,14 +171,14 @@ impl Dashboard {
                         .members
                         .iter()
                         .enumerate()
-                        .map(|(index, member)| member_row(index, member)),
+                        .map(|(index, member)| member_row(theme, index, member)),
                 )
             });
         (content, controls)
     }
 }
 
-fn member_row(index: usize, member: &VoiceMember) -> Div {
+fn member_row(theme: Theme, index: usize, member: &VoiceMember) -> Div {
     let initial = member
         .name
         .chars()
@@ -177,8 +192,8 @@ fn member_row(index: usize, member: &VoiceMember) -> Div {
         .relative()
         .justify_center()
         .rounded_full()
-        .bg(c(VIOLET).opacity(0.13))
-        .text_color(c(VIOLET))
+        .bg(theme.color(VIOLET).opacity(0.13))
+        .text_color(theme.color(VIOLET))
         .text_size(r(11.))
         .font_weight(FontWeight::SEMIBOLD)
         .child(initial)
@@ -199,7 +214,7 @@ fn member_row(index: usize, member: &VoiceMember) -> Div {
                     .inset(r(-2.))
                     .rounded_full()
                     .border_2()
-                    .border_color(c(DISCORD_SPEAKING_GREEN)),
+                    .border_color(theme.color(SPEAKING_GREEN)),
             )
             .tooltip(|_, cx| cx.new(|_| Tooltip("Speaking".into())).into())
         });
@@ -209,43 +224,46 @@ fn member_row(index: usize, member: &VoiceMember) -> Div {
         .gap(r(8.))
         .flex_none()
         .rounded(r(6.))
-        .bg(c(BACK).opacity(0.45))
+        .bg(theme.color(BACK).opacity(0.45))
         .child(avatar)
         .child(div().flex_1().truncate().child(member.name.clone()))
         .when(member.streaming, |it| {
-            it.child(chip("LIVE", RED).h(r(21.)).px(r(5.)))
+            it.child(theme.chip("LIVE", RED).h(r(21.)).px(r(5.)))
         })
         .when(member.muted, |it| {
-            it.child(icon(Icon::MicOff, c(AMBER), 15.))
+            it.child(icon(Icon::MicOff, theme.color(AMBER), 15.))
         })
         .when(member.deafened, |it| {
-            it.child(icon(Icon::Headphones, c(AMBER), 15.))
+            it.child(icon(Icon::Headphones, theme.color(AMBER), 15.))
         })
 }
 
 fn control(
+    theme: Theme,
     id: &'static str,
     symbol: Icon,
     name: &'static str,
-    color: Option<u32>,
+    color: Option<Color>,
 ) -> Stateful<Div> {
-    button(id, color)
+    theme
+        .button(id, color)
         .size(r(32.))
         .px_0()
-        .child(icon(symbol, c(color.unwrap_or(TEXT)), 16.))
+        .child(icon(symbol, theme.color(color.unwrap_or(TEXT)), 16.))
         .tooltip(move |_, cx| cx.new(|_| Tooltip(name.into())).into())
 }
 
 fn discord_button(
+    theme: Theme,
     id: &'static str,
     symbol: Icon,
     name: &'static str,
-    color: Option<u32>,
+    color: Option<Color>,
     action: impl Fn() -> DiscordAction + 'static,
     cx: &Context<Dashboard>,
 ) -> impl IntoElement {
     let view = cx.entity();
-    bind(control(id, symbol, name, color), move |_, cx| {
+    theme.bind(control(theme, id, symbol, name, color), move |_, cx| {
         view.read(cx).send_discord(action());
     })
 }

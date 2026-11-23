@@ -10,9 +10,10 @@ use super::theme::*;
 pub type Gesture = Rc<RefCell<Option<(String, f32)>>>;
 
 pub fn slider(
+    theme: Theme,
     id: String,
     value: f32,
-    accent: u32,
+    accent: Color,
     enabled: bool,
     gesture: Gesture,
     step: f32,
@@ -41,11 +42,13 @@ pub fn slider(
                 )
                 .corner_radii(px(2.))
             };
-            window.paint_quad(line(width, c(STROKE)));
+            window.paint_quad(line(width, theme.color(STROKE)));
             if current > 0. {
                 window.paint_quad(line(
                     width * current,
-                    c(accent).opacity(if enabled { 0.85 } else { 0.4 }),
+                    theme
+                        .color(accent)
+                        .opacity(if enabled { 0.85 } else { 0.4 }),
                 ));
             }
             if enabled {
@@ -53,7 +56,7 @@ pub fn slider(
                     point(left + width * current - radius, center - radius),
                     size(radius * 2., radius * 2.),
                 );
-                window.paint_quad(fill(thumb, c(accent)).corner_radii(radius));
+                window.paint_quad(fill(thumb, theme.color(accent)).corner_radii(radius));
                 window.set_cursor_style(CursorStyle::PointingHand, &hitbox);
 
                 let fraction = move |x: Pixels| ((x - left) / width).clamp(0., 1.);
@@ -105,11 +108,11 @@ pub fn slider(
         .id(gpui::SharedString::from(id))
         .flex_1()
         .border_1()
-        .border_color(c(PANEL))
+        .border_color(theme.color(PANEL))
         .rounded(r(5.))
         .when(enabled, |it| {
             it.tab_index(0)
-                .focus(|it| it.border_color(c(TEAL)))
+                .focus(move |it| it.border_color(theme.color(TEAL)))
                 .on_key_down(move |event, _, cx| {
                     let next = match event.keystroke.key.as_str() {
                         "left" | "down" => value - step,

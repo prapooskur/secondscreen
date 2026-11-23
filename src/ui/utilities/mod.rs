@@ -246,7 +246,7 @@ impl Dashboard {
         }
     }
 
-    pub(super) fn world_clock(&self, height: f32) -> impl IntoElement {
+    pub(super) fn world_clock(&self, theme: Theme, height: f32) -> impl IntoElement {
         let now = Zoned::now();
         let mut clocks = col()
             .id("world-times")
@@ -266,19 +266,19 @@ impl Dashboard {
                     .flex_none()
                     .gap(r(7.))
                     .justify_between()
-                    .child(col().flex_1().child(label(name).truncate()).when(
+                    .child(col().flex_1().child(theme.label(name).truncate()).when(
                         height >= 125.,
                         |it| {
                             it.children(
                                 time.as_ref()
-                                    .map(|z| quiet(z.strftime("%a, %b %d · %Z").to_string())),
+                                    .map(|z| theme.quiet(z.strftime("%a, %b %d · %Z").to_string())),
                             )
                         },
                     ))
                     .child(
                         mono(time.map_or_else(|| "—".into(), |z| z.strftime("%H:%M").to_string()))
                             .text_size(r(if height >= 120. { 21. } else { 16. }))
-                            .text_color(c(TEAL)),
+                            .text_color(theme.color(TEAL)),
                     ),
             );
         }
@@ -286,6 +286,7 @@ impl Dashboard {
     }
 
     pub(super) fn calendar(&self, height: f32, cx: &Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let today = Zoned::now().date();
         let first = self.utilities.month.unwrap_or(today.first_of_month());
         let mut nav = row().justify_between().gap(r(4.)).flex_none();
@@ -295,8 +296,8 @@ impl Dashboard {
             ("next-month", "›".to_owned(), 1),
         ] {
             let view = cx.entity();
-            nav = nav.child(bind(
-                button(id, None).h(r(23.)).px(r(7.)).child(text),
+            nav = nav.child(theme.bind(
+                theme.button(id, None).h(r(23.)).px(r(7.)).child(text),
                 move |_, cx| {
                     view.update(cx, |d, cx| {
                         d.utilities.month = if delta == 0 {
@@ -316,11 +317,13 @@ impl Dashboard {
                 .text_center()
                 .text_size(r(if height < 120. { 11. } else { 13. }))
                 .rounded(r(4.))
-                .when(active, |it| it.bg(c(VIOLET)).text_color(c(BACK)))
+                .when(active, |it| {
+                    it.bg(theme.color(VIOLET)).text_color(theme.color(BACK))
+                })
                 .child(text)
         };
         grid =
-            grid.child(row().text_color(c(MUTED)).children(
+            grid.child(row().text_color(theme.color(MUTED)).children(
                 ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map(|v| cell(v.into(), false)),
             ));
         let start = first.weekday().to_monday_zero_offset();
@@ -341,7 +344,7 @@ impl Dashboard {
         col().flex_1().gap(r(3.)).child(nav).child(grid)
     }
 
-    pub(super) fn notification_widget(&self) -> impl IntoElement {
+    pub(super) fn notification_widget(&self, theme: Theme) -> impl IntoElement {
         let state = &self.utilities;
         let mut list = col()
             .id("notification-list")
@@ -349,9 +352,9 @@ impl Dashboard {
             .overflow_y_scroll()
             .gap(r(7.));
         if let Some(error) = &state.notification_error {
-            list = list.child(quiet(error.clone()));
+            list = list.child(theme.quiet(error.clone()));
         } else if state.notices.is_empty() {
-            list = list.child(quiet("Waiting for desktop notifications…"));
+            list = list.child(theme.quiet("Waiting for desktop notifications…"));
         }
         list.children(state.notices.iter().map(|n| {
             col()
@@ -361,18 +364,22 @@ impl Dashboard {
                     row()
                         .justify_between()
                         .gap(r(5.))
-                        .child(quiet(n.app.clone()).truncate())
-                        .child(quiet(n.time.clone())),
+                        .child(theme.quiet(n.app.clone()).truncate())
+                        .child(theme.quiet(n.time.clone())),
                 )
-                .child(label(n.title.clone()))
-                .when(!n.body.is_empty(), |it| it.child(quiet(n.body.clone())))
+                .child(theme.label(n.title.clone()))
+                .when(!n.body.is_empty(), |it| {
+                    it.child(theme.quiet(n.body.clone()))
+                })
         }))
     }
 
     pub(super) fn clear_notifications(&self, cx: &Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let view = cx.entity();
-        bind(
-            button("clear-notifications", None)
+        theme.bind(
+            theme
+                .button("clear-notifications", None)
                 .h(r(26.))
                 .px(r(7.))
                 .child("Clear"),
@@ -385,7 +392,7 @@ impl Dashboard {
         )
     }
 
-    pub(super) fn fps_widget(&self, width: f32, height: f32) -> impl IntoElement {
+    pub(super) fn fps_widget(&self, theme: Theme, width: f32, height: f32) -> impl IntoElement {
         let state = &self.utilities;
         let tile = col().flex_1().gap(r(6.));
         if let Some(reading) = &state.fps_reading {
@@ -399,11 +406,11 @@ impl Dashboard {
                 col()
                     .flex_1()
                     .gap(r(2.))
-                    .child(quiet(name).whitespace_nowrap())
+                    .child(theme.quiet(name).whitespace_nowrap())
                     .child(
                         mono(text)
                             .text_size(r(fitted_size.max(10.)))
-                            .text_color(c(color))
+                            .text_color(theme.color(color))
                             .truncate(),
                     )
             };
@@ -432,6 +439,7 @@ impl Dashboard {
             )
             .when(height >= 75., |it| {
                 it.child(graph(
+                    theme,
                     state.fps_history.clone(),
                     None,
                     state.fps_history.iter().copied().fold(60., f32::max),
@@ -440,12 +448,15 @@ impl Dashboard {
             })
             .when(height >= 100., |it| {
                 it.child(
-                    quiet(match reading.source {
-                        fps::Source::MangoHud(_) => format!("MangoHud · last {HISTORY} seconds"),
-                        fps::Source::Gamescope => "Gamescope · Use MangoHud for lows".into(),
-                    })
-                    .truncate()
-                    .flex_none(),
+                    theme
+                        .quiet(match reading.source {
+                            fps::Source::MangoHud(_) => {
+                                format!("MangoHud · last {HISTORY} seconds")
+                            }
+                            fps::Source::Gamescope => "Gamescope · Use MangoHud for lows".into(),
+                        })
+                        .truncate()
+                        .flex_none(),
                 )
             })
         } else {
@@ -453,7 +464,7 @@ impl Dashboard {
                 .fps_error
                 .as_deref()
                 .unwrap_or("Waiting for a game. See Settings → Widgets for MangoHud setup.");
-            tile.child(quiet(status.to_owned()))
+            tile.child(theme.quiet(status.to_owned()))
         }
     }
 }

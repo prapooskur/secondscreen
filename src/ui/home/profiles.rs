@@ -203,10 +203,12 @@ fn render_svg(bytes: &[u8]) -> Result<Vec<u8>> {
 
 impl Dashboard {
     pub(super) fn profile_rail(&self, cx: &Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let profiles = &self.home.profiles;
         let view = cx.entity();
         let edit = view.clone();
-        panel()
+        theme
+            .panel()
             .w(r(RAIL_WIDTH))
             .h_full()
             .flex_none()
@@ -221,8 +223,9 @@ impl Dashboard {
                 } else {
                     format!("Switch to profile {}", index + 1)
                 };
-                bind(
-                    button(("switch-profile", index), active.then_some(TEAL))
+                theme.bind(
+                    theme
+                        .button(("switch-profile", index), active.then_some(TEAL))
                         .size(r(RAIL_BUTTON_SIZE))
                         .px_0()
                         .child(profile.button_content(index, 24.))
@@ -237,6 +240,7 @@ impl Dashboard {
             .when(profiles.items.len() < MAX_PROFILES, |it| {
                 let view = view.clone();
                 it.child(rail_control(
+                    theme,
                     "add-profile",
                     "New profile",
                     Icon::Plus,
@@ -252,6 +256,7 @@ impl Dashboard {
             })
             .child(col().flex_1())
             .child(rail_control(
+                theme,
                 "edit-profile",
                 "Customize profile button",
                 Icon::Edit,

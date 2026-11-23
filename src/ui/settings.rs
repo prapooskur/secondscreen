@@ -11,7 +11,7 @@ use gpui::{
 };
 
 use crate::{
-    config::{DISCORD_REDIRECT_URI, DiscordCredentials, Preferences},
+    config::{DISCORD_REDIRECT_URI, DiscordCredentials, Preferences, ThemePreference},
     model::{AudioChannel, AudioKind, DiscordAction},
 };
 
@@ -48,11 +48,11 @@ impl Section {
         Self::Discord,
     ];
 
-    fn presentation(self) -> (&'static str, Icon, u32) {
+    fn presentation(self) -> (&'static str, Icon, Color) {
         match self {
             Self::General => ("General", Icon::Settings, TEAL),
             Self::Widgets => ("Widgets", Icon::Home, AMBER),
-            Self::Media => ("Media apps", Icon::Music, 0xf2799c),
+            Self::Media => ("Media apps", Icon::Music, PINK),
             Self::Audio => ("Audio devices", Icon::Speaker, AMBER),
             Self::Storage => ("Storage", Icon::Disk, BLUE),
             Self::Discord => ("Discord", Icon::Discord, VIOLET),
@@ -187,6 +187,7 @@ impl Dashboard {
     }
 
     pub(super) fn settings_overlay(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
         split()
             .absolute()
             .inset_0()
@@ -198,7 +199,7 @@ impl Dashboard {
                     .id("settings-backdrop")
                     .absolute()
                     .inset_0()
-                    .bg(c(BACK).opacity(0.52))
+                    .bg(theme.color(SCRIM).opacity(0.52))
                     .occlude()
                     .on_click(cx.listener(|this, _, window, cx| this.close_settings(window, cx))),
             )
@@ -206,6 +207,7 @@ impl Dashboard {
     }
 
     fn settings_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let section = self.settings.section;
         let view = cx.entity();
         let tabs = row()
@@ -217,12 +219,17 @@ impl Dashboard {
                 let (name, symbol, accent) = section.presentation();
                 let active = section == self.settings.section;
                 let view = view.clone();
-                bind(
-                    button(name, active.then_some(accent))
+                theme.bind(
+                    theme
+                        .button(name, active.then_some(accent))
                         .justify_start()
                         .h(r(29.))
                         .px(r(8.))
-                        .child(icon(symbol, c(if active { accent } else { MUTED }), 16.))
+                        .child(icon(
+                            symbol,
+                            theme.color(if active { accent } else { MUTED }),
+                            16.,
+                        ))
                         .child(name),
                     move |window, cx| {
                         view.update(cx, |this, cx| this.open_settings(section, window, cx))
@@ -236,7 +243,8 @@ impl Dashboard {
             Section::Profiles => self.profile_settings(cx).into_any_element(),
             _ => self.visibility_settings(section, cx).into_any_element(),
         };
-        panel()
+        theme
+            .panel()
             .id("settings-panel")
             .w(r(540.))
             .max_w_full()
@@ -251,14 +259,24 @@ impl Dashboard {
             .p(r(12.))
             .gap(r(9.))
             .child(
-                row().justify_between().child(title("Settings")).child(bind(
-                    button("dismiss-settings", None)
-                        .size(r(28.))
-                        .px_0()
-                        .child(icon(Icon::Close, c(TEXT), 14.))
-                        .tooltip(|_, cx| cx.new(|_| Tooltip("Close settings".into())).into()),
-                    move |window, cx| view.update(cx, |this, cx| this.close_settings(window, cx)),
-                )),
+                row()
+                    .justify_between()
+                    .child(theme.title("Settings"))
+                    .child(
+                        theme.bind(
+                            theme
+                                .button("dismiss-settings", None)
+                                .size(r(28.))
+                                .px_0()
+                                .child(icon(Icon::Close, theme.color(TEXT), 14.))
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| Tooltip("Close settings".into())).into()
+                                }),
+                            move |window, cx| {
+                                view.update(cx, |this, cx| this.close_settings(window, cx))
+                            },
+                        ),
+                    ),
             )
             .child(tabs)
             .child(
@@ -271,6 +289,7 @@ impl Dashboard {
     }
 
     fn profile_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let (index, profile) = self.home.active_profile();
         let initial_label = profile.label(index);
         let input = self
@@ -285,8 +304,10 @@ impl Dashboard {
             })
             .clone();
         let view = cx.entity();
-        let save = bind(
-            button("save-profile-label", Some(TEAL)).child("Save label"),
+        let save = theme.bind(
+            theme
+                .button("save-profile-label", Some(TEAL))
+                .child("Save label"),
             {
                 let input = input.clone();
                 let view = view.clone();
@@ -305,15 +326,19 @@ impl Dashboard {
                 }
             },
         );
-        let choose = bind(
-            button("choose-profile-image", None).child("Choose SVG or PNG"),
+        let choose = theme.bind(
+            theme
+                .button("choose-profile-image", None)
+                .child("Choose SVG or PNG"),
             {
                 let view = view.clone();
                 move |_, cx| view.update(cx, |this, cx| this.choose_profile_image(index, cx))
             },
         );
-        let reset = bind(
-            button("reset-profile-badge", None).child("Use default"),
+        let reset = theme.bind(
+            theme
+                .button("reset-profile-badge", None)
+                .child("Use default"),
             move |_, cx| {
                 view.update(cx, |this, cx| {
                     this.settings.profile_picker = None;
@@ -332,13 +357,13 @@ impl Dashboard {
                             .size(r(36.))
                             .justify_center()
                             .rounded(r(8.))
-                            .bg(c(TEAL).opacity(0.13))
-                            .text_color(c(TEAL))
+                            .bg(theme.color(TEAL).opacity(0.13))
+                            .text_color(theme.color(TEAL))
                             .child(profile.button_content(index, 26.)),
                     )
-                    .child(title(format!("Profile {}", index + 1))),
+                    .child(theme.title(format!("Profile {}", index + 1))),
             )
-            .child(field("Letter or number", input))
+            .child(field(theme, "Letter or number", input))
             .child(
                 row()
                     .gap(r(6.))
@@ -389,6 +414,7 @@ impl Dashboard {
     }
 
     fn widget_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let (zones, location) = self
             .settings
             .widget_fields
@@ -415,8 +441,10 @@ impl Dashboard {
             })
             .clone();
         let view = cx.entity();
-        let save = bind(
-            button("save-widget-settings", Some(TEAL)).child("Save locations"),
+        let save = theme.bind(
+            theme
+                .button("save-widget-settings", Some(TEAL))
+                .child("Save locations"),
             {
                 let (zones, location) = (zones.clone(), location.clone());
                 move |_, cx| {
@@ -448,7 +476,7 @@ impl Dashboard {
         );
         let weather_option = |id, text, toggle: fn(&mut Preferences)| {
             let view = cx.entity();
-            bind(button(id, None).child(text), move |_, cx| {
+            theme.bind(theme.button(id, None).child(text), move |_, cx| {
                 view.update(cx, |this, cx| {
                     let mut preferences = this.preferences.clone();
                     toggle(&mut preferences);
@@ -464,11 +492,9 @@ impl Dashboard {
         col()
             .gap(r(9.))
             .flex_none()
-            .child(field("World clock time zones", zones))
-            .child(quiet(
-                "Separate IANA time zones with commas. Local time is always shown.",
-            ))
-            .child(field("Weather and air quality location", location))
+            .child(field(theme, "World clock time zones", zones))
+            .child(theme.quiet("Separate IANA time zones with commas. Local time is always shown."))
+            .child(field(theme, "Weather and air quality location", location))
             .child(row().child(save))
             .child(
                 row()
@@ -505,26 +531,27 @@ impl Dashboard {
             .child(
                 row()
                     .justify_between()
-                    .child(label("Steam launch options for MangoHud FPS"))
+                    .child(theme.label("Steam launch options for MangoHud FPS"))
                     .child(
-                        button("copy-launch-options", None)
+                        theme
+                            .button("copy-launch-options", None)
                             .h(r(25.))
                             .px(r(7.))
                             .child(copy_label)
                             .cursor_pointer()
                             .tab_index(0)
-                            .focus(|it| it.border_color(c(TEAL)))
+                            .focus(move |it| it.border_color(theme.color(TEAL)))
                             .on_click(cx.listener(Self::copy_launch_options)),
                     ),
             )
             .children(match self.settings.launch_options_copy {
-                LaunchOptionsCopy::Failed(message) => Some(quiet(message).text_color(c(RED))),
+                LaunchOptionsCopy::Failed(message) => {
+                    Some(theme.quiet(message).text_color(theme.color(RED)))
+                }
                 _ => None,
             })
-            .child(quiet(
-                "Install MangoHud to track current FPS, 1% low, and 0.1% low.",
-            ))
-            .child(quiet(FPS_LAUNCH_OPTIONS))
+            .child(theme.quiet("Install MangoHud to track current FPS, 1% low, and 0.1% low."))
+            .child(theme.quiet(FPS_LAUNCH_OPTIONS))
     }
 
     fn copy_launch_options(
@@ -591,17 +618,56 @@ impl Dashboard {
     }
 
     fn general_settings(&self, cx: &Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let view = cx.entity();
+        let themes = row().flex_none().gap(r(5.)).children(
+            [
+                (ThemePreference::System, "System"),
+                (ThemePreference::Light, "Light"),
+                (ThemePreference::Dark, "Dark"),
+            ]
+            .map(|(preference, name)| {
+                let active = self.preferences.theme == preference;
+                let view = view.clone();
+                theme.bind(
+                    theme
+                        .button(name, active.then_some(TEAL))
+                        .h(r(30.))
+                        .px(r(9.))
+                        .child(name),
+                    move |window, cx| {
+                        view.update(cx, |this, cx| {
+                            if this.preferences.theme != preference {
+                                let mut preferences = this.preferences.clone();
+                                preferences.theme = preference;
+                                if this.save_preferences(preferences, cx) {
+                                    Theme::apply(preference, window.appearance(), cx);
+                                }
+                            }
+                        });
+                    },
+                )
+            }),
+        );
         col()
             .gap(r(12.))
             .flex_none()
-            .child(title("General"))
+            .child(theme.title("General"))
             .child(preference_row(
+                theme,
+                "theme-row",
+                "Theme",
+                "System follows your desktop appearance.",
+                themes,
+            ))
+            .child(preference_row(
+                theme,
                 "start-fullscreen-row",
                 "Start fullscreen",
                 "Applies the next time Second Screen opens.",
-                bind(
+                theme.bind(
                     choice_button(
+                        theme,
                         "startup-fullscreen",
                         self.preferences.start_fullscreen,
                         "On",
@@ -619,6 +685,7 @@ impl Dashboard {
     }
 
     fn visibility_settings(&self, section: Section, cx: &Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let (title_text, hint, empty) = match section {
             Section::Media => (
                 "Media apps",
@@ -713,20 +780,23 @@ impl Dashboard {
         col()
             .gap(r(9.))
             .flex_none()
-            .child(title(title_text))
-            .child(quiet(hint))
-            .when(choices.is_empty(), |it| it.child(quiet(empty).py(r(10.))))
+            .child(theme.title(title_text))
+            .child(theme.quiet(hint))
+            .when(choices.is_empty(), |it| {
+                it.child(theme.quiet(empty).py(r(10.)))
+            })
             .children(choices.into_iter().map(|(key, choice)| {
                 let view = cx.entity();
                 let name = choice.name;
                 let saved_name = name.clone();
                 let id = SharedString::from(key.clone());
                 preference_row(
+                    theme,
                     id.clone(),
                     name,
                     choice.detail,
-                    bind(
-                        choice_button(id, !choice.hidden, "Shown", "Hidden"),
+                    theme.bind(
+                        choice_button(theme, id, !choice.hidden, "Shown", "Hidden"),
                         move |_, cx| {
                             view.update(cx, |this, cx| {
                                 let mut preferences = this.preferences.clone();
@@ -743,6 +813,7 @@ impl Dashboard {
     }
 
     fn discord_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let fields = self.settings.discord_fields.get_or_insert_with(|| {
             let saved = self
                 .preferences
@@ -765,8 +836,10 @@ impl Dashboard {
         let view = cx.entity();
         let clear = view.clone();
         let from_env = view.clone();
-        let save = bind(
-            button("save-discord-settings", Some(VIOLET)).child("Save credentials"),
+        let save = theme.bind(
+            theme
+                .button("save-discord-settings", Some(VIOLET))
+                .child("Save credentials"),
             {
                 let (id, secret, token) = (id.clone(), secret.clone(), token.clone());
                 move |window, cx| {
@@ -802,16 +875,16 @@ impl Dashboard {
         col()
             .gap(r(10.))
             .flex_none()
-            .child(title("Discord voice RPC"))
-            .child(quiet(note))
-            .child(field("Application ID", id))
+            .child(theme.title("Discord voice RPC"))
+            .child(theme.quiet(note))
+            .child(field(theme, "Application ID", id))
             .child(
                 split()
                     .gap(r(10.))
-                    .child(field("Client secret", secret))
-                    .child(field("Access token", token)),
+                    .child(field(theme, "Client secret", secret))
+                    .child(field(theme, "Access token", token)),
             )
-            .child(quiet(format!(
+            .child(theme.quiet(format!(
                 "For client-secret login, add {DISCORD_REDIRECT_URI} under OAuth2 → Redirects in the Discord Developer Portal."
             )))
             .child(
@@ -820,8 +893,8 @@ impl Dashboard {
                     .flex_wrap()
                     .child(save)
                     .when(saved || using_environment, |row| {
-                        row.child(bind(
-                            button("clear-discord-settings", None).child("Clear credentials"),
+                        row.child(theme.bind(
+                            theme.button("clear-discord-settings", None).child("Clear credentials"),
                             move |window, cx| {
                                 clear.update(cx, |this, cx| {
                                     this.save_discord(
@@ -834,8 +907,8 @@ impl Dashboard {
                         ))
                     })
                     .when(environment && !using_environment, |row| {
-                        row.child(bind(
-                            button("use-discord-environment", None).child("Use environment"),
+                        row.child(theme.bind(
+                            theme.button("use-discord-environment", None).child("Use environment"),
                             move |window, cx| {
                                 from_env.update(cx, |this, cx| this.save_discord(None, window, cx))
                             },
@@ -882,6 +955,7 @@ impl Dashboard {
 }
 
 fn preference_row(
+    theme: Theme,
     id: impl Into<gpui::ElementId>,
     name: impl Into<SharedString>,
     detail: impl Into<SharedString>,
@@ -895,31 +969,34 @@ fn preference_row(
         .p(r(8.))
         .rounded(r(8.))
         .border_1()
-        .border_color(c(STROKE))
-        .bg(c(BACK).opacity(0.44))
+        .border_color(theme.color(STROKE))
+        .bg(theme.color(BACK).opacity(0.44))
         .child(
             col()
                 .flex_1()
                 .gap(r(3.))
                 .child(
-                    label(name.clone())
+                    theme
+                        .label(name.clone())
                         .id("preference-label")
-                        .text_color(c(INK))
+                        .text_color(theme.color(INK))
                         .truncate()
                         .tooltip(move |_, cx| cx.new(|_| Tooltip(name.clone())).into()),
                 )
-                .child(quiet(detail.into())),
+                .child(theme.quiet(detail.into())),
         )
         .child(control)
 }
 
 fn choice_button(
+    theme: Theme,
     id: impl Into<gpui::ElementId>,
     enabled: bool,
     on: &str,
     off: &str,
 ) -> gpui::Stateful<gpui::Div> {
-    button(id, enabled.then_some(TEAL))
+    theme
+        .button(id, enabled.then_some(TEAL))
         .w(r(84.))
         .h(r(30.))
         .px(r(6.))
@@ -930,11 +1007,11 @@ fn choice_button(
         }))
 }
 
-fn field(name: &'static str, input: Entity<TextInput>) -> impl IntoElement {
+fn field(theme: Theme, name: &'static str, input: Entity<TextInput>) -> impl IntoElement {
     col()
         .id(name)
         .flex_1()
         .gap(r(4.))
-        .child(label(name))
+        .child(theme.label(name))
         .child(input)
 }

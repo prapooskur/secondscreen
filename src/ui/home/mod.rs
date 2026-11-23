@@ -264,13 +264,15 @@ impl Dashboard {
         scrolling: Option<HorizontalScroll>,
         cx: &Context<Self>,
     ) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let editing = self.home.editing;
         let catalog = self.home.catalog;
         let edit_view = cx.entity();
         let settings_view = cx.entity();
         let fullscreen_view = cx.entity();
 
-        panel()
+        theme
+            .panel()
             .w(r(RAIL_WIDTH))
             .h_full()
             .flex_none()
@@ -278,6 +280,7 @@ impl Dashboard {
             .gap(r(5.))
             .py(r(5.))
             .child(rail_control(
+                theme,
                 "edit-home",
                 if editing {
                     "Done editing"
@@ -301,6 +304,7 @@ impl Dashboard {
             .when(editing, |it| {
                 let view = cx.entity();
                 it.child(rail_control(
+                    theme,
                     "widget-catalog",
                     if catalog {
                         "Back to layout"
@@ -319,6 +323,7 @@ impl Dashboard {
                 ))
             })
             .child(rail_control(
+                theme,
                 "settings",
                 "Settings",
                 Icon::Settings,
@@ -340,7 +345,7 @@ impl Dashboard {
                     .justify_center()
                     .items_center()
                     .gap(r(5.))
-                    .children(scrolling.map(|scroll| self.scroll_controls(scroll)))
+                    .children(scrolling.map(|scroll| self.scroll_controls(theme, scroll)))
                     .when(!fullscreen, |it| {
                         it.child(
                             row()
@@ -349,8 +354,8 @@ impl Dashboard {
                                 .justify_center()
                                 .rounded(r(8.))
                                 .cursor_move()
-                                .hover(|it| it.bg(c(HOVER)))
-                                .child(icon(Icon::Grip, c(MUTED), 16.))
+                                .hover(move |it| it.bg(theme.color(HOVER)))
+                                .child(icon(Icon::Grip, theme.color(MUTED), 16.))
                                 .tooltip(|_, cx| {
                                     cx.new(|_| Tooltip("Drag to move window".into())).into()
                                 })
@@ -365,6 +370,7 @@ impl Dashboard {
                     }),
             )
             .child(rail_control(
+                theme,
                 "fullscreen",
                 if fullscreen {
                     "Exit fullscreen (F11)"
@@ -383,6 +389,7 @@ impl Dashboard {
             ))
             .when(!fullscreen, |it| {
                 it.child(rail_control(
+                    theme,
                     "minimize",
                     "Minimize",
                     Icon::Minimize,
@@ -390,6 +397,7 @@ impl Dashboard {
                     |window, _| window.minimize_window(),
                 ))
                 .child(rail_control(
+                    theme,
                     "close",
                     "Close",
                     Icon::Close,
@@ -399,7 +407,7 @@ impl Dashboard {
             })
     }
 
-    fn scroll_controls(&self, scroll: HorizontalScroll) -> impl IntoElement {
+    fn scroll_controls(&self, theme: Theme, scroll: HorizontalScroll) -> impl IntoElement {
         let offset = self.home.scroll.offset().x;
         col().flex_none().gap(r(5.)).children(
             [
@@ -412,12 +420,12 @@ impl Dashboard {
                 ),
             ]
             .map(|(name, symbol, step, enabled)| {
-                let control = tile_button(name, name, symbol, TEXT).size(r(28.));
+                let control = tile_button(theme, name, name, symbol, TEXT).size(r(28.));
                 if !enabled {
                     return disabled(control);
                 }
                 let handle = self.home.scroll.clone();
-                bind(control, move |window, _| {
+                theme.bind(control, move |window, _| {
                     scroll_horizontally(&handle, step, scroll.limit, window)
                 })
             }),
@@ -453,16 +461,18 @@ impl Dashboard {
     }
 
     fn empty_home(&self, cx: &Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let view = cx.entity();
-        panel()
+        theme
+            .panel()
             .flex_1()
             .items_center()
             .justify_center()
             .gap(r(12.))
-            .child(icon_tile(Icon::Home, TEAL, 44.))
-            .child(title("Your Home is empty"))
-            .child(bind(
-                button("first-widget", Some(TEAL)).child("Add widget"),
+            .child(theme.icon_tile(Icon::Home, TEAL, 44.))
+            .child(theme.title("Your Home is empty"))
+            .child(theme.bind(
+                theme.button("first-widget", Some(TEAL)).child("Add widget"),
                 move |window, cx| {
                     view.update(cx, |this, cx| {
                         this.close_settings(window, cx);
@@ -476,6 +486,7 @@ impl Dashboard {
     }
 
     fn widget_catalog(&self, grid: Grid, cx: &Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let available = Kind::ALL
             .into_iter()
             .filter(|kind| kind.repeatable() || !self.home.contains(*kind))
@@ -487,7 +498,7 @@ impl Dashboard {
             .items_center()
             .overflow_y_scroll()
             .when(available.is_empty(), |it| {
-                it.child(quiet("All widgets are on Home.").p(r(6.)))
+                it.child(theme.quiet("All widgets are on Home.").p(r(6.)))
             })
             .child(
                 split()
@@ -496,21 +507,27 @@ impl Dashboard {
                     .gap(r(GAP))
                     .children(available.into_iter().map(|kind| {
                         let view = cx.entity();
-                        bind(
-                            button(("add-widget", kind as usize), None)
+                        theme.bind(
+                            theme
+                                .button(("add-widget", kind as usize), None)
                                 .w(r(grid.width))
                                 .h(r(77.))
                                 .justify_start()
                                 .gap(r(11.))
-                                .child(icon_tile(kind.icon(), kind.accent(), 38.))
+                                .child(theme.icon_tile(kind.icon(), kind.accent(), 38.))
                                 .child(
                                     col()
                                         .flex_1()
                                         .gap(r(3.))
-                                        .child(label(kind.name()).text_color(c(INK)).truncate())
-                                        .child(quiet(kind.description()).truncate()),
+                                        .child(
+                                            theme
+                                                .label(kind.name())
+                                                .text_color(theme.color(INK))
+                                                .truncate(),
+                                        )
+                                        .child(theme.quiet(kind.description()).truncate()),
                                 )
-                                .child(icon(Icon::Plus, c(kind.accent()), 15.)),
+                                .child(icon(Icon::Plus, theme.color(kind.accent()), 15.)),
                             move |window, cx| {
                                 view.update(cx, |this, cx| {
                                     this.focus_dashboard(window, cx);
@@ -532,6 +549,7 @@ impl Dashboard {
         scale: f32,
         cx: &Context<Self>,
     ) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let kind = tile.widget.kind;
         let editing = self.home.editing;
         let height = grid.span_height(usize::from(tile.rows));
@@ -542,7 +560,8 @@ impl Dashboard {
             content_height -= 2. * (WIDGET_CONTROL_HEIGHT + gap);
         }
 
-        panel()
+        theme
+            .panel()
             .absolute()
             .top(r(tile.y as f32 * (grid.height + GAP)))
             .left(r(tile.x as f32 * (grid.width + GAP)))
@@ -552,7 +571,7 @@ impl Dashboard {
             .gap(r(gap))
             .overflow_hidden()
             .when(editing, |it| {
-                it.border_color(c(kind.accent()).opacity(0.42))
+                it.border_color(theme.color(kind.accent()).opacity(0.42))
                     .child(self.widget_edit_header(tile.widget, index, count, cx))
             })
             .child(col().flex_1().overflow_hidden().child(self.widget_content(
@@ -574,6 +593,7 @@ impl Dashboard {
     }
 
     fn widget_control(&self, widget: Widget, cx: &Context<Self>) -> Option<AnyElement> {
+        let theme = Theme::current(cx);
         let name = match widget.kind {
             Kind::Performance => return Some(self.sensor_button(widget.id, cx).into_any_element()),
             Kind::Notifications => return Some(self.clear_notifications(cx).into_any_element()),
@@ -590,15 +610,16 @@ impl Dashboard {
         };
         let view = cx.entity();
         Some(
-            bind(
-                button(name, None).h(r(26.)).px(r(7.)).child(name),
-                move |window, cx| {
-                    view.update(cx, |this, cx| {
-                        this.open_settings(super::settings::Section::Widgets, window, cx)
-                    })
-                },
-            )
-            .into_any_element(),
+            theme
+                .bind(
+                    theme.button(name, None).h(r(26.)).px(r(7.)).child(name),
+                    move |window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.open_settings(super::settings::Section::Widgets, window, cx)
+                        })
+                    },
+                )
+                .into_any_element(),
         )
     }
 
@@ -609,6 +630,7 @@ impl Dashboard {
         count: usize,
         cx: &Context<Self>,
     ) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let id = widget.id;
         let name = widget.kind.name();
         let view = cx.entity();
@@ -621,9 +643,10 @@ impl Dashboard {
                     .flex_1()
                     .gap(r(4.))
                     .child(
-                        label(name)
+                        theme
+                            .label(name)
                             .id(("widget-name", id as usize))
-                            .text_color(c(INK))
+                            .text_color(theme.color(INK))
                             .flex_1()
                             .min_w_0()
                             .truncate()
@@ -633,28 +656,31 @@ impl Dashboard {
             )
             .child(self.widget_move(id, -1, index > 0, cx))
             .child(self.widget_move(id, 1, index + 1 < count, cx))
-            .child(bind(
-                tile_button(
-                    ("remove-widget", id as usize),
-                    "Remove widget",
-                    Icon::Close,
-                    RED,
-                )
-                .w(r(23.)),
-                move |window, cx| {
-                    view.update(cx, |this, cx| {
-                        this.focus_dashboard(window, cx);
-                        this.home.resizing = None;
-                        let layout = this.home.layout_mut();
-                        layout.widgets.retain(|widget| widget.id != id);
-                        layout.sensors.remove(&id);
-                        layout.viewers.remove(&id);
-                        this.viewers.remove(&id);
-                        this.home.sensor_editor = None;
-                        this.save_home(cx);
-                    })
-                },
-            ))
+            .child(
+                theme.bind(
+                    tile_button(
+                        theme,
+                        ("remove-widget", id as usize),
+                        "Remove widget",
+                        Icon::Close,
+                        RED,
+                    )
+                    .w(r(23.)),
+                    move |window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.focus_dashboard(window, cx);
+                            this.home.resizing = None;
+                            let layout = this.home.layout_mut();
+                            layout.widgets.retain(|widget| widget.id != id);
+                            layout.sensors.remove(&id);
+                            layout.viewers.remove(&id);
+                            this.viewers.remove(&id);
+                            this.home.sensor_editor = None;
+                            this.save_home(cx);
+                        })
+                    },
+                ),
+            )
     }
 
     fn widget_move(
@@ -664,17 +690,18 @@ impl Dashboard {
         enabled: bool,
         cx: &Context<Self>,
     ) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let (name, symbol) = if direction < 0 {
             ("Move earlier", Icon::Left)
         } else {
             ("Move later", Icon::Chevron)
         };
-        let control = tile_button((name, id as usize), name, symbol, TEXT).w(r(23.));
+        let control = tile_button(theme, (name, id as usize), name, symbol, TEXT).w(r(23.));
         if !enabled {
             return disabled(control);
         }
         let view = cx.entity();
-        bind(control, move |_, cx| {
+        theme.bind(control, move |_, cx| {
             view.update(cx, |this, cx| {
                 this.home.resizing = None;
                 let widgets = &mut this.home.layout_mut().widgets;
@@ -697,9 +724,11 @@ impl Dashboard {
         scale: f32,
         cx: &Context<Self>,
     ) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let pointer = cx.entity();
         let keyboard = pointer.clone();
         tile_button(
+            theme,
             ("resize-widget", widget.id as usize),
             "Drag or use arrow keys to resize",
             Icon::Resize,
@@ -707,7 +736,7 @@ impl Dashboard {
         )
         .cursor_nwse_resize()
         .tab_index(0)
-        .focus(|it| it.border_color(c(TEAL)))
+        .focus(move |it| it.border_color(theme.color(TEAL)))
         .on_mouse_down(MouseButton::Left, move |event, _, cx| {
             pointer.update(cx, |this, cx| {
                 this.home.resizing = Some(Resize {
@@ -741,17 +770,24 @@ impl Dashboard {
         columns: u8,
         cx: &Context<Self>,
     ) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let widget = tile.widget;
         let step = |description: &'static str, symbol, horizontal, vertical| {
             let delta = (horizontal, vertical);
-            let control = tile_button((description, widget.id as usize), description, symbol, TEXT)
-                .w(r(23.))
-                .h(r(24.));
+            let control = tile_button(
+                theme,
+                (description, widget.id as usize),
+                description,
+                symbol,
+                TEXT,
+            )
+            .w(r(23.))
+            .h(r(24.));
             if adjusted(widget, columns, delta) == widget {
                 return disabled(control);
             }
             let view = cx.entity();
-            bind(control, move |_, cx| {
+            theme.bind(control, move |_, cx| {
                 view.update(cx, |this, cx| {
                     this.adjust_widget(widget.id, columns, delta, cx)
                 })
@@ -769,7 +805,7 @@ impl Dashboard {
             .child(step("Narrower", Icon::Minimize, -1, 0))
             .child(number(tile.columns))
             .child(step("Wider", Icon::Plus, 1, 0))
-            .child(quiet("×").px(r(2.)))
+            .child(theme.quiet("×").px(r(2.)))
             .child(step("Shorter", Icon::Minimize, 0, -1))
             .child(number(tile.rows))
             .child(step("Taller", Icon::Plus, 0, 1))
@@ -903,33 +939,41 @@ fn scroll_horizontally(handle: &ScrollHandle, step: Pixels, limit: Pixels, windo
 }
 
 fn rail_control(
+    theme: Theme,
     id: &'static str,
     description: &'static str,
     symbol: Icon,
     active: bool,
     action: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
-    bind(
-        button(id, active.then_some(TEAL))
+    theme.bind(
+        theme
+            .button(id, active.then_some(TEAL))
             .size(r(RAIL_BUTTON_SIZE))
             .px_0()
-            .child(icon(symbol, c(if active { TEAL } else { TEXT }), 17.))
+            .child(icon(
+                symbol,
+                theme.color(if active { TEAL } else { TEXT }),
+                17.,
+            ))
             .tooltip(move |_, cx| cx.new(|_| Tooltip(description.into())).into()),
         action,
     )
 }
 
 fn tile_button(
+    theme: Theme,
     id: impl Into<gpui::ElementId>,
     description: &'static str,
     symbol: Icon,
-    color: u32,
+    color: Color,
 ) -> gpui::Stateful<gpui::Div> {
-    button(id, None)
+    theme
+        .button(id, None)
         .w(r(27.))
         .h(r(WIDGET_CONTROL_HEIGHT))
         .px_0()
-        .child(icon(symbol, c(color), 14.))
+        .child(icon(symbol, theme.color(color), 14.))
         .tooltip(move |_, cx| cx.new(|_| Tooltip(description.into())).into())
 }
 

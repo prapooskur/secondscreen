@@ -167,6 +167,7 @@ impl TextInput {
 
 impl Render for TextInput {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let placeholder = match self.kind {
             InputKind::Plain { placeholder } if self.value.is_empty() => Some(placeholder),
             _ => None,
@@ -193,7 +194,7 @@ impl Render for TextInput {
                     &[TextRun {
                         len: text.len(),
                         font: style.font(),
-                        color: c(if placeholder.is_some() { MUTED } else { INK }),
+                        color: theme.color(if placeholder.is_some() { MUTED } else { INK }),
                         background_color: None,
                         underline: None,
                         strikethrough: None,
@@ -215,9 +216,9 @@ impl Render for TextInput {
                         right - left
                     };
                     let color = if selection.is_empty() {
-                        c(TEAL)
+                        theme.color(TEAL)
                     } else {
-                        c(BLUE).opacity(0.34)
+                        theme.color(BLUE).opacity(0.34)
                     };
                     window.paint_quad(fill(
                         Bounds::new(
@@ -258,7 +259,7 @@ impl Render for TextInput {
         col()
             .id("text-input")
             .track_focus(&self.focus)
-            .focus(|style| style.border_color(c(TEAL)))
+            .focus(move |style| style.border_color(theme.color(TEAL)))
             .on_key_down(cx.listener(Self::key))
             .cursor(CursorStyle::IBeam)
             .justify_center()
@@ -267,8 +268,8 @@ impl Render for TextInput {
             .px(r(10.))
             .rounded(r(7.))
             .border_1()
-            .border_color(c(STROKE))
-            .bg(c(BACK))
+            .border_color(theme.color(STROKE))
+            .bg(theme.color(BACK))
             .font_family("IBM Plex Mono")
             .child(track)
     }

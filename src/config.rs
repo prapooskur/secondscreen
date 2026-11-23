@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Preferences {
+    pub theme: ThemePreference,
     pub start_fullscreen: bool,
     pub clock_zones: Option<Vec<String>>,
     pub weather_location: String,
@@ -23,6 +24,15 @@ pub struct Preferences {
     pub hidden_audio: BTreeMap<String, String>,
     pub hidden_drives: BTreeMap<String, String>,
     pub discord: Option<DiscordCredentials>,
+}
+
+#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemePreference {
+    #[default]
+    System,
+    Light,
+    Dark,
 }
 
 impl Preferences {

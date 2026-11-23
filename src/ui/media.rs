@@ -111,6 +111,7 @@ impl Dashboard {
     }
 
     pub(super) fn media_progress(&self, player: &Player, cx: &Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let track = player.track.as_ref();
         let length = track.and_then(|track| track.duration);
         let slider_id = seek_id(player, track);
@@ -139,6 +140,7 @@ impl Dashboard {
             let track_id = track.map(|track| track.id.clone()).unwrap_or_default();
             let view = cx.entity();
             slider(
+                theme,
                 slider_id,
                 progress,
                 BLUE,
@@ -164,7 +166,7 @@ impl Dashboard {
                     .min_w(r(35.))
                     .flex_none()
                     .whitespace_nowrap()
-                    .text_color(c(MUTED)),
+                    .text_color(theme.color(MUTED)),
             )
             .child(seek)
             .child(
@@ -174,7 +176,7 @@ impl Dashboard {
                     .flex_none()
                     .whitespace_nowrap()
                     .text_right()
-                    .text_color(c(MUTED)),
+                    .text_color(theme.color(MUTED)),
             )
     }
 
@@ -184,16 +186,22 @@ impl Dashboard {
         compact: bool,
         cx: &Context<Self>,
     ) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let playing = player.playback == Playback::Playing;
         let direction = |id, symbol, can, which| {
-            let control = button(id, None)
+            let control = theme
+                .button(id, None)
                 .size(r(if compact { 26. } else { 33. }))
                 .px_0()
-                .child(icon(symbol, c(TEXT), if compact { 13. } else { 16. }));
+                .child(icon(
+                    symbol,
+                    theme.color(TEXT),
+                    if compact { 13. } else { 16. },
+                ));
             if can {
                 let view = cx.entity();
                 let id = player.id.clone();
-                bind(control, move |_, cx| {
+                theme.bind(control, move |_, cx| {
                     view.read(cx).send_media(
                         id.clone(),
                         if which {
@@ -207,18 +215,19 @@ impl Dashboard {
                 disabled(control)
             }
         };
-        let toggle = button("play-pause", Some(TEAL))
+        let toggle = theme
+            .button("play-pause", Some(TEAL))
             .size(r(if compact { 30. } else { 37. }))
             .px_0()
             .child(icon(
                 if playing { Icon::Pause } else { Icon::Play },
-                c(TEAL),
+                theme.color(TEAL),
                 if compact { 16. } else { 20. },
             ));
         let toggle = if player.can_toggle_playback() {
             let view = cx.entity();
             let id = player.id.clone();
-            bind(toggle, move |_, cx| {
+            theme.bind(toggle, move |_, cx| {
                 view.read(cx).send_media(id.clone(), MediaAction::Toggle)
             })
         } else {
@@ -240,13 +249,15 @@ impl Dashboard {
     }
 
     pub(super) fn player_control(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let theme = Theme::current(cx);
         let active = self.current_player()?;
         let mut players = self.visible_players();
         players.find(|player| player.id == active.id)?;
         let next = players.next().or_else(|| self.visible_players().next())?;
         if next.id == active.id {
             return Some(
-                quiet(active.name.clone())
+                theme
+                    .quiet(active.name.clone())
                     .max_w(gpui::relative(0.48))
                     .truncate()
                     .into_any_element(),
@@ -255,26 +266,28 @@ impl Dashboard {
         let view = cx.entity();
         let id = next.id.clone();
         Some(
-            bind(
-                button("switch-player", None)
-                    .h(r(27.))
-                    .max_w(gpui::relative(0.48))
-                    .px(r(6.))
-                    .child(div().truncate().child(active.name.clone()))
-                    .child(icon(Icon::Chevron, c(TEXT), 12.))
-                    .tooltip(|_, cx| {
-                        cx.new(|_| super::Tooltip("Switch media player".into()))
-                            .into()
-                    }),
-                move |_, cx| {
-                    view.update(cx, |this, cx| {
-                        this.player = Some(id.clone());
-                        this.gesture.borrow_mut().take();
-                        cx.notify();
-                    })
-                },
-            )
-            .into_any_element(),
+            theme
+                .bind(
+                    theme
+                        .button("switch-player", None)
+                        .h(r(27.))
+                        .max_w(gpui::relative(0.48))
+                        .px(r(6.))
+                        .child(div().truncate().child(active.name.clone()))
+                        .child(icon(Icon::Chevron, theme.color(TEXT), 12.))
+                        .tooltip(|_, cx| {
+                            cx.new(|_| super::Tooltip("Switch media player".into()))
+                                .into()
+                        }),
+                    move |_, cx| {
+                        view.update(cx, |this, cx| {
+                            this.player = Some(id.clone());
+                            this.gesture.borrow_mut().take();
+                            cx.notify();
+                        })
+                    },
+                )
+                .into_any_element(),
         )
     }
 }
@@ -294,7 +307,7 @@ fn timecode(micros: i64) -> String {
     format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
-pub(super) fn album_art(artwork: Option<Artwork>, side: f32) -> impl IntoElement {
+pub(super) fn album_art(theme: Theme, artwork: Option<Artwork>, side: f32) -> impl IntoElement {
     let art = artwork.map(|artwork| {
         match artwork {
             Artwork::File(path) => img(path),
@@ -315,23 +328,23 @@ pub(super) fn album_art(artwork: Option<Artwork>, side: f32) -> impl IntoElement
         .justify_center()
         .rounded(r(10.))
         .border_1()
-        .border_color(c(STROKE))
-        .bg(c(0x172842))
+        .border_color(theme.color(STROKE))
+        .bg(theme.color(ARTWORK_BACK))
         .child(
             row()
                 .size(r(side * 0.675))
                 .justify_center()
                 .rounded_full()
                 .border_1()
-                .border_color(c(BLUE).opacity(0.23))
+                .border_color(theme.color(BLUE).opacity(0.23))
                 .child(
                     row()
                         .size(r(side * 0.496))
                         .justify_center()
                         .rounded_full()
                         .border_1()
-                        .border_color(c(BLUE).opacity(0.29))
-                        .child(icon(Icon::Music, c(BLUE), side * 0.22)),
+                        .border_color(theme.color(BLUE).opacity(0.29))
+                        .child(icon(Icon::Music, theme.color(BLUE), side * 0.22)),
                 ),
         )
         .children(art)

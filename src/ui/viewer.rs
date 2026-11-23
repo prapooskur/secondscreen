@@ -169,6 +169,7 @@ impl Viewer {
     }
 
     fn editor(&self, cx: &Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let mut modes = row().flex_wrap().gap(r(3.));
         for (mode, title) in [
             (ViewerMode::Web, "Web / YouTube"),
@@ -178,37 +179,50 @@ impl Viewer {
             (ViewerMode::Slideshow, "Slideshow"),
         ] {
             let view = cx.entity();
-            modes = modes.child(bind(
-                button(title, (self.mode == mode).then_some(BLUE))
-                    .h(r(23.))
-                    .px(r(5.))
-                    .child(title),
-                move |_, cx| {
-                    view.update(cx, |this, cx| {
-                        this.mode = mode;
-                        this.error = None;
-                        cx.notify()
-                    })
-                },
-            ));
+            modes = modes.child(
+                theme.bind(
+                    theme
+                        .button(title, (self.mode == mode).then_some(BLUE))
+                        .h(r(23.))
+                        .px(r(5.))
+                        .child(title),
+                    move |_, cx| {
+                        view.update(cx, |this, cx| {
+                            this.mode = mode;
+                            this.error = None;
+                            cx.notify()
+                        })
+                    },
+                ),
+            );
         }
         let view = cx.entity();
-        let mut actions = row().flex_wrap().gap(r(5.)).child(bind(
-            button("show-source", Some(BLUE)).h(r(27.)).child("Show"),
-            move |win, cx| view.update(cx, |v, cx| v.apply(win, cx)),
-        ));
+        let mut actions = row().flex_wrap().gap(r(5.)).child(
+            theme.bind(
+                theme
+                    .button("show-source", Some(BLUE))
+                    .h(r(27.))
+                    .child("Show"),
+                move |win, cx| view.update(cx, |v, cx| v.apply(win, cx)),
+            ),
+        );
         if matches!(self.mode, ViewerMode::Media | ViewerMode::Slideshow) {
             let v = cx.entity();
-            actions = actions.child(bind(
-                button("choose-media", None).h(r(27.)).child("Browse…"),
-                move |_, cx| v.update(cx, |v, cx| v.pick(cx)),
-            ));
+            actions = actions.child(
+                theme.bind(
+                    theme
+                        .button("choose-media", None)
+                        .h(r(27.))
+                        .child("Browse…"),
+                    move |_, cx| v.update(cx, |v, cx| v.pick(cx)),
+                ),
+            );
         }
         if self.mode == ViewerMode::Slideshow {
             for (title, delta) in [("−", -1), ("+", 1)] {
                 let view = cx.entity();
-                actions = actions.child(bind(
-                    button(title, None).h(r(25.)).px(r(5.)).child(title),
+                actions = actions.child(theme.bind(
+                    theme.button(title, None).h(r(25.)).px(r(5.)).child(title),
                     move |_, cx| {
                         view.update(cx, |v, cx| {
                             v.interval = v.interval.saturating_add_signed(delta).clamp(1, 3600);
@@ -217,18 +231,21 @@ impl Viewer {
                     },
                 ));
                 if delta < 0 {
-                    actions = actions.child(quiet(format!("{} s", self.interval)))
+                    actions = actions.child(theme.quiet(format!("{} s", self.interval)))
                 }
             }
         }
         if let Some(url) = self.external.clone() {
-            actions = actions.child(bind(
-                button("external", None)
-                    .h(r(27.))
-                    .px(r(6.))
-                    .child("Open in browser"),
-                move |_, cx| cx.open_url(&url),
-            ))
+            actions = actions.child(
+                theme.bind(
+                    theme
+                        .button("external", None)
+                        .h(r(27.))
+                        .px(r(6.))
+                        .child("Open in browser"),
+                    move |_, cx| cx.open_url(&url),
+                ),
+            )
         }
         col()
             .id("viewer-editor")
@@ -247,7 +264,7 @@ impl Viewer {
             .children(
                 self.error
                     .as_ref()
-                    .map(|err| quiet(err.clone()).text_color(c(RED))),
+                    .map(|err| theme.quiet(err.clone()).text_color(theme.color(RED))),
             )
     }
 
@@ -298,6 +315,7 @@ impl Viewer {
     }
 
     fn surface(&self, cx: &Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
         let bounds = self.bounds.clone();
         let mut tile = div()
             .id("web-surface")
@@ -306,7 +324,7 @@ impl Viewer {
             .min_h_0()
             .min_w_0()
             .overflow_hidden()
-            .bg(c(BACK))
+            .bg(theme.color(BACK))
             .track_focus(&self.focus)
             .child(
                 canvas(move |area, _, _| bounds.set(area), |_, _, _, _| {})
@@ -451,9 +469,11 @@ impl Render for Viewer {
 }
 
 pub(super) fn source_button(view: Entity<Viewer>, cx: &App) -> impl IntoElement {
+    let theme = Theme::current(cx);
     let v = view.read(cx);
-    bind(
-        button(("viewer-source", v.id as usize), v.editing.then_some(BLUE))
+    theme.bind(
+        theme
+            .button(("viewer-source", v.id as usize), v.editing.then_some(BLUE))
             .h(r(26.))
             .px(r(8.))
             .child(if v.editing && v.web.is_some() {

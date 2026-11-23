@@ -9,13 +9,19 @@ use crate::model::DiskUsage;
 
 use super::{HISTORY, Tooltip, percent, theme::*};
 
-pub(super) fn storage_list(id: &'static str, disks: Vec<&DiskUsage>) -> impl IntoElement {
+pub(super) fn storage_list(
+    theme: Theme,
+    id: &'static str,
+    disks: Vec<&DiskUsage>,
+) -> impl IntoElement {
     col()
         .id(id)
         .flex_1()
         .overflow_y_scroll()
         .gap(r(11.))
-        .when(disks.is_empty(), |it| it.child(quiet("No drives shown.")))
+        .when(disks.is_empty(), |it| {
+            it.child(theme.quiet("No drives shown."))
+        })
         .children(disks.into_iter().map(|disk| {
             let load = disk
                 .used
@@ -40,10 +46,11 @@ pub(super) fn storage_list(id: &'static str, disks: Vec<&DiskUsage>) -> impl Int
                         .gap(r(6.))
                         .justify_between()
                         .child(
-                            label(name)
+                            theme
+                                .label(name)
                                 .id(SharedString::from(disk.id.clone()))
                                 .flex_1()
-                                .text_color(c(INK))
+                                .text_color(theme.color(INK))
                                 .truncate()
                                 .tooltip(move |_, cx| cx.new(|_| Tooltip(tooltip.clone())).into()),
                         )
@@ -52,19 +59,19 @@ pub(super) fn storage_list(id: &'static str, disks: Vec<&DiskUsage>) -> impl Int
                                 mono(format!("{load:.0}%"))
                                     .flex_none()
                                     .text_size(r(11.))
-                                    .text_color(c(BLUE)),
+                                    .text_color(theme.color(BLUE)),
                             )
                         }),
                 )
-                .child(quiet(detail))
+                .child(theme.quiet(detail))
                 .when_some(load, |it, load| {
                     it.child(
-                        div().h(r(4.)).rounded_full().bg(c(STROKE)).child(
+                        div().h(r(4.)).rounded_full().bg(theme.color(STROKE)).child(
                             div()
                                 .w(gpui::relative(load / 100.))
                                 .h_full()
                                 .rounded_full()
-                                .bg(c(BLUE)),
+                                .bg(theme.color(BLUE)),
                         ),
                     )
                 })
@@ -72,10 +79,11 @@ pub(super) fn storage_list(id: &'static str, disks: Vec<&DiskUsage>) -> impl Int
 }
 
 pub(super) fn graph(
+    theme: Theme,
     primary: VecDeque<f32>,
     secondary: Option<VecDeque<f32>>,
     maximum: f32,
-    accent: u32,
+    accent: Color,
 ) -> impl IntoElement {
     canvas(
         |_, _, _| (),
@@ -88,52 +96,54 @@ pub(super) fn graph(
             for offset in [0., 0.5, 1.] {
                 window.paint_quad(fill(
                     Bounds::new(point(left, top + height * offset), size(width, px(1.))),
-                    c(STROKE),
+                    theme.color(STROKE),
                 ));
             }
-            let draw =
-                |values: &VecDeque<f32>, color: u32, area_fill: bool, window: &mut gpui::Window| {
-                    let mut points = values.iter().enumerate().map(|(index, value)| {
-                        let from_end = values.len() - index - 1;
-                        let x = left + width * (1. - from_end as f32 / (HISTORY - 1) as f32);
-                        let y = bottom - height * (value / maximum).clamp(0., 1.);
-                        point(x, y)
-                    });
-                    if let Some(first) = points.next() {
-                        let mut line = PathBuilder::stroke(px(1.65));
-                        let mut fill_path = PathBuilder::fill();
-                        line.move_to(first);
-                        fill_path.move_to(first);
-                        let mut last = first;
-                        for next in points {
-                            line.line_to(next);
-                            fill_path.line_to(next);
-                            last = next;
-                        }
-                        if area_fill && first != last {
-                            fill_path.line_to(point(last.x, bottom));
-                            fill_path.line_to(point(first.x, bottom));
-                            fill_path.close();
-                            if let Ok(path) = fill_path.build() {
-                                window.paint_path(
-                                    path,
-                                    linear_gradient(
-                                        180.,
-                                        linear_color_stop(c(color).opacity(0.23), 0.),
-                                        linear_color_stop(c(color).opacity(0.025), 1.),
-                                    ),
-                                );
-                            }
-                        }
-                        if first != last
-                            && let Ok(path) = line.build()
-                        {
-                            window.paint_path(path, c(color));
-                        }
-                        let dot = Bounds::new(last - point(px(2.5), px(2.5)), size(px(5.), px(5.)));
-                        window.paint_quad(fill(dot, c(color)).corner_radii(px(2.5)));
+            let draw = |values: &VecDeque<f32>,
+                        color: Color,
+                        area_fill: bool,
+                        window: &mut gpui::Window| {
+                let mut points = values.iter().enumerate().map(|(index, value)| {
+                    let from_end = values.len() - index - 1;
+                    let x = left + width * (1. - from_end as f32 / (HISTORY - 1) as f32);
+                    let y = bottom - height * (value / maximum).clamp(0., 1.);
+                    point(x, y)
+                });
+                if let Some(first) = points.next() {
+                    let mut line = PathBuilder::stroke(px(1.65));
+                    let mut fill_path = PathBuilder::fill();
+                    line.move_to(first);
+                    fill_path.move_to(first);
+                    let mut last = first;
+                    for next in points {
+                        line.line_to(next);
+                        fill_path.line_to(next);
+                        last = next;
                     }
-                };
+                    if area_fill && first != last {
+                        fill_path.line_to(point(last.x, bottom));
+                        fill_path.line_to(point(first.x, bottom));
+                        fill_path.close();
+                        if let Ok(path) = fill_path.build() {
+                            window.paint_path(
+                                path,
+                                linear_gradient(
+                                    180.,
+                                    linear_color_stop(theme.color(color).opacity(0.23), 0.),
+                                    linear_color_stop(theme.color(color).opacity(0.025), 1.),
+                                ),
+                            );
+                        }
+                    }
+                    if first != last
+                        && let Ok(path) = line.build()
+                    {
+                        window.paint_path(path, theme.color(color));
+                    }
+                    let dot = Bounds::new(last - point(px(2.5), px(2.5)), size(px(5.), px(5.)));
+                    window.paint_quad(fill(dot, theme.color(color)).corner_radii(px(2.5)));
+                }
+            };
             if let Some(secondary) = &secondary {
                 draw(secondary, BLUE, false, window);
             }

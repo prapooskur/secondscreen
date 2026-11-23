@@ -70,10 +70,10 @@ impl Kind {
         }
     }
 
-    pub(super) fn accent(self) -> u32 {
+    pub(super) fn accent(self) -> Color {
         match self {
             Self::Performance => TEAL,
-            Self::Media => 0xf2799c,
+            Self::Media => PINK,
             Self::Mixer | Self::Audio | Self::Network => AMBER,
             Self::Discord | Self::Memory => VIOLET,
             Self::Storage | Self::Viewer => BLUE,
@@ -94,6 +94,7 @@ impl Dashboard {
         height: f32,
         cx: &Context<Self>,
     ) -> AnyElement {
+        let theme = Theme::current(cx);
         let wide = tile.columns >= 2;
         match tile.widget.kind {
             Kind::Performance => self.performance_widget(tile.widget.id, height, cx),
@@ -101,14 +102,16 @@ impl Dashboard {
             Kind::Audio => self.audio_widget(cx).into_any_element(),
             Kind::Mixer => self.mixer_widget(cx).into_any_element(),
             Kind::Discord => self.discord_widget(cx).into_any_element(),
-            Kind::Memory => self.memory_widget(height).into_any_element(),
-            Kind::Network => self.network_widget(height).into_any_element(),
-            Kind::Storage => storage_list("home-storage", self.visible_disks()).into_any_element(),
-            Kind::WorldClock => self.world_clock(height).into_any_element(),
+            Kind::Memory => self.memory_widget(theme, height).into_any_element(),
+            Kind::Network => self.network_widget(theme, height).into_any_element(),
+            Kind::Storage => {
+                storage_list(theme, "home-storage", self.visible_disks()).into_any_element()
+            }
+            Kind::WorldClock => self.world_clock(theme, height).into_any_element(),
             Kind::Calendar => self.calendar(height, cx).into_any_element(),
-            Kind::Weather => self.weather_widget(width, height).into_any_element(),
-            Kind::Notifications => self.notification_widget().into_any_element(),
-            Kind::Fps => self.fps_widget(width, height).into_any_element(),
+            Kind::Weather => self.weather_widget(theme, width, height).into_any_element(),
+            Kind::Notifications => self.notification_widget(theme).into_any_element(),
+            Kind::Fps => self.fps_widget(theme, width, height).into_any_element(),
             Kind::Viewer => div()
                 .flex()
                 .flex_1()
@@ -118,29 +121,42 @@ impl Dashboard {
         }
     }
 
-    fn memory_widget(&self, height: f32) -> impl IntoElement {
+    fn memory_widget(&self, theme: Theme, height: f32) -> impl IntoElement {
         let memory = percent(self.metrics.memory_used, self.metrics.memory_total);
         col()
             .flex_1()
             .gap(r(8.))
-            .child(metric("RAM in use", percent_text(memory), VIOLET, height))
+            .child(metric(
+                theme,
+                "RAM in use",
+                percent_text(memory),
+                VIOLET,
+                height,
+            ))
             .when(height >= 60., |it| {
-                it.child(graph(self.history.memory.clone(), None, 100., VIOLET))
+                it.child(graph(
+                    theme,
+                    self.history.memory.clone(),
+                    None,
+                    100.,
+                    VIOLET,
+                ))
             })
             .when(height >= 105. && memory.is_some(), |it| {
                 it.child(
-                    quiet(format!(
-                        "{:.1} of {:.1} GiB used",
-                        gib(self.metrics.memory_used),
-                        gib(self.metrics.memory_total)
-                    ))
-                    .truncate()
-                    .flex_none(),
+                    theme
+                        .quiet(format!(
+                            "{:.1} of {:.1} GiB used",
+                            gib(self.metrics.memory_used),
+                            gib(self.metrics.memory_total)
+                        ))
+                        .truncate()
+                        .flex_none(),
                 )
             })
     }
 
-    fn network_widget(&self, height: f32) -> impl IntoElement {
+    fn network_widget(&self, theme: Theme, height: f32) -> impl IntoElement {
         let top = self
             .history
             .download
@@ -160,7 +176,7 @@ impl Dashboard {
             reading
                 .flex_1()
                 .gap(r(4.))
-                .child(quiet(label).truncate())
+                .child(theme.quiet(label).truncate())
                 .child(
                     row()
                         .items_baseline()
@@ -168,10 +184,10 @@ impl Dashboard {
                         .child(
                             mono(number)
                                 .text_size(r(if height >= 75. { 22. } else { 14. }))
-                                .text_color(c(color))
+                                .text_color(theme.color(color))
                                 .truncate(),
                         )
-                        .child(quiet(unit).whitespace_nowrap()),
+                        .child(theme.quiet(unit).whitespace_nowrap()),
                 )
         };
         col()
@@ -186,6 +202,7 @@ impl Dashboard {
             )
             .when(height >= 75., |it| {
                 it.child(graph(
+                    theme,
                     self.history.download.clone(),
                     Some(self.history.upload.clone()),
                     top,
@@ -193,7 +210,7 @@ impl Dashboard {
                 ))
             })
             .when(height >= 105., |it| {
-                it.child(quiet(if self.metrics.network_available {
+                it.child(theme.quiet(if self.metrics.network_available {
                     "Last 60 seconds"
                 } else {
                     "No active interface"
@@ -208,8 +225,10 @@ impl Dashboard {
         height: f32,
         cx: &Context<Self>,
     ) -> AnyElement {
+        let theme = Theme::current(cx);
         let Some(player) = self.current_player() else {
             return message(
+                theme,
                 if self.media.issue.is_some() {
                     "Media service unavailable"
                 } else if !self.media.players.is_empty() {
@@ -246,7 +265,7 @@ impl Dashboard {
                     .min_h_0()
                     .flex_1()
                     .gap(r(10.))
-                    .when(height >= cover, |it| it.child(album_art(art, cover)))
+                    .when(height >= cover, |it| it.child(album_art(theme, art, cover)))
                     .child(
                         col()
                             .flex_1()
@@ -264,19 +283,22 @@ impl Dashboard {
                             )
                             .when(height >= 45., |it| {
                                 it.child(
-                                    quiet(
-                                        track
-                                            .filter(|track| !track.artist.is_empty())
-                                            .map(|track| track.artist.clone())
-                                            .unwrap_or_else(|| player.name.clone()),
-                                    )
-                                    .truncate(),
+                                    theme
+                                        .quiet(
+                                            track
+                                                .filter(|track| !track.artist.is_empty())
+                                                .map(|track| track.artist.clone())
+                                                .unwrap_or_else(|| player.name.clone()),
+                                        )
+                                        .truncate(),
                                 )
                             })
                             .when(spacious && wide, |it| {
                                 it.when_some(
                                     track.filter(|track| !track.album.is_empty()),
-                                    |it, track| it.child(quiet(track.album.clone()).truncate()),
+                                    |it, track| {
+                                        it.child(theme.quiet(track.album.clone()).truncate())
+                                    },
                                 )
                             }),
                     )
@@ -294,6 +316,7 @@ impl Dashboard {
     }
 
     fn audio_widget(&self, cx: &Context<Self>) -> AnyElement {
+        let theme = Theme::current(cx);
         let devices: Vec<_> = [AudioKind::Output, AudioKind::Input]
             .into_iter()
             .flat_map(|kind| {
@@ -302,10 +325,11 @@ impl Dashboard {
             })
             .collect();
         if let Some(issue) = &self.audio.issue {
-            return message("Audio server unavailable", issue).into_any_element();
+            return message(theme, "Audio server unavailable", issue).into_any_element();
         }
         if devices.is_empty() {
             return message(
+                theme,
                 "No audio devices shown",
                 "Choose devices in Settings → Audio devices.",
             )
@@ -326,21 +350,21 @@ fn percent_text(value: Option<f32>) -> String {
     value.map_or_else(|| "—".into(), |value| format!("{value:.0}%"))
 }
 
-fn metric(name: &'static str, value: String, color: u32, height: f32) -> Div {
+fn metric(theme: Theme, name: &'static str, value: String, color: Color, height: f32) -> Div {
     let presentation = if height >= 105. { col() } else { row() };
     presentation
         .flex_1()
         .gap(r(5.))
-        .child(quiet(name).truncate())
+        .child(theme.quiet(name).truncate())
         .child(
             mono(value)
                 .text_size(r(if height >= 170. { 33. } else { 21. }))
-                .text_color(c(color))
+                .text_color(theme.color(color))
                 .truncate(),
         )
 }
 
-fn message(heading: &'static str, detail: &str) -> Div {
+fn message(theme: Theme, heading: &'static str, detail: &str) -> Div {
     col()
         .flex_1()
         .justify_center()
@@ -351,5 +375,5 @@ fn message(heading: &'static str, detail: &str) -> Div {
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(heading),
         )
-        .child(quiet(detail.to_owned()).line_clamp(2))
+        .child(theme.quiet(detail.to_owned()).line_clamp(2))
 }
