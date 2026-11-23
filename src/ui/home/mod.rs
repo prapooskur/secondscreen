@@ -7,8 +7,9 @@ mod widgets;
 use std::{path::PathBuf, time::Instant};
 
 use gpui::{
-    Context, DispatchPhase, HitboxBehavior, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, ScrollHandle, ScrollWheelEvent, Window, canvas, div, point, prelude::*, px,
+    AnyElement, Context, DispatchPhase, HitboxBehavior, IntoElement, MouseButton, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, ScrollHandle, ScrollWheelEvent, Window, canvas, div, point,
+    prelude::*, px,
 };
 
 pub(super) use self::layout::Kind;
@@ -27,8 +28,7 @@ const REFERENCE_COLUMNS: u8 = 4;
 const MIN_COLUMN_WIDTH: f32 = 232.;
 const RAIL_WIDTH: f32 = 44.;
 const RAIL_BUTTON_SIZE: f32 = 34.;
-const WIDGET_HEADER_HEIGHT: f32 = 29.;
-const RESIZE_CONTROL_HEIGHT: f32 = 28.;
+const WIDGET_CONTROL_HEIGHT: f32 = 28.;
 
 pub(super) struct Home {
     profiles: Profiles,
@@ -537,38 +537,10 @@ impl Dashboard {
         let height = grid.span_height(usize::from(tile.rows));
         let width = grid.span_width(usize::from(tile.columns));
         let (padding, gap) = if height < 155. { (8., 6.) } else { (13., 11.) };
-        let mut content_height = height - 2. * (padding + 1.) - WIDGET_HEADER_HEIGHT - gap;
+        let mut content_height = height - 2. * (padding + 1.);
         if editing {
-            content_height -= RESIZE_CONTROL_HEIGHT + gap;
+            content_height -= 2. * (WIDGET_CONTROL_HEIGHT + gap);
         }
-        let view = cx.entity();
-        let tools = editing.then(|| {
-            row()
-                .gap(r(4.))
-                .child(self.widget_move(tile.widget.id, -1, index > 0, cx))
-                .child(self.widget_move(tile.widget.id, 1, index + 1 < count, cx))
-                .child(bind(
-                    tile_button(
-                        ("remove-widget", tile.widget.id as usize),
-                        "Remove widget",
-                        Icon::Close,
-                        RED,
-                    ),
-                    move |window, cx| {
-                        view.update(cx, |this, cx| {
-                            this.focus_dashboard(window, cx);
-                            this.home.resizing = None;
-                            let layout = this.home.layout_mut();
-                            layout.widgets.retain(|widget| widget.id != tile.widget.id);
-                            layout.sensors.remove(&tile.widget.id);
-                            layout.viewers.remove(&tile.widget.id);
-                            this.viewers.remove(&tile.widget.id);
-                            this.home.sensor_editor = None;
-                            this.save_home(cx);
-                        })
-                    },
-                ))
-        });
 
         panel()
             .absolute()
@@ -581,56 +553,8 @@ impl Dashboard {
             .overflow_hidden()
             .when(editing, |it| {
                 it.border_color(c(kind.accent()).opacity(0.42))
+                    .child(self.widget_edit_header(tile.widget, index, count, cx))
             })
-            .child(
-                row()
-                    .flex_none()
-                    .justify_between()
-                    .gap(r(6.))
-                    .child(
-                        row()
-                            .flex_1()
-                            .gap(r(8.))
-                            .child(icon_tile(kind.icon(), kind.accent(), WIDGET_HEADER_HEIGHT))
-                            .child(label(kind.name()).text_color(c(INK)).truncate()),
-                    )
-                    .children(tools)
-                    .when(!editing && kind == Kind::Performance, |it| {
-                        it.child(self.sensor_button(tile.widget.id, cx))
-                    })
-                    .when(
-                        !editing && matches!(kind, Kind::WorldClock | Kind::Weather | Kind::Fps),
-                        |it| {
-                            let view = cx.entity();
-                            let name = match kind {
-                                Kind::WorldClock => "Zones",
-                                Kind::Weather => "Location",
-                                _ => "Setup",
-                            };
-                            it.child(bind(
-                                button(name, None).h(r(26.)).px(r(7.)).child(name),
-                                move |win, cx| {
-                                    view.update(cx, |d, cx| {
-                                        d.open_settings(super::settings::Section::Widgets, win, cx)
-                                    })
-                                },
-                            ))
-                        },
-                    )
-                    .when(!editing && kind == Kind::Notifications, |it| {
-                        it.child(self.clear_notifications(cx))
-                    })
-                    .when(!editing && kind == Kind::Viewer, |it| {
-                        it.children(
-                            self.viewers
-                                .get(&tile.widget.id)
-                                .map(|v| super::viewer::source_button(v.clone(), cx)),
-                        )
-                    })
-                    .when(!editing && kind == Kind::Media, |it| {
-                        it.children(self.player_control(cx))
-                    }),
-            )
             .child(col().flex_1().overflow_hidden().child(self.widget_content(
                 tile,
                 width - 2. * (padding + 1.),
@@ -649,6 +573,90 @@ impl Dashboard {
             })
     }
 
+    fn widget_control(&self, widget: Widget, cx: &Context<Self>) -> Option<AnyElement> {
+        let name = match widget.kind {
+            Kind::Performance => return Some(self.sensor_button(widget.id, cx).into_any_element()),
+            Kind::Notifications => return Some(self.clear_notifications(cx).into_any_element()),
+            Kind::Viewer => {
+                return self.viewers.get(&widget.id).map(|viewer| {
+                    super::viewer::source_button(viewer.clone(), cx).into_any_element()
+                });
+            }
+            Kind::Media => return self.player_control(cx),
+            Kind::WorldClock => "Zones",
+            Kind::Weather => "Location",
+            Kind::Fps => "Setup",
+            _ => return None,
+        };
+        let view = cx.entity();
+        Some(
+            bind(
+                button(name, None).h(r(26.)).px(r(7.)).child(name),
+                move |window, cx| {
+                    view.update(cx, |this, cx| {
+                        this.open_settings(super::settings::Section::Widgets, window, cx)
+                    })
+                },
+            )
+            .into_any_element(),
+        )
+    }
+
+    fn widget_edit_header(
+        &self,
+        widget: Widget,
+        index: usize,
+        count: usize,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let id = widget.id;
+        let name = widget.kind.name();
+        let view = cx.entity();
+        row()
+            .h(r(WIDGET_CONTROL_HEIGHT))
+            .flex_none()
+            .gap(r(4.))
+            .child(
+                row()
+                    .flex_1()
+                    .gap(r(4.))
+                    .child(
+                        label(name)
+                            .id(("widget-name", id as usize))
+                            .text_color(c(INK))
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .tooltip(move |_, cx| cx.new(|_| Tooltip(name.into())).into()),
+                    )
+                    .children(self.widget_control(widget, cx)),
+            )
+            .child(self.widget_move(id, -1, index > 0, cx))
+            .child(self.widget_move(id, 1, index + 1 < count, cx))
+            .child(bind(
+                tile_button(
+                    ("remove-widget", id as usize),
+                    "Remove widget",
+                    Icon::Close,
+                    RED,
+                )
+                .w(r(23.)),
+                move |window, cx| {
+                    view.update(cx, |this, cx| {
+                        this.focus_dashboard(window, cx);
+                        this.home.resizing = None;
+                        let layout = this.home.layout_mut();
+                        layout.widgets.retain(|widget| widget.id != id);
+                        layout.sensors.remove(&id);
+                        layout.viewers.remove(&id);
+                        this.viewers.remove(&id);
+                        this.home.sensor_editor = None;
+                        this.save_home(cx);
+                    })
+                },
+            ))
+    }
+
     fn widget_move(
         &self,
         id: u32,
@@ -661,7 +669,7 @@ impl Dashboard {
         } else {
             ("Move later", Icon::Chevron)
         };
-        let control = tile_button((name, id as usize), name, symbol, TEXT);
+        let control = tile_button((name, id as usize), name, symbol, TEXT).w(r(23.));
         if !enabled {
             return disabled(control);
         }
@@ -919,7 +927,7 @@ fn tile_button(
 ) -> gpui::Stateful<gpui::Div> {
     button(id, None)
         .w(r(27.))
-        .h(r(RESIZE_CONTROL_HEIGHT))
+        .h(r(WIDGET_CONTROL_HEIGHT))
         .px_0()
         .child(icon(symbol, c(color), 14.))
         .tooltip(move |_, cx| cx.new(|_| Tooltip(description.into())).into())

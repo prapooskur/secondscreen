@@ -449,7 +449,7 @@ impl Dashboard {
             let status = state
                 .fps_error
                 .as_deref()
-                .unwrap_or("Waiting for a game. Choose Setup for the MangoHud launch options.");
+                .unwrap_or("Waiting for a game. See Settings → Widgets for MangoHud setup.");
             tile.child(quiet(status.to_owned()))
         }
     }

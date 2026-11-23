@@ -5,7 +5,7 @@ Second Screen is a Rust and GPUI dashboard for ultrawide secondary monitors. It 
 The app opens to a single resizable widget grid. Use **Edit layout** in the right-hand rail to choose the widgets on your display. **Settings** opens over the grid. Click outside it or press **Esc** to return to the dashboard.
 
 - **Performance** shows selected sensors as a chart, a pair, or a list. **Memory** and **Network** show live system readings and usage history. **Storage** shows each drive's capacity and the space used by mounted filesystems that can be attributed to that drive.
-- **Now playing** shows track details, album art, and playback controls. When multiple players are available, click the player name in the card header to switch. Make the widget at least three rows tall to see the seek bar.
+- **Now playing** shows track details, album art, and playback controls. When multiple players are available, choose **Edit layout** and click the player name at the top of the widget to switch. Make the widget at least three rows tall to see the seek bar.
 - **Audio** adjusts device volume and mute and lets you set the default output or microphone. Add **App mixer** to adjust playback and recording streams using app icons, mute buttons, and volume sliders. Hover over an icon to see the app and stream names.
 - **Discord** shows a green ring around each speaker’s avatar and a **LIVE** badge when the desktop client reports a Go Live stream. The widget also provides controls to connect, mute, deafen, and leave a call.
 - **Viewer** displays web pages, iframes, YouTube, Twitch, and local media inside the grid. Discord voice channel links open in Discord.
@@ -16,12 +16,12 @@ Build with Rust 1.95 or newer and keep the provided Cargo lockfile. On Debian or
 
 ```sh
 sudo apt install build-essential pkg-config libfontconfig1-dev libfreetype-dev \
-  libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libvulkan1 pulseaudio-utils \
+  libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libvulkan1 pulseaudio-utils wl-clipboard \
   libwebkit2gtk-4.1-dev gstreamer1.0-plugins-good gstreamer1.0-libav
 cargo run --release --locked
 ```
 
-The Wayland session needs a working Vulkan driver. The viewer builds against GTK 3 and WebKitGTK 4.1 (`gtk3-devel` and `webkit2gtk4.1-devel` on Fedora) and uses the system GStreamer codecs for playback. The audio mixer uses `pactl` with a PipeWire PulseAudio server or PulseAudio 15+. Media discovery uses the session D-Bus and works with players that advertise MPRIS.
+The Wayland session needs a working Vulkan driver. The viewer builds against GTK 3 and WebKitGTK 4.1 (`gtk3-devel` and `webkit2gtk4.1-devel` on Fedora) and uses the system GStreamer codecs for playback. The audio mixer uses `pactl` with a PipeWire PulseAudio server or PulseAudio 15+. Media discovery uses the session D-Bus and works with players that advertise MPRIS. The Steam launch options **Copy** button uses `wl-clipboard` for mouse clicks in the default build.
 
 Drag the grip on the right-hand rail to move the window to your bar monitor. Press **F11** or click the fullscreen button near the bottom of the rail. **Esc** dismisses Settings or the active editing controls before leaving fullscreen. **Tab** moves between controls, **Enter** activates buttons, and arrow keys adjust a focused slider. Enable **Start fullscreen** in Settings or pass `--fullscreen` to open fullscreen on the compositor’s chosen output. The window’s Wayland app ID is `io.github.secondscreen`, which you can use in compositor window rules.
 
@@ -33,7 +33,7 @@ cargo run --release --locked --no-default-features --features ui-gpui-fast
 
 ## Customize Home
 
-Choose **Edit layout** to add widgets from the catalog, remove them with **×**, or change their order with the arrows in each card header. Drag a card’s bottom-right corner to resize. Use the width and height controls for single steps, or focus the corner and press the arrow keys. Choose **Done** to return to Home.
+Choose **Edit layout** to add widgets from the catalog and show widget names and controls at the top. Use **×** to remove a widget or the arrows to change its order. Drag a widget’s bottom-right corner to resize. Use the width and height controls for single steps, or focus the corner and press the arrow keys. Choose **Done** to return to Home.
 
 Use the left rail to switch profiles. **+** creates an empty profile and selects it, up to five total. The existing Home layout becomes profile 1. Each profile saves its own layout and widget options. Select the pencil on the left rail to give the active profile a single letter, a number, or an SVG or PNG image. Secondscreen imports a copy of the image and remembers which profile was selected.
 
@@ -41,13 +41,13 @@ Home fits four grid rows and up to five columns in the visible area. Widgets can
 
 ## Configure Performance
 
-Choose **Sensors** on a Performance tile. **Chart** plots one sensor over the last 60 samples. **2 sensors** shows two readings, each with its own units and graph scale. Select a slot, then choose its sensor. **List** lets you toggle individual readings. Choose **Done** to return to the live view.
+In **Edit layout**, choose **Sensors** on a Performance tile. **Chart** plots one sensor over the last 60 samples. **2 sensors** shows two readings, each with its own units and graph scale. Select a slot, then choose its sensor. **List** lets you toggle individual readings. Choose **Done** on the tile to return to the live view.
 
 The picker includes CPU and per-core load, memory, GPU load and VRAM where the graphics driver reports them, and Linux hardware-monitor channels such as temperatures, fan speeds, voltages, and power. Add Performance again to keep a chart and a sensor list visible together. Each tile saves its selections and size independently.
 
 ## Watch video and streams
 
-Add **Viewer** from **Edit layout → Add widget**. Select a source and choose **Show**. Web pages, iframe embeds, YouTube video, live and playlist links play inside the tile. **Twitch Live** and **Twitch Chat** accept a channel name or channel URL. Add another Viewer to keep a stream and its chat side by side. Use **Source** to change the tile or open a restricted embed in your browser.
+Add **Viewer** from **Edit layout → Add widget**. Select a source and choose **Show**. Web pages, iframe embeds, YouTube video, live and playlist links play inside the tile. **Twitch Live** and **Twitch Chat** accept a channel name or channel URL. Add another Viewer to keep a stream and its chat side by side. In **Edit layout**, use **Source** to change the tile or open a restricted embed in your browser.
 
 **Image / video** accepts a local media file. **Slideshow** accepts a folder and displays supported files in filename order. The delay controls set how long each image stays on screen. Videos advance at the end of playback. Use the arrows on the slideshow to move between items. The dashboard restores each saved source when it opens.
 
@@ -74,11 +74,11 @@ Add these tiles from **Edit layout → Add widget**. Open **Settings → Widgets
 - **World clock** shows local time and your chosen IANA time zones. Enter names such as `America/New_York, Asia/Kolkata`. Each clock follows its zone’s daylight-saving rules.
 - **Calendar** shows the local month and highlights today. Use the arrows to browse months. Click the month name to return to today.
 - **Weather / AQI** shows current conditions, wind, sunrise and sunset, US AQI, and a ten-day forecast with daily highs and lows. Widen the tile for forecast cards or scroll through the days in a narrow tile. Enter a city name or exact latitude and longitude. City search uses the first matching location. The widget refreshes every 15 minutes and retries after five minutes when data is unavailable. [Open-Meteo weather](https://open-meteo.com/) · [Air quality data from CAMS via Open-Meteo](https://open-meteo.com/en/docs/air-quality-api)
-- **Notifications** shows the latest 30 incoming Freedesktop desktop notifications while the tile is on Home. The history stays in memory. **Clear** clears the tile’s history. The desktop session bus must allow notification monitoring.
-- **FPS** shows current FPS, 1% low, 0.1% low, and a 60-second graph. Install MangoHud and add the tile, then copy the launch options below from **FPS → Setup** into Steam. For a standalone game, replace `%command%` with its executable. Start Secondscreen once per login before launching the game so it can create `$XDG_RUNTIME_DIR/secondscreen-mangohud` for MangoHud's per-frame CSV files. Current FPS uses the latest second of frame times. Each low is the frame rate of the slowest 1% or 0.1% of frames in the latest 60 seconds, rounded up to at least one frame.
+- **Notifications** shows the latest 30 incoming Freedesktop desktop notifications while the tile is on Home. The history stays in memory. To clear it, choose **Clear** on the tile in **Edit layout**. The desktop session bus must allow notification monitoring.
+- **FPS** shows current FPS, 1% low, 0.1% low, and a 60-second graph. Install MangoHud and add the tile. In **Edit layout**, choose **Setup** on the FPS tile and copy the launch options into Steam. For a standalone game, replace `%command%` with its executable. Start Secondscreen once per login before launching the game so it can create `$XDG_RUNTIME_DIR/secondscreen-mangohud` for MangoHud's per-frame CSV files. Current FPS uses the latest second of frame times. Each low is the frame rate of the slowest 1% or 0.1% of frames in the latest 60 seconds, rounded up to at least one frame.
 
 ```sh
-MANGOHUD_CONFIG="autostart_log=1,log_interval=0,alpha=0,background_alpha=0,output_folder=$XDG_RUNTIME_DIR/secondscreen-mangohud" mangohud %command%
+MANGOHUD_CONFIG="autostart_log=1,output_folder=$XDG_RUNTIME_DIR/secondscreen-mangohud" mangohud %command%
 ```
 
 The existing Gamescope launch options still provide current FPS. Gamescope reports an average every 300 frames, so the lows appear as dashes with that feed.

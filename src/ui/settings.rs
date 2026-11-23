@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, time::Instant};
+use std::{
+    collections::BTreeMap,
+    io::{ErrorKind, Write},
+    process::{Command, Stdio},
+    time::Instant,
+};
 
 use gpui::{
     Context, Entity, FocusHandle, IntoElement, PathPromptOptions, SharedString, Styled, Task,
@@ -17,6 +22,7 @@ use super::{
     monitor::capacity,
     text_input::TextInput,
     theme::*,
+    utilities::FPS_LAUNCH_OPTIONS,
 };
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -72,6 +78,7 @@ pub(super) struct SettingsView {
     discord_fields: Option<DiscordFields>,
     discord_saved: bool,
     widget_fields: Option<(Entity<TextInput>, Entity<TextInput>)>,
+    launch_options_copy: LaunchOptionsCopy,
     profile_label: Option<Entity<TextInput>>,
     profile_picker: Option<Task<()>>,
 }
@@ -86,10 +93,18 @@ impl SettingsView {
             discord_fields: None,
             discord_saved: false,
             widget_fields: None,
+            launch_options_copy: LaunchOptionsCopy::Ready,
             profile_label: None,
             profile_picker: None,
         }
     }
+}
+
+enum LaunchOptionsCopy {
+    Ready,
+    Copying,
+    Copied,
+    Failed(&'static str),
 }
 
 struct DiscordFields {
@@ -149,6 +164,12 @@ impl Dashboard {
         if self.settings.open {
             self.settings.open = false;
             self.settings.widget_fields = None;
+            if !matches!(
+                self.settings.launch_options_copy,
+                LaunchOptionsCopy::Copying
+            ) {
+                self.settings.launch_options_copy = LaunchOptionsCopy::Ready;
+            }
             self.settings.profile_label = None;
             self.settings.profile_picker = None;
             let previous = self
@@ -368,7 +389,6 @@ impl Dashboard {
     }
 
     fn widget_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        use super::utilities::FPS_LAUNCH_OPTIONS;
         let (zones, location) = self
             .settings
             .widget_fields
@@ -436,6 +456,11 @@ impl Dashboard {
                 })
             })
         };
+        let copy_label = match self.settings.launch_options_copy {
+            LaunchOptionsCopy::Copying => "Copying…",
+            LaunchOptionsCopy::Copied => "Copied",
+            _ => "Copy",
+        };
         col()
             .gap(r(9.))
             .flex_none()
@@ -481,22 +506,88 @@ impl Dashboard {
                 row()
                     .justify_between()
                     .child(label("Steam launch options for MangoHud FPS"))
-                    .child(bind(
+                    .child(
                         button("copy-launch-options", None)
                             .h(r(25.))
                             .px(r(7.))
-                            .child("Copy"),
-                        |_, cx| {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                FPS_LAUNCH_OPTIONS.to_owned(),
-                            ))
-                        },
-                    )),
+                            .child(copy_label)
+                            .cursor_pointer()
+                            .tab_index(0)
+                            .focus(|it| it.border_color(c(TEAL)))
+                            .on_click(cx.listener(Self::copy_launch_options)),
+                    ),
             )
+            .children(match self.settings.launch_options_copy {
+                LaunchOptionsCopy::Failed(message) => Some(quiet(message).text_color(c(RED))),
+                _ => None,
+            })
             .child(quiet(
                 "Install MangoHud to track current FPS, 1% low, and 0.1% low.",
             ))
             .child(quiet(FPS_LAUNCH_OPTIONS))
+    }
+
+    fn copy_launch_options(
+        &mut self,
+        event: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(
+            self.settings.launch_options_copy,
+            LaunchOptionsCopy::Copying
+        ) {
+            return;
+        }
+        // GPUI 0.2.2 uses the last key press serial for Wayland clipboard ownership.
+        if cfg!(feature = "ui-gpui") && matches!(event, gpui::ClickEvent::Mouse(_)) {
+            self.settings.launch_options_copy = LaunchOptionsCopy::Copying;
+            cx.spawn(async move |this, cx| {
+                let result = blocking::unblock(|| -> std::io::Result<_> {
+                    let mut child = Command::new("wl-copy")
+                        .arg("--type=text/plain")
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::null())
+                        .spawn()?;
+                    let written = child
+                        .stdin
+                        .take()
+                        .expect("wl-copy stdin was piped")
+                        .write_all(FPS_LAUNCH_OPTIONS.as_bytes());
+                    let status = child.wait()?;
+                    written?;
+                    Ok(status)
+                })
+                .await;
+                let copy = match result {
+                    Ok(status) if status.success() => LaunchOptionsCopy::Copied,
+                    Err(error) if error.kind() == ErrorKind::NotFound => LaunchOptionsCopy::Failed(
+                        "Install wl-clipboard for mouse support, or focus Copy with Tab and press Enter.",
+                    ),
+                    result => {
+                        log::warn!("Could not copy Steam launch options with wl-copy: {result:?}");
+                        LaunchOptionsCopy::Failed(
+                            "Could not copy with wl-copy. Focus Copy with Tab and press Enter to retry.",
+                        )
+                    }
+                };
+                let _ = this.update(cx, |this, cx| {
+                    this.settings.launch_options_copy = if this.settings.open {
+                        copy
+                    } else {
+                        LaunchOptionsCopy::Ready
+                    };
+                    cx.notify();
+                });
+            })
+            .detach();
+        } else {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                FPS_LAUNCH_OPTIONS.to_owned(),
+            ));
+            self.settings.launch_options_copy = LaunchOptionsCopy::Copied;
+        }
+        cx.notify();
     }
 
     fn general_settings(&self, cx: &Context<Self>) -> impl IntoElement {

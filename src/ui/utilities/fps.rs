@@ -11,7 +11,7 @@ use std::{
 };
 
 const MANGOHUD_DIR: &str = "secondscreen-mangohud";
-pub(in crate::ui) const LAUNCH_OPTIONS: &str = r#"MANGOHUD_CONFIG="autostart_log=1,log_interval=0,alpha=0,background_alpha=0,output_folder=$XDG_RUNTIME_DIR/secondscreen-mangohud" mangohud %command%"#;
+pub(in crate::ui) const LAUNCH_OPTIONS: &str = r#"MANGOHUD_CONFIG="autostart_log=1,output_folder=$XDG_RUNTIME_DIR/secondscreen-mangohud" mangohud %command%"#;
 
 fn runtime_dir() -> Result<PathBuf> {
     std::env::var_os("XDG_RUNTIME_DIR")

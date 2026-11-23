@@ -1,6 +1,6 @@
 use gpui::{AnyElement, Context, Div, FontWeight, IntoElement, Styled, div, prelude::*};
 
-use crate::model::{AudioKind, Playback};
+use crate::model::AudioKind;
 
 use super::super::{
     Dashboard,
@@ -237,11 +237,6 @@ impl Dashboard {
         } else {
             38.
         };
-        let (status, color) = match player.playback {
-            Playback::Playing => ("Playing", TEAL),
-            Playback::Paused => ("Paused", AMBER),
-            Playback::Stopped => ("Stopped", MUTED),
-        };
 
         col()
             .flex_1()
@@ -256,9 +251,6 @@ impl Dashboard {
                         col()
                             .flex_1()
                             .gap(r(3.))
-                            .when(spacious, |it| {
-                                it.child(row().gap(r(5.)).child(dot(color)).child(quiet(status)))
-                            })
                             .child(
                                 div()
                                     .text_size(r(if wide { 23. } else { 16. }))
