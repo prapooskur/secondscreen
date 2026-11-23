@@ -94,7 +94,9 @@ impl Viewer {
         self.clear_frame(cx);
         self.pump = Some(cx.spawn(async move |this, cx| {
             loop {
-                gpui::Timer::after(Duration::from_millis(33)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(33))
+                    .await;
                 if this
                     .update(cx, |this, cx| {
                         let size = this.viewport();

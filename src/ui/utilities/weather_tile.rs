@@ -1,6 +1,12 @@
-use gpui::{Div, IntoElement, Styled, div, prelude::*};
+use gpui::{
+    Div, FontWeight, IntoElement, Styled, div, hsla, linear_color_stop, linear_gradient,
+    prelude::*, relative,
+};
 
-use super::weather;
+use super::{
+    weather::{self, temperature},
+    weather_chart::today_chart,
+};
 use crate::ui::{
     Dashboard, Tooltip,
     icons::{Icon, icon},
@@ -8,13 +14,14 @@ use crate::ui::{
 };
 
 impl Dashboard {
-    pub(in crate::ui) fn weather_widget(&self, columns: u8, height: f32) -> impl IntoElement {
+    pub(in crate::ui) fn weather_widget(&self, width: f32, height: f32) -> impl IntoElement {
         let state = &self.utilities;
-        let mut tile = col()
+        let tile = col()
             .id("weather-readings")
             .flex_1()
             .overflow_y_scroll()
-            .gap(r(8.));
+            .p(r(10.))
+            .gap(r(10.));
         let Some(report) = &state.report else {
             let message = state.weather_error.as_deref().unwrap_or_else(|| {
                 if state.weather_query.is_empty() {
@@ -27,138 +34,67 @@ impl Dashboard {
         };
 
         let forecast = report.weather.as_ref();
-        let current = forecast.and_then(|weather| weather.current.as_ref());
         let today = forecast.and_then(|weather| {
             weather
                 .days
-                .first()
-                .filter(|day| Some(day.date) == weather.today)
+                .iter()
+                .find(|day| Some(day.date) == weather.today)
         });
         let fahrenheit = self.preferences.fahrenheit;
-        let wide = columns >= 2;
-        let code = current.and_then(|reading| reading.weather_code);
-        let daylight = current.and_then(|reading| reading.is_day) != Some(0);
-        let (symbol, accent) = weather_symbol(code, daylight);
-        let summary = col()
-            .flex_1()
-            .justify_center()
-            .gap(r(2.))
-            .child(label(report.place.name.clone()).truncate())
-            .child(
-                row()
-                    .gap(r(9.))
-                    .child(icon_tile(
-                        symbol,
-                        accent,
-                        if wide && height >= 160. { 46. } else { 36. },
-                    ))
-                    .child(
-                        mono(temperature(
-                            current.and_then(|reading| reading.temperature_2m),
-                            fahrenheit,
-                            true,
-                        ))
-                        .flex_none()
-                        .text_size(r(if wide && height >= 160. { 35. } else { 25. }))
-                        .text_color(c(INK)),
-                    )
-                    .child(quiet(weather::condition(code)).flex_1()),
-            );
-
-        let wind = current
-            .and_then(|reading| reading.wind_speed_10m)
-            .map(|speed| {
-                if self.preferences.weather_mph {
-                    format!("{:.0} mph", speed * 0.621_371)
-                } else {
-                    format!("{speed:.0} km/h")
-                }
-            });
-        let time = |time: jiff::civil::Time| {
-            time.strftime(if self.preferences.weather_12_hour {
-                "%-I:%M %p"
-            } else {
-                "%H:%M"
-            })
-            .to_string()
-        };
-        let details = row()
-            .flex_none()
-            .gap(r(10.))
-            .justify_between()
-            .child(detail("Wind", wind))
-            .child(detail(
-                "Sunrise",
-                today.and_then(|day| day.sunrise).map(time),
-            ))
-            .child(detail("Sunset", today.and_then(|day| day.sunset).map(time)));
-
-        let (hero_details, footer_details) = if wide {
-            (Some(details), None)
+        let clock_12h = self.preferences.weather_12_hour;
+        let current = forecast.and_then(|weather| weather.current.as_ref());
+        let wide = width >= 720.;
+        let split_forecast = width >= 460.;
+        let compact = height < 245.;
+        let summary = summary(&report.place.name, current, today, fahrenheit, compact);
+        let chart_height = if wide {
+            (height - 99.).clamp(90., 242.)
+        } else if compact {
+            88.
         } else {
-            (None, Some(details))
+            112.
         };
-        tile = tile.child(
-            row()
-                .flex_none()
-                .gap(r(12.))
-                .child(summary)
-                .children(hero_details),
+        let chart = today_chart(forecast, chart_height, fahrenheit, clock_12h);
+        let days = daily_forecast(forecast, fahrenheit, compact);
+        let details = weather_details(
+            report.aqi,
+            current,
+            today,
+            self.preferences.weather_mph,
+            clock_12h,
         );
 
-        let air = report.aqi.map_or_else(
-            || "Air quality unavailable".into(),
-            |aqi| format!("US AQI {aqi:.0} · {}", weather::air_category(aqi)),
-        );
-        tile = tile.child(
-            quiet(air)
+        let contents = if wide {
+            split()
                 .flex_none()
-                .pb(r(7.))
-                .border_b_1()
-                .border_color(c(STROKE)),
-        );
-        if let Some(forecast) = forecast.filter(|weather| !weather.days.is_empty()) {
-            let heading = label(format!("{}-day forecast", forecast.days.len()));
-            if wide {
-                tile = tile.child(heading);
-                for days in forecast.days.chunks(if columns >= 4 { 10 } else { 5 }) {
-                    tile = tile.child(
-                        split()
-                            .flex_none()
-                            .gap(r(4.))
-                            .p(r(4.))
-                            .rounded(r(7.))
-                            .bg(c(BACK).opacity(0.45))
-                            .children(days.iter().map(|day| {
-                                forecast_card(day, Some(day.date) == forecast.today, fahrenheit)
-                            })),
-                    );
-                }
-            } else {
-                tile = tile.child(
-                    row()
-                        .flex_none()
-                        .px(r(10.))
-                        .child(heading.flex_1())
-                        .child(temperature_column("High", INK))
-                        .child(temperature_column("Low", MUTED)),
-                );
-                tile = tile.child(
+                .gap(r(18.))
+                .child(col().flex_1().gap(r(12.)).child(summary).child(details))
+                .child(col().flex_1().child(chart))
+                .child(col().flex_1().child(days))
+        } else if split_forecast {
+            split()
+                .flex_none()
+                .gap(r(14.))
+                .child(
                     col()
-                        .flex_none()
-                        .gap(r(2.))
-                        .p(r(4.))
-                        .rounded(r(7.))
-                        .bg(c(BACK).opacity(0.45))
-                        .children(forecast.days.iter().map(|day| {
-                            forecast_row(day, Some(day.date) == forecast.today, fahrenheit)
-                        })),
-                );
-            }
+                        .flex_1()
+                        .gap(r(9.))
+                        .child(summary)
+                        .child(chart)
+                        .child(details),
+                )
+                .child(col().flex_1().child(days))
         } else {
-            tile = tile.child(quiet("Daily forecast unavailable"));
-        }
-        tile.children(footer_details)
+            col()
+                .flex_none()
+                .gap(r(9.))
+                .child(summary)
+                .child(chart)
+                .child(days)
+                .child(details)
+        };
+
+        tile.child(contents)
             .children(
                 state
                     .weather_error
@@ -166,101 +102,241 @@ impl Dashboard {
                     .map(|error| quiet(error.clone())),
             )
             .children(state.weather_at.map(|at| {
-                quiet(format!(
-                    "Open-Meteo / CAMS · {} min ago",
-                    at.elapsed().as_secs() / 60
-                ))
+                let minutes = at.elapsed().as_secs() / 60;
+                quiet(format!("Open-Meteo / CAMS · {minutes} min ago"))
+                    .text_size(r(10.))
+                    .flex_none()
             }))
     }
 }
 
+fn summary(
+    name: &str,
+    current: Option<&weather::Conditions>,
+    today: Option<&weather::Day>,
+    fahrenheit: bool,
+    compact: bool,
+) -> Div {
+    let code = current.and_then(|reading| reading.weather_code);
+    let daylight = current.and_then(|reading| reading.is_day) != Some(0);
+    let value = current.and_then(|reading| reading.temperature_2m);
+    let temp_size = if compact { 34. } else { 45. };
+
+    row()
+        .flex_none()
+        .justify_between()
+        .gap(r(6.))
+        .child(
+            col()
+                .flex_1()
+                .gap(r(2.))
+                .child(label(name.to_owned()).truncate())
+                .child(
+                    div()
+                        .text_size(r(temp_size))
+                        .line_height(r(temp_size + 3.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(c(INK))
+                        .whitespace_nowrap()
+                        .child(temperature(value, fahrenheit, true)),
+                )
+                .child(
+                    label(weather::condition(code))
+                        .text_color(c(INK))
+                        .truncate(),
+                )
+                .children(today.map(|day| {
+                    quiet(format!(
+                        "H {}   L {}",
+                        temperature(day.high, fahrenheit, false),
+                        temperature(day.low, fahrenheit, false)
+                    ))
+                    .whitespace_nowrap()
+                })),
+        )
+        .child(condition_art(
+            code,
+            daylight,
+            if compact { 42. } else { 58. },
+        ))
+}
+
+fn weather_details(
+    aqi: Option<f32>,
+    current: Option<&weather::Conditions>,
+    today: Option<&weather::Day>,
+    mph: bool,
+    clock_12h: bool,
+) -> Div {
+    let wind = current
+        .and_then(|reading| reading.wind_speed_10m)
+        .map(|speed| {
+            if mph {
+                format!("{:.0} mph", speed * 0.621_371)
+            } else {
+                format!("{speed:.0} km/h")
+            }
+        });
+    let time = |time: jiff::civil::Time| {
+        time.strftime(if clock_12h { "%-I:%M %p" } else { "%H:%M" })
+            .to_string()
+    };
+    let air = aqi.map_or_else(
+        || "Air quality unavailable".into(),
+        |aqi| format!("US AQI {aqi:.0} · {}", weather::air_category(aqi)),
+    );
+
+    col()
+        .flex_none()
+        .gap(r(6.))
+        .pt(r(8.))
+        .border_t_1()
+        .border_color(c(TEXT).opacity(0.16))
+        .child(
+            split()
+                .justify_between()
+                .gap(r(4.))
+                .child(detail("Wind", wind))
+                .child(detail(
+                    "Sunrise",
+                    today.and_then(|day| day.sunrise).map(time),
+                ))
+                .child(detail("Sunset", today.and_then(|day| day.sunset).map(time))),
+        )
+        .child(quiet(air))
+}
+
 fn detail(name: &'static str, value: Option<String>) -> Div {
     col()
-        .flex_none()
-        .gap(r(2.))
-        .child(quiet(name))
-        .child(label(value.unwrap_or_else(|| "—".into())).whitespace_nowrap())
-}
-
-fn day_label(day: &weather::Day, today: bool) -> String {
-    if today {
-        "Today".into()
-    } else {
-        day.date.strftime("%a").to_string()
-    }
-}
-
-fn forecast_card(day: &weather::Day, today: bool, fahrenheit: bool) -> impl IntoElement {
-    let (symbol, accent) = weather_symbol(day.weather_code, true);
-    let condition = weather::condition(day.weather_code);
-    col()
-        .id(("weather-day", day.date.day_of_year() as usize))
-        .flex_1()
-        .items_center()
-        .gap(r(2.))
-        .py(r(5.))
-        .rounded(r(5.))
-        .when(today, |card| card.bg(c(HOVER)))
-        .child(label(day_label(day, today)).text_color(c(INK)))
-        .child(quiet(day.date.strftime("%b %e").to_string()))
-        .child(icon(symbol, c(accent), 22.))
+        .gap(r(1.))
+        .child(quiet(name).text_size(r(10.)).whitespace_nowrap())
         .child(
-            row()
-                .gap(r(5.))
-                .child(mono(temperature(day.high, fahrenheit, false)).text_color(c(INK)))
-                .child(mono(temperature(day.low, fahrenheit, false)).text_color(c(MUTED))),
+            label(value.unwrap_or_else(|| "—".into()))
+                .text_size(r(11.))
+                .whitespace_nowrap(),
         )
-        .tooltip(move |_, cx| cx.new(|_| Tooltip(condition.into())).into())
 }
 
-fn forecast_row(day: &weather::Day, today: bool, fahrenheit: bool) -> impl IntoElement {
-    let (symbol, accent) = weather_symbol(day.weather_code, true);
-    let condition = weather::condition(day.weather_code);
-    row()
-        .id(("weather-day", day.date.day_of_year() as usize))
-        .flex_none()
-        .h(r(25.))
-        .px(r(6.))
-        .rounded(r(5.))
-        .when(today, |line| line.bg(c(HOVER)))
-        .child(
-            row()
-                .flex_1()
-                .gap(r(4.))
-                .child(label(day_label(day, today)).w(r(41.)).truncate())
-                .child(quiet(day.date.strftime("%b %e").to_string()).truncate()),
-        )
-        .child(icon(symbol, c(accent), 17.))
-        .child(temperature_column(
-            temperature(day.high, fahrenheit, false),
-            INK,
-        ))
-        .child(temperature_column(
-            temperature(day.low, fahrenheit, false),
-            MUTED,
-        ))
-        .tooltip(move |_, cx| cx.new(|_| Tooltip(condition.into())).into())
+fn daily_forecast(forecast: Option<&weather::Weather>, fahrenheit: bool, compact: bool) -> Div {
+    let list = col().flex_none().gap(r(1.));
+    let Some(weather) = forecast.filter(|weather| !weather.days.is_empty()) else {
+        return list.child(quiet("Daily forecast unavailable"));
+    };
+
+    let (low, high) = weather
+        .days
+        .iter()
+        .flat_map(|day| [day.low, day.high])
+        .flatten()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), temp| {
+            (low.min(temp), high.max(temp))
+        });
+    let span = (high - low).max(1.);
+    let start = (low + high - span) * 0.5;
+    let normalize = |temperature: f32| ((temperature - start) / span).clamp(0., 1.);
+    let list = list.child(
+        label(format!("{}-day forecast", weather.days.len()))
+            .text_color(c(INK))
+            .pb(r(3.)),
+    );
+    list.children(weather.days.iter().map(|day| {
+        let today = Some(day.date) == weather.today;
+        let name = if today {
+            "Today".into()
+        } else {
+            day.date.strftime("%a %-d").to_string()
+        };
+        let description = format!(
+            "{} · {}",
+            day.date.strftime("%A, %b %e"),
+            weather::condition(day.weather_code)
+        );
+        let (symbol, accent) = weather_symbol(day.weather_code, true);
+        let track = div()
+            .relative()
+            .flex_1()
+            .h(r(4.))
+            .rounded_full()
+            .bg(c(TEXT).opacity(0.17));
+        let range = day.low.zip(day.high).filter(|(low, high)| low <= high);
+        let track = track.children(range.map(|(low, high)| {
+            let length = (normalize(high) - normalize(low)).max(0.04);
+            div()
+                .absolute()
+                .left(relative(normalize(low).min(1. - length)))
+                .w(relative(length))
+                .h_full()
+                .rounded_full()
+                .bg(linear_gradient(
+                    90.,
+                    linear_color_stop(temperature_color(low), 0.),
+                    linear_color_stop(temperature_color(high), 1.),
+                ))
+        }));
+
+        row()
+            .id(("weather-day", day.date.day_of_year() as usize))
+            .flex_none()
+            .h(r(if compact { 22. } else { 24. }))
+            .gap(r(5.))
+            .child(
+                label(name)
+                    .text_color(c(INK))
+                    .w(r(53.))
+                    .flex_none()
+                    .truncate(),
+            )
+            .child(icon(symbol, c(accent), 16.))
+            .child(daily_temperature(day.low, fahrenheit, MUTED))
+            .child(track)
+            .child(daily_temperature(day.high, fahrenheit, INK))
+            .tooltip(move |_, cx| cx.new(|_| Tooltip(description.clone().into())).into())
+    }))
 }
 
-fn temperature_column(value: impl IntoElement, color: u32) -> Div {
-    div()
+fn daily_temperature(value: Option<f32>, fahrenheit: bool, color: u32) -> Div {
+    label(temperature(value, fahrenheit, false))
+        .w(r(31.))
         .flex_none()
-        .w(r(37.))
-        .text_right()
+        .text_size(r(11.))
         .text_color(c(color))
-        .child(mono(value).text_size(r(12.)))
+        .text_right()
+        .whitespace_nowrap()
 }
 
-fn temperature(value: Option<f32>, fahrenheit: bool, show_unit: bool) -> String {
-    let Some(celsius) = value else {
-        return "—".into();
-    };
-    let (value, unit) = if fahrenheit {
-        (celsius * 1.8 + 32., "F")
-    } else {
-        (celsius, "C")
-    };
-    format!("{:.0}°{}", value.round(), if show_unit { unit } else { "" })
+fn temperature_color(celsius: f32) -> gpui::Hsla {
+    let warmth = ((celsius + 15.) / 55.).clamp(0., 1.);
+    hsla((230. - 220. * warmth) / 360., 0.71, 0.69, 1.)
+}
+
+fn condition_art(code: Option<u8>, daylight: bool, size: f32) -> Div {
+    let (symbol, accent) = weather_symbol(code, daylight);
+    let art = row()
+        .size(r(size))
+        .flex_none()
+        .justify_center()
+        .rounded_full();
+    if matches!(symbol, Icon::Sun) {
+        return art.bg(c(AMBER).opacity(0.09)).child(
+            row()
+                .size(r(size * 0.81))
+                .justify_center()
+                .rounded_full()
+                .bg(c(AMBER).opacity(0.15))
+                .child(
+                    div()
+                        .size(r(size * 0.63))
+                        .rounded_full()
+                        .bg(linear_gradient(
+                            135.,
+                            linear_color_stop(c(0xffed9c), 0.),
+                            linear_color_stop(c(0xfda74e), 1.),
+                        )),
+                ),
+        );
+    }
+    art.bg(c(accent).opacity(0.08))
+        .child(icon(symbol, c(accent), size * 0.7))
 }
 
 fn weather_symbol(code: Option<u8>, daylight: bool) -> (Icon, u32) {

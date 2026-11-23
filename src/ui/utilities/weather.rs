@@ -10,6 +10,7 @@ const AIR_QUALITY: &str = "https://air-quality-api.open-meteo.com/v1/air-quality
 const CURRENT_FIELDS: &str = "temperature_2m,weather_code,is_day,wind_speed_10m";
 const DAILY_FIELDS: &str = "weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset";
 pub(super) const FORECAST_DAYS: usize = 10;
+pub(super) const HOURS_PER_DAY: usize = 24;
 
 #[derive(Clone, Deserialize)]
 pub(super) struct Place {
@@ -78,6 +79,7 @@ struct Current<T> {
 }
 #[derive(Default, Deserialize)]
 pub(super) struct Conditions {
+    time: Option<String>,
     pub temperature_2m: Option<f32>,
     pub weather_code: Option<u8>,
     pub is_day: Option<u8>,
@@ -131,35 +133,78 @@ impl DailyReading {
     }
 }
 
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct HourlyReading {
+    time: Vec<String>,
+    temperature_2m: Vec<Option<f32>>,
+}
+
 #[derive(Deserialize)]
 struct ForecastResponse {
     current: Option<Conditions>,
     daily: Option<DailyReading>,
+    hourly: Option<HourlyReading>,
 }
 
 pub(super) struct Weather {
     pub current: Option<Conditions>,
     pub days: Vec<Day>,
     pub today: Option<Date>,
+    pub time: Option<Time>,
+    pub hourly: [Option<f32>; HOURS_PER_DAY],
+}
+
+impl Weather {
+    pub(super) fn has_hourly_temperatures(&self) -> bool {
+        self.hourly.iter().any(Option::is_some)
+    }
 }
 
 impl ForecastResponse {
     fn weather(self) -> Option<Weather> {
+        let current_time = self
+            .current
+            .as_ref()
+            .and_then(|current| current.time.as_deref()?.parse::<DateTime>().ok());
+        let today = current_time
+            .map(|time| time.date())
+            .or_else(|| self.daily.as_ref()?.time.first()?.parse().ok())
+            .or_else(|| {
+                self.hourly
+                    .as_ref()?
+                    .time
+                    .first()?
+                    .parse::<DateTime>()
+                    .ok()
+                    .map(|time| time.date())
+            });
+        let mut hourly = [None; HOURS_PER_DAY];
+        if let (Some(today), Some(readings)) = (today, self.hourly) {
+            for (time, temperature) in readings.time.iter().zip(readings.temperature_2m) {
+                if let Some(temperature) = temperature.filter(|value| value.is_finite())
+                    && let Ok(time) = time.parse::<DateTime>()
+                    && time.date() == today
+                {
+                    hourly[time.hour() as usize] = Some(temperature);
+                }
+            }
+        }
         let current = self.current.filter(|reading| {
             reading.temperature_2m.is_some()
                 || reading.weather_code.is_some()
                 || reading.wind_speed_10m.is_some()
         });
-        let today = self
-            .daily
-            .as_ref()
-            .and_then(|daily| daily.time.first()?.parse().ok());
         let days = self.daily.map_or_else(Vec::new, |daily| daily.days());
-        (current.is_some() || !days.is_empty()).then_some(Weather {
+        let weather = Weather {
             current,
             days,
             today,
-        })
+            time: current_time.map(|time| time.time()),
+            hourly,
+        };
+        (weather.current.is_some() || !weather.days.is_empty() || weather.has_hourly_temperatures())
+            .then_some(weather)
     }
 }
 
@@ -194,6 +239,7 @@ fn fetch_at(client: &Client, place: Place, forecast: &str, air_quality: &str) ->
             ("timezone", "auto"),
             ("current", CURRENT_FIELDS),
             ("daily", DAILY_FIELDS),
+            ("hourly", "temperature_2m"),
             ("temperature_unit", "celsius"),
             ("wind_speed_unit", "kmh"),
         ])
@@ -237,6 +283,27 @@ pub(super) fn condition(code: Option<u8>) -> &'static str {
     }
 }
 
+pub(super) fn temperature(value: Option<f32>, fahrenheit: bool, show_unit: bool) -> String {
+    let Some(celsius) = value else {
+        return "—".into();
+    };
+    let value = if fahrenheit {
+        celsius * 1.8 + 32.
+    } else {
+        celsius
+    };
+    let unit = if show_unit {
+        temperature_unit(fahrenheit)
+    } else {
+        "°"
+    };
+    format!("{:.0}{unit}", value.round())
+}
+
+pub(super) fn temperature_unit(fahrenheit: bool) -> &'static str {
+    if fahrenheit { "°F" } else { "°C" }
+}
+
 pub(super) fn air_category(aqi: f32) -> &'static str {
     match aqi.round() as u32 {
         0..=50 => "Good",
@@ -262,7 +329,12 @@ mod tests {
         let base = format!("http://{}", server.local_addr().unwrap());
         let worker = std::thread::spawn(move || {
             let forecast = r#"{
-                "current":{"weather_code":2,"temperature_2m":12.5,"is_day":1,"wind_speed_10m":16},
+                "current":{"time":"2026-12-28T14:15","weather_code":2,"temperature_2m":12.5,"is_day":1,"wind_speed_10m":16},
+                "hourly":{
+                    "time":["2026-12-28T00:00","2026-12-28T06:00","2026-12-28T14:00",
+                            "2026-12-28T23:00","2026-12-29T00:00","2026-12-29T06:00"],
+                    "temperature_2m":[9.1,null,12.3,8,2,0]
+                },
                 "daily":{
                     "time":["2026-12-28","2026-12-29","2026-12-30","2026-12-31","2027-01-01",
                             "2027-01-02","2027-01-03","2027-01-04","2027-01-05","2027-01-06"],
@@ -291,6 +363,7 @@ mod tests {
                     assert!(
                         request.contains("timezone=auto") && request.contains("forecast_days=10")
                     );
+                    assert!(request.contains("hourly=temperature_2m"));
                     assert!(
                         request.contains("current=temperature_2m%2Cweather_code%2Cis_day%2Cwind_speed_10m")
                             && request.contains("daily=weather_code%2Ctemperature_2m_max%2Ctemperature_2m_min%2Csunrise%2Csunset")
@@ -320,6 +393,11 @@ mod tests {
             assert_eq!(current.wind_speed_10m, Some(16.));
             assert_eq!(weather.days.len(), FORECAST_DAYS);
             assert_eq!(weather.today, Some(weather.days[0].date));
+            assert_eq!(weather.time.unwrap().to_string(), "14:15:00");
+            assert_eq!(weather.hourly[0], Some(9.1));
+            assert_eq!(weather.hourly[6], None);
+            assert_eq!(weather.hourly[14], Some(12.3));
+            assert_eq!(weather.hourly[23], Some(8.));
             let first = &weather.days[0];
             assert_eq!(
                 first.sunrise.unwrap().strftime("%H:%M").to_string(),
@@ -340,5 +418,21 @@ mod tests {
         assert_eq!(air_only.aqi, Some(52.));
         worker.join().unwrap();
         assert!(coordinates("91, 10").is_err());
+    }
+
+    #[test]
+    fn hourly_forecast_can_render_without_current_or_daily_weather() {
+        let response = serde_json::from_str::<ForecastResponse>(
+            r#"{"hourly":{
+                "time":["2026-12-28T00:00","2026-12-28T01:00","2026-12-28T02:00"],
+                "temperature_2m":[-1.5,0]
+            }}"#,
+        )
+        .unwrap();
+        let weather = response.weather().unwrap();
+        assert!(weather.current.is_none());
+        assert!(weather.days.is_empty());
+        assert!(weather.time.is_none());
+        assert_eq!(weather.hourly[..3], [Some(-1.5), Some(0.), None]);
     }
 }

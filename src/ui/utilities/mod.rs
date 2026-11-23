@@ -1,6 +1,7 @@
 mod fps;
 mod notifications;
 mod weather;
+mod weather_chart;
 mod weather_tile;
 
 use super::{Dashboard, HISTORY, append, home::Kind, monitor::graph, theme::*};
@@ -85,7 +86,7 @@ impl Dashboard {
         } else if self.utilities.ticker.is_none() {
             self.utilities.ticker = Some(cx.spawn(async move |this, cx| {
                 loop {
-                    gpui::Timer::after(Duration::from_secs(1)).await;
+                    cx.background_executor().timer(Duration::from_secs(1)).await;
                     if this.update(cx, |_, cx| cx.notify()).is_err() {
                         break;
                     }
@@ -126,7 +127,7 @@ impl Dashboard {
                     {
                         break;
                     }
-                    gpui::Timer::after(Duration::from_secs(1)).await;
+                    cx.background_executor().timer(Duration::from_secs(1)).await;
                 }
             }));
         }
@@ -157,10 +158,9 @@ impl Dashboard {
                 let known = place.clone();
                 let result = blocking::unblock(move || weather::fetch(&query, known)).await;
                 let complete = result.as_ref().is_ok_and(|r| {
-                    r.weather
-                        .as_ref()
-                        .is_some_and(|w| w.current.is_some() && !w.days.is_empty())
-                        && r.aqi.is_some()
+                    r.weather.as_ref().is_some_and(|w| {
+                        w.current.is_some() && !w.days.is_empty() && w.has_hourly_temperatures()
+                    }) && r.aqi.is_some()
                 });
                 if this
                     .update(cx, |this, cx| {
@@ -186,7 +186,8 @@ impl Dashboard {
                 {
                     break;
                 }
-                gpui::Timer::after(Duration::from_secs(if complete { 900 } else { 300 })).await;
+                let delay = Duration::from_secs(if complete { 900 } else { 300 });
+                cx.background_executor().timer(delay).await;
             }
         }));
     }
@@ -237,7 +238,9 @@ impl Dashboard {
                     {
                         break;
                     }
-                    gpui::Timer::after(Duration::from_secs(30)).await;
+                    cx.background_executor()
+                        .timer(Duration::from_secs(30))
+                        .await;
                 }
             }));
         }
