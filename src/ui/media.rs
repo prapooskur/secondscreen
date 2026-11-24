@@ -27,11 +27,12 @@ pub(super) struct PendingSeek {
     player_id: String,
     track_id: String,
     position: i64,
+    previous_position: Option<i64>,
     pub(super) requested_at: Instant,
 }
 
 impl PendingSeek {
-    fn matches(&self, player: &Player) -> bool {
+    pub(super) fn matches(&self, player: &Player) -> bool {
         self.player_id == player.id
             && player
                 .track
@@ -39,31 +40,61 @@ impl PendingSeek {
                 .is_some_and(|track| self.track_id == track.id)
     }
 
-    fn confirmed(&self, player: &Player, elapsed: Duration) -> bool {
-        const TOLERANCE: i64 = 500_000;
-        let advance = if player.playback == Playback::Playing {
+    fn advance(player: &Player, elapsed: Duration) -> i64 {
+        if player.playback == Playback::Playing {
             (elapsed.as_secs_f64() * player.rate * 1_000_000.) as i64
         } else {
             0
+        }
+    }
+
+    fn displayed_position(&self, player: &Player, now: Instant) -> i64 {
+        let elapsed = now.saturating_duration_since(self.requested_at);
+        self.position
+            .saturating_add(Self::advance(player, elapsed))
+            .max(0)
+    }
+
+    fn confirmed(&self, player: &Player) -> bool {
+        const TOLERANCE: i64 = 500_000;
+        const ROUNDED_TOLERANCE: i64 = 2_000_000;
+        let Some(position) = player.position else {
+            return false;
         };
-        let predicted = self.position.saturating_add(advance);
-        let lower = self.position.min(predicted).saturating_sub(TOLERANCE);
-        let upper = self.position.max(predicted).saturating_add(TOLERANCE);
-        player
-            .position
-            .is_some_and(|position| (lower..=upper).contains(&position.reported))
+        let Some(elapsed) = position
+            .sampled_at()
+            .checked_duration_since(self.requested_at)
+        else {
+            return false;
+        };
+        let advance = Self::advance(player, elapsed);
+        let near = |start: i64, margin: i64| {
+            let end = start.saturating_add(advance);
+            let lower = start.min(end).saturating_sub(margin);
+            let upper = start.max(end).saturating_add(margin);
+            (lower..=upper).contains(&position.reported)
+        };
+        // Accept coarser reports once they've clearly moved away from the old playhead.
+        near(self.position, TOLERANCE)
+            || (near(self.position, ROUNDED_TOLERANCE)
+                && self
+                    .previous_position
+                    .is_some_and(|old| !near(old, ROUNDED_TOLERANCE)))
     }
 }
 
 impl Dashboard {
     pub(super) fn follow_media_positions(&self, state: &mut MediaState) {
         for next in &mut state.players {
-            if next.playback != Playback::Playing
-                || self
-                    .pending_seek
-                    .as_ref()
-                    .is_some_and(|seek| seek.matches(next))
-            {
+            if next.playback != Playback::Playing {
+                continue;
+            }
+            if let Some(seek) = self.pending_seek.as_ref().filter(|seek| seek.matches(next)) {
+                if seek.confirmed(next)
+                    && let Some(position) = &mut next.position
+                {
+                    position.start_from(seek.position, seek.requested_at);
+                }
                 continue;
             }
             let previous = self
@@ -91,7 +122,7 @@ impl Dashboard {
                     .media
                     .players
                     .iter()
-                    .any(|player| seek.matches(player) && !seek.confirmed(player, elapsed))
+                    .any(|player| seek.matches(player) && !seek.confirmed(player))
             {
                 self.pending_seek = None;
             }
@@ -118,6 +149,11 @@ impl Dashboard {
         cx: &mut Context<Self>,
     ) {
         let requested_at = Instant::now();
+        let previous_position = self
+            .current_player()
+            .filter(|player| player.id == player_id)
+            .and_then(|player| player.position)
+            .map(|position| position.reported);
         let action = MediaAction::Seek {
             track: track_id.to_owned(),
             position,
@@ -133,6 +169,7 @@ impl Dashboard {
                 player_id: player_id.to_owned(),
                 track_id: track_id.to_owned(),
                 position,
+                previous_position,
                 requested_at,
             });
             self.error = None;
@@ -148,15 +185,16 @@ impl Dashboard {
         let track = player.track.as_ref();
         let length = track.and_then(|track| track.duration);
         let slider_id = seek_id(player, track);
+        let now = Instant::now();
         let current = self
             .pending_seek
             .as_ref()
             .filter(|seek| seek.matches(player))
-            .map(|seek| seek.position)
+            .map(|seek| seek.displayed_position(player, now))
             .or_else(|| {
                 let position = player.position?;
                 Some(if player.playback == Playback::Playing {
-                    position.at(Instant::now(), player.rate)
+                    position.at(now, player.rate)
                 } else {
                     position.reported
                 })
@@ -530,6 +568,58 @@ fn load_image(url: &str) -> anyhow::Result<RenderImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::PlaybackPosition;
+
+    fn seek_fixture() -> (PendingSeek, Player) {
+        let seek = PendingSeek {
+            player_id: "player".into(),
+            track_id: "/track".into(),
+            position: 123_500_000,
+            previous_position: Some(6_000_000),
+            requested_at: Instant::now(),
+        };
+        let player = Player {
+            id: seek.player_id.clone(),
+            app_id: "player".into(),
+            name: "Player".into(),
+            playback: Playback::Playing,
+            track: None,
+            position: None,
+            rate: 1.,
+            can_play: true,
+            can_pause: true,
+            can_previous: false,
+            can_next: false,
+            can_seek: true,
+        };
+        (seek, player)
+    }
+
+    #[test]
+    fn pending_seek_advances_only_while_playing() {
+        let (seek, mut player) = seek_fixture();
+        let now = seek.requested_at + Duration::from_secs(1);
+        assert_eq!(seek.displayed_position(&player, now), 124_500_000);
+        player.playback = Playback::Paused;
+        assert_eq!(seek.displayed_position(&player, now), 123_500_000);
+    }
+
+    #[test]
+    fn seek_confirmation_uses_fresh_reports_and_accepts_rounding() {
+        let (mut seek, mut player) = seek_fixture();
+        let at = seek.requested_at + Duration::from_millis(900);
+        player.position = Some(PlaybackPosition::new(
+            seek.position,
+            seek.requested_at - Duration::from_millis(1),
+        ));
+        assert!(!seek.confirmed(&player));
+        player.position = Some(PlaybackPosition::new(7_000_000, at));
+        assert!(!seek.confirmed(&player));
+        player.position = Some(PlaybackPosition::new(122_000_000, at));
+        assert!(seek.confirmed(&player));
+        seek.previous_position = Some(122_000_000);
+        assert!(!seek.confirmed(&player));
+    }
 
     #[test]
     fn album_thumbnail_crops_to_the_center_at_the_display_size() {

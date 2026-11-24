@@ -167,6 +167,8 @@ pub struct PlaybackPosition {
     anchor: (i64, Instant),
 }
 
+const MAX_POSITION_LEAD: f64 = 3_000_000.;
+
 impl PlaybackPosition {
     pub fn new(reported: i64, sampled_at: Instant) -> Self {
         Self {
@@ -174,6 +176,14 @@ impl PlaybackPosition {
             sampled_at,
             anchor: (reported, sampled_at),
         }
+    }
+
+    pub fn sampled_at(self) -> Instant {
+        self.sampled_at
+    }
+
+    pub fn start_from(&mut self, position: i64, at: Instant) {
+        self.anchor = (position, at);
     }
 
     fn projected(self, now: Instant, rate: f64) -> i64 {
@@ -185,11 +195,13 @@ impl PlaybackPosition {
     pub fn follow(&mut self, previous: Self, rate: f64) {
         let toward = rate.signum() as i64;
         let reported_delta = (self.reported - previous.reported) * toward;
-        let drift = self
-            .reported
-            .abs_diff(previous.projected(self.sampled_at, rate));
-        // Keep a stable clock through repeated or rounded samples. Resync on a jump.
-        if reported_delta == 0 || (reported_delta > 0 && (drift as f64) < rate.abs() * 1_000_000.) {
+        let projected = previous.projected(self.sampled_at, rate);
+        let offset = ((self.reported - projected) * toward) as f64 / rate.abs();
+        // A rounded report can lag behind the display clock after a confirmed seek.
+        // Resync if the report runs ahead or changes direction.
+        if reported_delta == 0
+            || (reported_delta > 0 && (-MAX_POSITION_LEAD..1_000_000.).contains(&offset))
+        {
             self.anchor = previous.anchor;
         }
     }
@@ -197,7 +209,9 @@ impl PlaybackPosition {
     pub fn at(self, now: Instant, rate: f64) -> i64 {
         let projected = self.projected(now, rate);
         // Players can report Playing while position is stalled, for example when buffering.
-        let limit = self.reported.saturating_add((rate * 3_000_000.) as i64);
+        let limit = self
+            .reported
+            .saturating_add((rate * MAX_POSITION_LEAD) as i64);
         if rate > 0. {
             projected.min(limit)
         } else {
@@ -317,5 +331,16 @@ mod tests {
         seek.follow(old, 2.);
         assert_eq!(seek.at(at + Duration::from_millis(500), 2.), 5_000_000);
         assert_eq!(seek.at(at + Duration::from_secs(12), 2.), 10_000_000);
+    }
+
+    #[test]
+    fn rounded_position_reports_keep_the_confirmed_seek_clock_advancing() {
+        let clicked = Instant::now();
+        let mut confirmed =
+            PlaybackPosition::new(142_000_000, clicked + Duration::from_millis(700));
+        confirmed.start_from(142_500_000, clicked);
+        let mut newer = PlaybackPosition::new(144_000_000, clicked + Duration::from_secs(3));
+        newer.follow(confirmed, 1.);
+        assert_eq!(newer.at(clicked + Duration::from_secs(4), 1.), 146_500_000);
     }
 }

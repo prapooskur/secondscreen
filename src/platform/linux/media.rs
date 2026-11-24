@@ -9,7 +9,7 @@ use zbus::{
     MatchRule, Message, MessageStream,
     blocking::{Connection, Proxy, connection::Builder, fdo::DBusProxy},
     message::Type,
-    zvariant::{OwnedObjectPath, OwnedValue},
+    zvariant::{OwnedObjectPath, OwnedValue, Value},
 };
 
 use super::Integration;
@@ -189,7 +189,7 @@ impl Media {
             {
                 player.position = read_position(&properties).or_else(|| {
                     let values: Properties = properties.call("GetAll", &(PLAYER,)).ok()?;
-                    position(integer(&values, "Position")?, Instant::now())
+                    position(integer(values.get("Position")?)?, Instant::now())
                 });
             }
         }
@@ -217,8 +217,22 @@ impl Media {
 
 fn read_player(connection: &Connection, id: &str) -> Result<Player> {
     let properties = Proxy::new(connection, id, PATH, PROPERTIES)?;
-    let values: Properties = properties.call("GetAll", &(PLAYER,))?;
+    let mut values: Properties = properties.call("GetAll", &(PLAYER,))?;
     let sampled_at = Instant::now();
+    let mut track = values.remove("Metadata").and_then(metadata);
+    // GetAll can omit the duration while a direct Metadata read supplies it.
+    if track.as_ref().is_none_or(|track| track.duration.is_none())
+        && let Ok(value) = properties.call("Get", &(PLAYER, "Metadata"))
+        && let Some(current) = metadata(value)
+        && (track.is_none() || current.duration.is_some())
+    {
+        track = Some(current);
+    }
+    // Some players return a stale Position in GetAll, including immediately after a seek.
+    let position = track
+        .as_ref()
+        .and_then(|_| read_position(&properties))
+        .or_else(|| position(integer(values.get("Position")?)?, sampled_at));
     let root: Properties = properties.call("GetAll", &(ROOT,)).unwrap_or_default();
     let name = string(&root, "Identity")
         .map(str::to_owned)
@@ -235,14 +249,6 @@ fn read_player(connection: &Connection, id: &str) -> Result<Player> {
         Some("Paused") => Playback::Paused,
         _ => Playback::Stopped,
     };
-    let track = values
-        .get("Metadata")
-        .and_then(|value| value.try_clone().ok())
-        .and_then(|value| Properties::try_from(value).ok())
-        .and_then(metadata);
-    let position = integer(&values, "Position")
-        .and_then(|value| position(value, sampled_at))
-        .or_else(|| track.as_ref().and_then(|_| read_position(&properties)));
     let rate = values
         .get("Rate")
         .and_then(|value| f64::try_from(value).ok())
@@ -272,7 +278,7 @@ fn position(value: i64, at: Instant) -> Option<PlaybackPosition> {
 
 fn read_position(properties: &Proxy<'_>) -> Option<PlaybackPosition> {
     let value: OwnedValue = properties.call("Get", &(PLAYER, "Position")).ok()?;
-    position(i64::try_from(&value).ok()?, Instant::now())
+    position(integer(&value)?, Instant::now())
 }
 
 fn application_id(bus_name: &str, desktop_entry: Option<&str>) -> String {
@@ -291,7 +297,7 @@ fn application_id(bus_name: &str, desktop_entry: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::application_id;
+    use super::{OwnedValue, Properties, Value, application_id, metadata};
 
     #[test]
     fn application_visibility_uses_the_same_key_across_instances() {
@@ -311,9 +317,34 @@ mod tests {
             "example.Player"
         );
     }
+
+    #[test]
+    fn track_duration_accepts_signed_and_unsigned_microseconds() {
+        let duration = Some(185_000_000);
+        for (length, expected) in [
+            (Some(OwnedValue::from(185_000_000_i64)), duration),
+            (Some(OwnedValue::from(185_000_000_u64)), duration),
+            (Some(OwnedValue::from(185_000_000_i32)), duration),
+            (Some(OwnedValue::from(185_000_000_u32)), duration),
+            (Some(OwnedValue::from(u64::MAX)), None),
+            (Some(OwnedValue::from(-1_i64)), None),
+            (Some(OwnedValue::from(0_i64)), None),
+            (None, None),
+        ] {
+            let mut values = Properties::from([(
+                "xesam:title".into(),
+                OwnedValue::try_from(Value::from("Test track")).unwrap(),
+            )]);
+            if let Some(length) = length {
+                values.insert("mpris:length".into(), length);
+            }
+            assert_eq!(metadata(values.into()).unwrap().duration, expected);
+        }
+    }
 }
 
-fn metadata(values: Properties) -> Option<Track> {
+fn metadata(value: OwnedValue) -> Option<Track> {
+    let values = Properties::try_from(value).ok()?;
     let id = values
         .get("mpris:trackid")
         .and_then(|value| value.try_clone().ok())
@@ -352,7 +383,10 @@ fn metadata(values: Properties) -> Option<Track> {
         album: string(&values, "xesam:album")
             .unwrap_or_default()
             .to_owned(),
-        duration: integer(&values, "mpris:length").filter(|duration| *duration > 0),
+        duration: values
+            .get("mpris:length")
+            .and_then(integer)
+            .filter(|duration| *duration > 0),
         artwork,
     })
 }
@@ -361,8 +395,15 @@ fn string<'a>(values: &'a Properties, key: &str) -> Option<&'a str> {
     <&str>::try_from(values.get(key)?).ok()
 }
 
-fn integer(values: &Properties, key: &str) -> Option<i64> {
-    i64::try_from(values.get(key)?).ok()
+fn integer(value: &OwnedValue) -> Option<i64> {
+    // MPRIS specifies signed 64-bit microseconds. Some players use another integer width.
+    match &**value {
+        Value::I64(value) => Some(*value),
+        Value::U64(value) => i64::try_from(*value).ok(),
+        Value::I32(value) => Some(i64::from(*value)),
+        Value::U32(value) => Some(i64::from(*value)),
+        _ => None,
+    }
 }
 
 fn flag(values: &Properties, key: &str) -> bool {

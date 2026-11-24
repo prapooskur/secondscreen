@@ -264,7 +264,12 @@ impl Dashboard {
                             .iter()
                             .find(|next| next.id == player.id)
                             .is_some_and(|next| {
-                                (next.playback == Playback::Playing && next.position.is_some())
+                                (next.playback == Playback::Playing
+                                    && (next.position.is_some()
+                                        || self
+                                            .pending_seek
+                                            .as_ref()
+                                            .is_some_and(|seek| seek.matches(next))))
                                     || next.position.map(|position| position.reported)
                                         != player.position.map(|position| position.reported)
                             })
