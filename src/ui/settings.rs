@@ -37,15 +37,17 @@ pub(super) enum Section {
     Profiles,
     Notifications,
     Integrations,
+    HomeAssistant,
 }
 
 impl Section {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::General,
         Self::Profiles,
         Self::Widgets,
         Self::Notifications,
         Self::Discord,
+        Self::HomeAssistant,
         Self::Integrations,
         Self::Media,
         Self::Audio,
@@ -63,6 +65,7 @@ impl Section {
             Self::Profiles => ("Profiles", Icon::Edit, TEAL),
             Self::Notifications => ("Notifications", Icon::Bell, BLUE),
             Self::Integrations => ("Integration status", Icon::Activity, TEAL),
+            Self::HomeAssistant => ("Home Assistant", Icon::Home, BLUE),
         }
     }
 
@@ -159,6 +162,7 @@ impl Dashboard {
                 Err(error) => self.set_error(format!("{error:#}"), cx),
             }
         }
+        self.home_assistant.dismiss_picker();
         self.settings.section = section;
         if !self.settings.open {
             self.settings.previous_focus = window.focused(cx);
@@ -169,7 +173,7 @@ impl Dashboard {
         cx.notify();
     }
 
-    fn focus_settings(&self, window: &mut Window, _cx: &mut Context<Self>) {
+    pub(super) fn focus_settings(&self, window: &mut Window, _cx: &mut Context<Self>) {
         #[cfg(feature = "ui-gpui")]
         window.focus(&self.settings.focus);
         #[cfg(not(feature = "ui-gpui"))]
@@ -179,6 +183,7 @@ impl Dashboard {
     pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings.open {
             self.settings.open = false;
+            self.home_assistant.close_settings();
             self.settings.widget_fields = None;
             if !matches!(
                 self.settings.launch_options_copy,
@@ -256,6 +261,7 @@ impl Dashboard {
             Section::General => self.general_settings(cx).into_any_element(),
             Section::Widgets => self.widget_settings(cx).into_any_element(),
             Section::Discord => self.discord_settings(cx).into_any_element(),
+            Section::HomeAssistant => self.home_assistant_settings(cx).into_any_element(),
             Section::Profiles => self.profile_settings(cx).into_any_element(),
             Section::Integrations => self.integration_settings(theme).into_any_element(),
             _ => self.visibility_settings(section, cx).into_any_element(),
@@ -1109,7 +1115,11 @@ impl Dashboard {
         }
     }
 
-    fn save_preferences(&mut self, preferences: Preferences, cx: &mut Context<Self>) -> bool {
+    pub(super) fn save_preferences(
+        &mut self,
+        preferences: Preferences,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let saved = match preferences.save() {
             Ok(()) => {
                 self.preferences = preferences;
@@ -1179,7 +1189,11 @@ fn choice_button(
         }))
 }
 
-fn field(theme: Theme, name: &'static str, input: Entity<TextInput>) -> impl IntoElement {
+pub(super) fn field(
+    theme: Theme,
+    name: &'static str,
+    input: Entity<TextInput>,
+) -> impl IntoElement {
     col()
         .id(name)
         .flex_1()

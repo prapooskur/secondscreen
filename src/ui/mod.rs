@@ -2,6 +2,7 @@ mod audio;
 mod discord;
 mod display;
 mod home;
+mod home_assistant;
 mod icons;
 mod media;
 mod monitor;
@@ -91,6 +92,7 @@ pub struct Dashboard {
     player: Option<String>,
     pending_seek: Option<media::PendingSeek>,
     discord: DiscordState,
+    home_assistant: home_assistant::HomeAssistant,
     viewers: HashMap<u32, gpui::Entity<viewer::Viewer>>,
     controls: Controls,
     focus: FocusHandle,
@@ -181,6 +183,7 @@ impl Dashboard {
             player: None,
             pending_seek: None,
             discord: DiscordState::default(),
+            home_assistant: home_assistant::HomeAssistant::default(),
             viewers: HashMap::new(),
             controls,
             focus,
@@ -491,6 +494,7 @@ impl Render for Dashboard {
             window.is_fullscreen(),
             cx,
         );
+        self.sync_home_assistant(cx);
         let storage_active =
             self.home.shows(Kind::Storage) || self.showing_settings(Section::Storage);
         if storage_active != self.storage_active {

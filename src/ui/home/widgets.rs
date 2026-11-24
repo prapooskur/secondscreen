@@ -29,6 +29,7 @@ impl Kind {
             Self::Weather => "Weather / AQI",
             Self::Notifications => "Notifications",
             Self::Fps => "FPS",
+            Self::HomeAssistant => "Home Assistant",
         }
     }
 
@@ -48,6 +49,7 @@ impl Kind {
             Self::Weather => "Today’s temperature, 10-day forecast, and air quality",
             Self::Notifications => "Recent desktop notifications",
             Self::Fps => "Current FPS, 1% low, and 0.1% low",
+            Self::HomeAssistant => "Smart home controls",
         }
     }
 
@@ -67,6 +69,7 @@ impl Kind {
             Self::Weather => Icon::Cloud,
             Self::Notifications => Icon::Bell,
             Self::Fps => Icon::Gauge,
+            Self::HomeAssistant => Icon::Home,
         }
     }
 
@@ -82,6 +85,7 @@ impl Kind {
             Self::Weather => AMBER,
             Self::Notifications => BLUE,
             Self::Fps => TEAL,
+            Self::HomeAssistant => BLUE,
         }
     }
 }
@@ -117,6 +121,9 @@ impl Dashboard {
             Kind::Notifications => self.notification_widget(theme).into_any_element(),
             Kind::Fps => self
                 .fps_widget(tile.widget.id, theme, width, height)
+                .into_any_element(),
+            Kind::HomeAssistant => self
+                .home_assistant_widget(tile.widget.id, height, cx)
                 .into_any_element(),
             Kind::Viewer => div()
                 .flex()

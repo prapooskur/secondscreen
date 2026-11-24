@@ -27,6 +27,8 @@ pub struct Preferences {
     pub hidden_notification_apps: BTreeMap<String, String>,
     pub hide_notification_bodies: bool,
     pub discord: Option<DiscordCredentials>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub home_assistant: Option<HomeAssistantCredentials>,
 }
 
 #[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq, Serialize)]
@@ -102,6 +104,43 @@ impl DiscordCredentials {
 
 fn valid_credential(value: &str) -> bool {
     !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_graphic())
+}
+
+#[derive(Clone, Deserialize, PartialEq, Eq, Serialize)]
+pub struct HomeAssistantCredentials {
+    pub url: String,
+    pub token: String,
+}
+
+impl HomeAssistantCredentials {
+    pub fn from_input(address: &str, token: &str) -> Result<Self> {
+        let address = address.trim();
+        let mut url = url::Url::parse(address)
+            .ok()
+            .filter(|url| {
+                matches!(url.scheme(), "http" | "https")
+                    && url.host().is_some()
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && url.query().is_none()
+                    && url.fragment().is_none()
+            })
+            .context("Enter the Home Assistant base URL, including http:// or https://.")?;
+        if url.path().ends_with('/') {
+            url.path_segments_mut()
+                .expect("HTTP URLs have path segments")
+                .pop_if_empty();
+        }
+        let token = token.trim();
+        ensure!(
+            valid_credential(token),
+            "Enter a Home Assistant long-lived access token."
+        );
+        Ok(Self {
+            url: url.into(),
+            token: token.to_owned(),
+        })
+    }
 }
 
 fn setting(name: &str) -> Option<String> {

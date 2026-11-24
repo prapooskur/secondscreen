@@ -1,4 +1,5 @@
 use super::options::SensorOptions;
+use crate::ui::home_assistant::Binding;
 use crate::viewer::ViewerOptions;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -25,10 +26,11 @@ pub(in crate::ui) enum Kind {
     Weather,
     Notifications,
     Fps,
+    HomeAssistant,
 }
 
 impl Kind {
-    pub(super) const ALL: [Self; 14] = [
+    pub(super) const ALL: [Self; 15] = [
         Self::Performance,
         Self::Media,
         Self::Audio,
@@ -43,10 +45,11 @@ impl Kind {
         Self::Weather,
         Self::Notifications,
         Self::Fps,
+        Self::HomeAssistant,
     ];
 
     pub(super) fn repeatable(self) -> bool {
-        matches!(self, Self::Performance | Self::Viewer)
+        matches!(self, Self::Performance | Self::Viewer | Self::HomeAssistant)
     }
 
     pub(super) fn widget(self) -> Widget {
@@ -54,7 +57,11 @@ impl Kind {
             id: self as u32 + 1,
             kind: self,
             columns: 1,
-            rows: VISIBLE_ROWS,
+            rows: if self == Self::HomeAssistant {
+                MIN_ROWS
+            } else {
+                VISIBLE_ROWS
+            },
         }
     }
 }
@@ -75,6 +82,8 @@ pub(super) struct Layout {
     pub sensors: BTreeMap<u32, SensorOptions>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub viewers: BTreeMap<u32, ViewerOptions>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub home_assistant: BTreeMap<u32, Binding>,
 }
 
 impl Default for Layout {
@@ -94,6 +103,7 @@ impl Layout {
             widgets: Vec::new(),
             sensors: BTreeMap::new(),
             viewers: BTreeMap::new(),
+            home_assistant: BTreeMap::new(),
         }
     }
 
@@ -124,6 +134,11 @@ impl Layout {
             self.widgets
                 .iter()
                 .any(|w| w.id == *id && w.kind == Kind::Viewer)
+        });
+        self.home_assistant.retain(|id, _| {
+            self.widgets
+                .iter()
+                .any(|w| w.id == *id && w.kind == Kind::HomeAssistant)
         });
     }
 

@@ -143,6 +143,10 @@ impl Home {
         (index, &self.profiles.items[index])
     }
 
+    pub(super) fn home_assistant_binding(&self, id: u32) -> Option<&super::home_assistant::Binding> {
+        self.layout().home_assistant.get(&id)
+    }
+
     fn layout(&self) -> &Layout {
         &self.active_profile().1.layout
     }
@@ -681,6 +685,9 @@ impl Dashboard {
         let name = match widget.kind {
             Kind::Performance => return Some(self.sensor_button(widget.id, cx).into_any_element()),
             Kind::Notifications => return Some(self.clear_notifications(cx).into_any_element()),
+            Kind::HomeAssistant => {
+                return Some(self.choose_home_assistant(widget.id, "Entity", cx).into_any_element());
+            }
             Kind::Viewer => {
                 return self.viewers.get(&widget.id).map(|viewer| {
                     super::viewer::source_button(viewer.clone(), cx).into_any_element()
@@ -757,6 +764,7 @@ impl Dashboard {
                             layout.widgets.retain(|widget| widget.id != id);
                             layout.sensors.remove(&id);
                             layout.viewers.remove(&id);
+                            layout.home_assistant.remove(&id);
                             this.viewers.remove(&id);
                             super::monitor::discard_charts(Some(id), window, cx);
                             this.home.sensor_editor = None;
@@ -977,17 +985,49 @@ impl Dashboard {
         self.save_home(cx);
     }
 
-    fn save_home(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn set_home_assistant_binding(
+        &mut self,
+        profile: usize,
+        id: u32,
+        binding: super::home_assistant::Binding,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.home.active_profile().0 != profile {
+            return false;
+        }
+        let layout = self.home.layout_mut();
+        if !layout
+            .widgets
+            .iter()
+            .any(|w| w.id == id && w.kind == Kind::HomeAssistant)
+        {
+            return false;
+        }
+        let previous = layout.home_assistant.insert(id, binding);
+        if self.save_home(cx) {
+            return true;
+        }
+        let bindings = &mut self.home.layout_mut().home_assistant;
+        if let Some(previous) = previous {
+            bindings.insert(id, previous);
+        } else {
+            bindings.remove(&id);
+        }
+        false
+    }
+
+    fn save_home(&mut self, cx: &mut Context<Self>) -> bool {
         let result = self
             .home
             .path
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("Home profiles have no configuration directory."))
             .and_then(|path| self.home.profiles.write(path));
-        if let Err(error) = result {
+        if let Err(error) = &result {
             self.set_error(format!("{error:#}"), cx);
         }
         cx.notify();
+        result.is_ok()
     }
 }
 

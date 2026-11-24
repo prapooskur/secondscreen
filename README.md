@@ -8,6 +8,7 @@ The app opens to a single resizable widget grid. Use **Edit layout** in the righ
 - **Now playing** shows track details, album art, and playback controls. When multiple players are available, use the tabs at the top of the widget to switch between them. Make the widget at least three rows tall to see the seek bar.
 - **Audio** adjusts device volume and mute and lets you set the default output or microphone. Add **App mixer** to adjust playback and recording streams using app icons, mute buttons, and volume sliders. Hover over an icon to see the app and stream names.
 - **Discord** shows a green ring around each speaker’s avatar and a **LIVE** badge when the desktop client reports a Go Live stream. The widget also provides controls to connect, mute, deafen, and leave a call.
+- **Home Assistant** shows the state of a selected entity and lets you control it from the dashboard.
 - **Viewer** displays web pages, iframes, YouTube, Twitch, and local media inside the grid. Discord voice channel links open in Discord.
 
 ## Install on Linux
@@ -79,6 +80,14 @@ Home fits four grid rows and up to five columns in the visible area. Widgets can
 In **Edit layout**, choose **Sensors** on a Performance tile. **Chart** plots one sensor over the last 60 samples. **2 sensors** shows two readings, each with its own units and graph scale. Select a slot, then choose its sensor. **List** lets you toggle individual readings. Choose **Done** on the tile to return to the live view.
 
 The picker includes CPU and per-core load, memory, GPU load and VRAM where the graphics driver reports them, and Linux hardware-monitor channels such as temperatures, fan speeds, voltages, and power. Add Performance again to keep a chart and a sensor list visible together. Each tile saves its selections and size independently.
+
+## Control Home Assistant devices
+
+In your Home Assistant profile, open **Security** and create a **Long-lived access token**. In Second Screen, open **Settings → Home Assistant**, enter the server URL (for example, `http://homeassistant.local:8123`) and token, then choose **Connect**. Second Screen checks the connection before saving the credentials in its user-only `settings.json` file.
+
+Open **Edit layout → Add widget → Home Assistant**. Choose **Entity** on the tile, then search by name or entity ID and select it. Add another tile for each entity you want to control. Selections are saved per tile and profile.
+
+The controls depend on the entity. For example, you can switch devices on or off, dim lights, change fan speed, adjust a thermostat, operate covers and locks, and activate scenes or scripts. Tiles refresh when entities change in Home Assistant.
 
 ## Watch video and streams
 
