@@ -5,7 +5,7 @@ Second Screen is a Rust and GPUI dashboard for ultrawide secondary monitors. It 
 The app opens to a single resizable widget grid. Use **Edit layout** in the right-hand rail to choose the widgets on your display. **Settings** opens over the grid. Click outside it or press **Esc** to return to the dashboard.
 
 - **Performance** shows selected sensors as a chart, a pair, or a list. **Memory** and **Network** show live system readings and usage history. **Storage** shows each drive's capacity and the space used by mounted filesystems that can be attributed to that drive.
-- **Now playing** shows track details, album art, and playback controls. When multiple players are available, choose **Edit layout** and click the player name at the top of the widget to switch. Make the widget at least three rows tall to see the seek bar.
+- **Now playing** shows track details, album art, and playback controls. When multiple players are available, use the tabs at the top of the widget to switch between them. Make the widget at least three rows tall to see the seek bar.
 - **Audio** adjusts device volume and mute and lets you set the default output or microphone. Add **App mixer** to adjust playback and recording streams using app icons, mute buttons, and volume sliders. Hover over an icon to see the app and stream names.
 - **Discord** shows a green ring around each speaker’s avatar and a **LIVE** badge when the desktop client reports a Go Live stream. The widget also provides controls to connect, mute, deafen, and leave a call.
 - **Viewer** displays web pages, iframes, YouTube, Twitch, and local media inside the grid. Discord voice channel links open in Discord.

@@ -78,6 +78,23 @@ impl Utilities {
         self.fps_error = error;
         redraw
     }
+
+    fn record_weather(&mut self, mut report: weather::Report) {
+        let forecast_updated = report.weather.is_some();
+        if !forecast_updated {
+            report.weather = self
+                .report
+                .as_mut()
+                .and_then(|previous| previous.weather.take());
+        }
+        let showing_last_forecast = !forecast_updated && report.weather.is_some();
+        if !showing_last_forecast {
+            self.weather_at = Some(Instant::now());
+        }
+        self.weather_error = showing_last_forecast
+            .then(|| "Forecast refresh failed · showing the last forecast".into());
+        self.report = Some(report);
+    }
 }
 
 #[cfg(test)]
@@ -201,7 +218,9 @@ impl Dashboard {
                 let result = blocking::unblock(move || weather::fetch(&query, known)).await;
                 let complete = result.as_ref().is_ok_and(|r| {
                     r.weather.as_ref().is_some_and(|w| {
-                        w.current.is_some() && !w.days.is_empty() && w.has_hourly_temperatures()
+                        w.current.is_some()
+                            && w.days.len() == weather::FORECAST_DAYS
+                            && w.has_hourly_temperatures()
                     }) && r.aqi.is_some()
                 });
                 if this
@@ -209,9 +228,7 @@ impl Dashboard {
                         match result {
                             Ok(report) => {
                                 place = Some(report.place.clone());
-                                this.utilities.report = Some(report);
-                                this.utilities.weather_at = Some(Instant::now());
-                                this.utilities.weather_error = None;
+                                this.utilities.record_weather(report);
                             }
                             Err(e) => {
                                 this.utilities.weather_error =

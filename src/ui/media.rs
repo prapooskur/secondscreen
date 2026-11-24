@@ -8,8 +8,8 @@ use image::{Frame, ImageBuffer, Rgba, imageops};
 
 use crate::model::{Artwork, MediaAction, MediaState, Playback, Player, Track};
 use gpui::{
-    AnyElement, App, Asset, Context, Global, Img, ImgResourceLoader, IntoElement, ObjectFit,
-    RenderImage, Styled, Window, div, img, prelude::*,
+    App, Asset, Context, Div, FontWeight, Global, Img, ImgResourceLoader, IntoElement, ObjectFit,
+    RenderImage, SharedString, Styled, Window, div, img, prelude::*,
 };
 
 use super::{
@@ -22,6 +22,9 @@ use super::{
 const SEEK_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_ALBUM_SIDE: u32 = 768;
 const MAX_ALBUM_BYTES: usize = 8 * 1024 * 1024;
+pub(super) const MEDIA_TAB_HEIGHT: f32 = 30.;
+const MIN_MEDIA_TAB_WIDTH: f32 = 64.;
+const MEDIA_TAB_PADDING: f32 = 10.;
 
 pub(super) struct PendingSeek {
     player_id: String,
@@ -326,46 +329,76 @@ impl Dashboard {
             .child(direction("next", Icon::Next, player.can_next, true))
     }
 
-    pub(super) fn player_control(&self, cx: &Context<Self>) -> Option<AnyElement> {
-        let theme = Theme::current(cx);
+    pub(super) fn media_tabs(&self, width: f32, cx: &Context<Self>) -> Option<Div> {
         let active = self.current_player()?;
-        let mut players = self.visible_players();
-        players.find(|player| player.id == active.id)?;
-        let next = players.next().or_else(|| self.visible_players().next())?;
-        if next.id == active.id {
-            return Some(
-                theme
-                    .quiet(active.name.clone())
-                    .max_w(gpui::relative(0.48))
-                    .truncate()
-                    .into_any_element(),
-            );
+        let players: Vec<_> = self.visible_players().collect();
+        if players.len() < 2 {
+            return None;
         }
+        let theme = Theme::current(cx);
         let view = cx.entity();
-        let id = next.id.clone();
-        Some(
-            theme
-                .bind(
-                    theme
-                        .button("switch-player", None)
-                        .h(r(27.))
-                        .max_w(gpui::relative(0.48))
-                        .px(r(6.))
-                        .child(div().truncate().child(active.name.clone()))
-                        .child(icon(Icon::Chevron, theme.color(TEXT), 12.))
-                        .tooltip(|_, cx| {
-                            cx.new(|_| super::Tooltip("Switch media player".into()))
-                                .into()
-                        }),
-                    move |_, cx| {
-                        view.update(cx, |this, cx| {
-                            this.player = Some(id.clone());
-                            this.gesture.borrow_mut().take();
-                            cx.notify();
+        let overflow = players.len() as f32 * MIN_MEDIA_TAB_WIDTH + 2. * MEDIA_TAB_PADDING > width;
+        let tabs = players.into_iter().map(|player| {
+            let selected = player.id == active.id;
+            let id = player.id.clone();
+            let view = view.clone();
+            let name = SharedString::from(player.name.clone());
+            theme.bind(
+                row()
+                    .id(SharedString::from(id.clone()))
+                    .flex_1()
+                    .min_w(r(MIN_MEDIA_TAB_WIDTH))
+                    .max_w(r(144.))
+                    .h_full()
+                    .justify_center()
+                    .px(r(8.))
+                    .border_b(r(2.))
+                    .border_color(theme.color(HEADER).opacity(0.))
+                    .text_size(r(12.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.color(TEXT))
+                    .hover(move |it| {
+                        it.bg(if selected {
+                            theme.color(PINK).opacity(0.2)
+                        } else {
+                            theme.color(HOVER)
                         })
-                    },
-                )
-                .into_any_element(),
+                    })
+                    .when(selected, |it| {
+                        it.bg(theme.color(PINK).opacity(0.12))
+                            .border_color(theme.color(PINK))
+                            .text_color(theme.color(PINK))
+                    })
+                    .child(div().min_w_0().truncate().child(name.clone()))
+                    .tooltip(move |_, cx| cx.new(|_| super::Tooltip(name.clone())).into()),
+                move |_, cx| {
+                    view.update(cx, |this, cx| {
+                        if this.player.as_ref() != Some(&id) {
+                            this.player = Some(id.clone());
+                            this.update_seek();
+                            cx.notify();
+                        }
+                    })
+                },
+            )
+        });
+        Some(
+            row()
+                .h(r(MEDIA_TAB_HEIGHT))
+                .flex_none()
+                .px(r(MEDIA_TAB_PADDING))
+                .rounded_t(r(13.))
+                .bg(theme.color(HEADER))
+                .border_b_1()
+                .border_color(theme.color(STROKE))
+                .child(
+                    row()
+                        .id("media-tabs")
+                        .flex_1()
+                        .h_full()
+                        .when(overflow, |it| it.overflow_x_scroll().occlude())
+                        .children(tabs),
+                ),
         )
     }
 }

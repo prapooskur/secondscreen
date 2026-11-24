@@ -19,6 +19,7 @@ use self::profiles::{Profile, Profiles};
 use super::{
     Dashboard, Tooltip,
     icons::{Icon, icon},
+    media::MEDIA_TAB_HEIGHT,
     theme::*,
 };
 
@@ -279,8 +280,9 @@ impl Dashboard {
             col()
                 .flex_1()
                 .relative()
-                .child(viewport)
+                // Widgets with their own horizontal scrolling can intercept this hitbox.
                 .children(scrolling.map(|scroll| self.track_home_scroll(scroll.limit)))
+                .child(viewport)
                 .into_any_element()
         };
 
@@ -621,8 +623,16 @@ impl Dashboard {
         let editing = self.home.editing;
         let height = grid.span_height(usize::from(tile.rows));
         let width = grid.span_width(usize::from(tile.columns));
-        let (padding, gap) = if height < 155. { (8., 6.) } else { (13., 11.) };
-        let mut content_height = height - 2. * (padding + 1.);
+        let tabs = (kind == Kind::Media)
+            .then(|| self.media_tabs(width - 2., cx))
+            .flatten();
+        let body_height = height - if tabs.is_some() { MEDIA_TAB_HEIGHT } else { 0. };
+        let (padding, gap) = if body_height < 155. {
+            (8., 6.)
+        } else {
+            (13., 11.)
+        };
+        let mut content_height = body_height - 2. * (padding + 1.);
         if editing {
             content_height -= 2. * (WIDGET_CONTROL_HEIGHT + gap);
         }
@@ -634,29 +644,36 @@ impl Dashboard {
             .left(r(tile.x as f32 * (grid.width + GAP)))
             .w(r(width))
             .h(r(height))
-            .p(r(padding))
-            .gap(r(gap))
             .overflow_hidden()
             .when(editing, |it| {
                 it.border_color(theme.color(kind.accent()).opacity(0.42))
-                    .child(self.widget_edit_header(tile.widget, index, count, cx))
             })
-            .child(col().flex_1().overflow_hidden().child(self.widget_content(
-                tile,
-                width - 2. * (padding + 1.),
-                content_height,
-                cx,
-            )))
-            .when(editing, |it| {
-                it.child(
-                    row()
-                        .justify_between()
-                        .gap(r(6.))
-                        .flex_none()
-                        .child(self.widget_size_controls(tile, grid.columns, cx))
-                        .child(self.resize_handle(tile.widget, grid, scale, cx)),
-                )
-            })
+            .children(tabs)
+            .child(
+                col()
+                    .flex_1()
+                    .p(r(padding))
+                    .gap(r(gap))
+                    .when(editing, |it| {
+                        it.child(self.widget_edit_header(tile.widget, index, count, cx))
+                    })
+                    .child(col().flex_1().overflow_hidden().child(self.widget_content(
+                        tile,
+                        width - 2. * (padding + 1.),
+                        content_height,
+                        cx,
+                    )))
+                    .when(editing, |it| {
+                        it.child(
+                            row()
+                                .justify_between()
+                                .gap(r(6.))
+                                .flex_none()
+                                .child(self.widget_size_controls(tile, grid.columns, cx))
+                                .child(self.resize_handle(tile.widget, grid, scale, cx)),
+                        )
+                    }),
+            )
     }
 
     fn widget_control(&self, widget: Widget, cx: &Context<Self>) -> Option<AnyElement> {
@@ -669,7 +686,6 @@ impl Dashboard {
                     super::viewer::source_button(viewer.clone(), cx).into_any_element()
                 });
             }
-            Kind::Media => return self.player_control(cx),
             Kind::WorldClock => "Zones",
             Kind::Weather => "Location",
             Kind::Fps => "Setup",

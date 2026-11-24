@@ -264,12 +264,6 @@ fn daily_forecast(
     let span = (high - low).max(1.);
     let start = (low + high - span) * 0.5;
     let normalize = |temperature: f32| ((temperature - start) / span).clamp(0., 1.);
-    let list = list.child(
-        theme
-            .label(format!("{}-day forecast", weather.days.len()))
-            .text_color(theme.color(INK))
-            .pb(r(3.)),
-    );
     list.children(weather.days.iter().map(|day| {
         let today = Some(day.date) == weather.today;
         let name = if today {

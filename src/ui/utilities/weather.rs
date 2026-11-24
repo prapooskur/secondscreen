@@ -1,7 +1,10 @@
 use anyhow::{Context, Result, ensure};
 use jiff::civil::{Date, DateTime, Time};
-use reqwest::blocking::Client;
-use serde::Deserialize;
+use reqwest::{
+    StatusCode,
+    blocking::{Client, RequestBuilder},
+};
+use serde::{Deserialize, de::DeserializeOwned};
 use std::time::Duration;
 
 const GEOCODING: &str = "https://geocoding-api.open-meteo.com/v1/search";
@@ -9,6 +12,8 @@ const FORECAST: &str = "https://api.open-meteo.com/v1/forecast";
 const AIR_QUALITY: &str = "https://air-quality-api.open-meteo.com/v1/air-quality";
 const CURRENT_FIELDS: &str = "temperature_2m,weather_code,is_day,wind_speed_10m";
 const DAILY_FIELDS: &str = "weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset";
+const SHORT_TIMEOUT: Duration = Duration::from_secs(8);
+const FORECAST_TIMEOUT: Duration = Duration::from_secs(15);
 pub(super) const FORECAST_DAYS: usize = 10;
 pub(super) const HOURS_PER_DAY: usize = 24;
 
@@ -46,6 +51,26 @@ struct Matches {
     results: Vec<Place>,
 }
 
+fn get_json<T: DeserializeOwned>(request: RequestBuilder, service: &str) -> Result<T> {
+    request
+        .send()
+        .and_then(|response| response.error_for_status()?.json())
+        .map_err(|error| {
+            let message = if let Some(status) = error.status() {
+                format!("{service} returned HTTP {}", status.as_u16())
+            } else if error.is_timeout() {
+                format!("{service} timed out")
+            } else if error.is_decode() {
+                format!("{service} returned an invalid response")
+            } else {
+                format!("Could not reach {service}")
+            };
+            let error = anyhow::Error::new(error.without_url());
+            log::warn!("{message} · {error:#}");
+            error.context(format!("{message}."))
+        })
+}
+
 fn locate(client: &Client, query: &str) -> Result<Place> {
     if let Some((latitude, longitude)) = coordinates(query)? {
         return Ok(Place {
@@ -55,14 +80,11 @@ fn locate(client: &Client, query: &str) -> Result<Place> {
             country: String::new(),
         });
     }
-    let mut found = client
+    let request = client
         .get(GEOCODING)
-        .query(&[("name", query), ("count", "1")])
-        .send()
-        .and_then(|r| r.error_for_status())
-        .context("Location lookup unavailable. Try again later or enter coordinates.")?
-        .json::<Matches>()
-        .context("Invalid response from the location service.")?
+        .timeout(SHORT_TIMEOUT)
+        .query(&[("name", query), ("count", "1")]);
+    let mut found = get_json::<Matches>(request, "Open-Meteo location lookup")?
         .results
         .into_iter()
         .next()
@@ -74,8 +96,8 @@ fn locate(client: &Client, query: &str) -> Result<Place> {
 }
 
 #[derive(Deserialize)]
-struct Current<T> {
-    current: T,
+struct AirResponse {
+    current: Option<Air>,
 }
 #[derive(Default, Deserialize)]
 pub(super) struct Conditions {
@@ -210,7 +232,7 @@ impl ForecastResponse {
 
 #[derive(Deserialize)]
 struct Air {
-    us_aqi: f32,
+    us_aqi: Option<f32>,
 }
 
 pub(super) struct Report {
@@ -220,7 +242,10 @@ pub(super) struct Report {
 }
 
 pub(super) fn fetch(query: &str, known: Option<Place>) -> Result<Report> {
-    let client = Client::builder().timeout(Duration::from_secs(8)).build()?;
+    let client = Client::builder()
+        .timeout(FORECAST_TIMEOUT)
+        .build()
+        .context("Could not initialize the weather connection.")?;
     let place = match known {
         Some(p) => p,
         None => locate(&client, query)?,
@@ -234,30 +259,52 @@ fn fetch_at(client: &Client, place: Place, forecast: &str, air_quality: &str) ->
             .get(url)
             .query(&[("latitude", place.latitude), ("longitude", place.longitude)])
     };
-    let weather = request(forecast)
-        .query(&[
-            ("timezone", "auto"),
-            ("current", CURRENT_FIELDS),
-            ("daily", DAILY_FIELDS),
-            ("hourly", "temperature_2m"),
-            ("temperature_unit", "celsius"),
-            ("wind_speed_unit", "kmh"),
-        ])
-        .query(&[("forecast_days", FORECAST_DAYS)])
-        .send()
-        .and_then(|r| r.error_for_status()?.json::<ForecastResponse>())
+    let forecast_request = |days| {
+        request(forecast)
+            .query(&[
+                ("timezone", "auto"),
+                ("current", CURRENT_FIELDS),
+                ("daily", DAILY_FIELDS),
+                ("hourly", "temperature_2m"),
+                ("temperature_unit", "celsius"),
+                ("wind_speed_unit", "kmh"),
+            ])
+            .query(&[
+                ("forecast_days", days),
+                ("forecast_hours", HOURS_PER_DAY),
+                ("initial_hours", 0),
+            ])
+    };
+    let forecast_response =
+        get_json::<ForecastResponse>(forecast_request(FORECAST_DAYS), "Open-Meteo forecast")
+            .or_else(|error| {
+                if error.downcast_ref::<reqwest::Error>().is_some_and(|cause| {
+                    cause.is_timeout() || cause.status() == Some(StatusCode::GATEWAY_TIMEOUT)
+                }) {
+                    get_json(
+                        forecast_request(1).timeout(SHORT_TIMEOUT),
+                        "Open-Meteo one-day forecast",
+                    )
+                } else {
+                    Err(error)
+                }
+            });
+    let weather = forecast_response.and_then(|response| {
+        response
+            .weather()
+            .context("Open-Meteo returned no forecast data.")
+    });
+    let air_request = request(air_quality)
+        .timeout(SHORT_TIMEOUT)
+        .query(&[("current", "us_aqi")]);
+    let aqi = get_json::<AirResponse>(air_request, "Open-Meteo air quality")
         .ok()
-        .and_then(ForecastResponse::weather);
-    let aqi = request(air_quality)
-        .query(&[("current", "us_aqi")])
-        .send()
-        .and_then(|r| r.error_for_status()?.json::<Current<Air>>())
-        .ok()
-        .map(|v| v.current.us_aqi);
-    ensure!(
-        weather.is_some() || aqi.is_some(),
-        "Weather and air quality are unavailable."
-    );
+        .and_then(|response| response.current?.us_aqi);
+    let weather = if aqi.is_some() {
+        weather.ok()
+    } else {
+        Some(weather?)
+    };
     Ok(Report {
         place,
         weather,
@@ -320,8 +367,23 @@ mod tests {
     use super::*;
     use std::{
         io::{BufRead, BufReader, Write},
-        net::TcpListener,
+        net::{TcpListener, TcpStream},
     };
+
+    fn request_line(conn: &TcpStream) -> String {
+        let mut request = String::new();
+        BufReader::new(conn).read_line(&mut request).unwrap();
+        request
+    }
+
+    fn respond(mut conn: TcpStream, status: &str, response: &str) {
+        write!(
+            conn,
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+            response.len()
+        )
+        .unwrap();
+    }
 
     #[test]
     fn weather_and_air_quality_can_update_independently() {
@@ -345,37 +407,35 @@ mod tests {
                     "sunset":["2026-12-28T15:58",null]
                 }
             }"#;
-            for response in [
-                forecast,
-                r#"{"current":{"us_aqi":42}}"#,
-                forecast,
-                r#"{"current":{"us_aqi":null}}"#,
-                r#"{"current":null,"daily":null}"#,
-                r#"{"current":{"us_aqi":52}}"#,
+            for (path, status, response) in [
+                ("/forecast", "200 OK", forecast),
+                ("/air", "200 OK", r#"{"current":{"us_aqi":42}}"#),
+                ("/forecast", "200 OK", forecast),
+                ("/air", "200 OK", r#"{"current":{"us_aqi":null}}"#),
+                ("/forecast", "503 Service Unavailable", "{}"),
+                ("/air", "200 OK", r#"{"current":{"us_aqi":52}}"#),
+                ("/forecast", "403 Forbidden", "{}"),
+                ("/air", "200 OK", r#"{"current":null}"#),
             ] {
-                let (mut conn, _) = server.accept().unwrap();
-                let mut request = String::new();
-                BufReader::new(&conn).read_line(&mut request).unwrap();
+                let (conn, _) = server.accept().unwrap();
+                let request = request_line(&conn);
+                assert!(request.starts_with(&format!("GET {path}?")));
                 assert!(request.contains("latitude=51.5") && request.contains("longitude=-0.12"));
-                if response.contains("us_aqi") {
+                if path == "/air" {
                     assert!(request.contains("current=us_aqi"));
                 } else {
                     assert!(
                         request.contains("timezone=auto") && request.contains("forecast_days=10")
                     );
                     assert!(request.contains("hourly=temperature_2m"));
+                    assert!(request.contains("forecast_hours=24"));
+                    assert!(request.contains("initial_hours=0"));
                     assert!(
                         request.contains("current=temperature_2m%2Cweather_code%2Cis_day%2Cwind_speed_10m")
                             && request.contains("daily=weather_code%2Ctemperature_2m_max%2Ctemperature_2m_min%2Csunrise%2Csunset")
                     );
                 }
-                write!(
-                    &mut conn,
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    response.len(),
-                    response
-                )
-                .unwrap();
+                respond(conn, status, response);
             }
         });
         let client = Client::builder()
@@ -384,11 +444,14 @@ mod tests {
             .build()
             .unwrap();
         let place = locate(&client, "51.5, -0.12").unwrap();
+        let forecast = format!("{base}/forecast");
+        let air = format!("{base}/air");
+        let mut utilities = super::super::Utilities::default();
         for expected in [Some(42.), None] {
-            let report = fetch_at(&client, place.clone(), &base, &base).unwrap();
+            let report = fetch_at(&client, place.clone(), &forecast, &air).unwrap();
             assert_eq!(report.aqi, expected);
-            let weather = report.weather.unwrap();
-            let current = weather.current.unwrap();
+            let weather = report.weather.as_ref().unwrap();
+            let current = weather.current.as_ref().unwrap();
             assert_eq!(current.temperature_2m, Some(12.5));
             assert_eq!(current.wind_speed_10m, Some(16.));
             assert_eq!(weather.days.len(), FORECAST_DAYS);
@@ -412,12 +475,66 @@ mod tests {
             assert_eq!(weather.days[2].high, Some(12.));
             assert_eq!(weather.days[2].weather_code, Some(63));
             assert_eq!(weather.days[9].date.to_string(), "2027-01-06");
+            utilities.record_weather(report);
         }
-        let air_only = fetch_at(&client, place, &base, &base).unwrap();
+        let air_only = fetch_at(&client, place.clone(), &forecast, &air).unwrap();
         assert!(air_only.weather.is_none());
-        assert_eq!(air_only.aqi, Some(52.));
+        let forecast_at = utilities.weather_at;
+        utilities.record_weather(air_only);
+        let combined = utilities.report.unwrap();
+        assert_eq!(combined.aqi, Some(52.));
+        assert_eq!(combined.weather.unwrap().days.len(), FORECAST_DAYS);
+        assert_eq!(utilities.weather_at, forecast_at);
+        assert!(utilities.weather_error.is_some());
+        let Err(error) = fetch_at(&client, place, &forecast, &air) else {
+            panic!("a denied forecast and missing AQI should fail");
+        };
+        assert_eq!(error.to_string(), "Open-Meteo forecast returned HTTP 403.");
+        assert!(!format!("{error:#}").contains("latitude="));
         worker.join().unwrap();
         assert!(coordinates("91, 10").is_err());
+    }
+
+    #[test]
+    fn forecast_timeout_falls_back_to_today() {
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", server.local_addr().unwrap());
+        let worker = std::thread::spawn(move || {
+            let (stalled, _) = server.accept().unwrap();
+            assert!(request_line(&stalled).contains("forecast_days=10&"));
+
+            // Keep the first connection open until the client times out and retries.
+            let (fallback, _) = server.accept().unwrap();
+            drop(stalled);
+            assert!(request_line(&fallback).contains("forecast_days=1&"));
+            respond(
+                fallback,
+                "200 OK",
+                r#"{"current":{"temperature_2m":12.5},"daily":{"time":["2026-12-28"]}}"#,
+            );
+
+            let (air, _) = server.accept().unwrap();
+            assert!(request_line(&air).starts_with("GET /air?"));
+            respond(air, "200 OK", r#"{"current":{"us_aqi":42}}"#);
+        });
+        let client = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_millis(500))
+            .build()
+            .unwrap();
+        let place = locate(&client, "51.5, -0.12").unwrap();
+        let report = fetch_at(
+            &client,
+            place,
+            &format!("{base}/forecast"),
+            &format!("{base}/air"),
+        )
+        .unwrap();
+        let weather = report.weather.unwrap();
+        assert_eq!(weather.days.len(), 1);
+        assert_eq!(weather.current.unwrap().temperature_2m, Some(12.5));
+        assert_eq!(report.aqi, Some(42.));
+        worker.join().unwrap();
     }
 
     #[test]
