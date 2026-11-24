@@ -101,9 +101,9 @@ impl Dashboard {
         }
         if in_flatpak() {
             return (
-                "Waiting for data",
-                "Host games may write to a runtime directory this Flatpak cannot see. Use a native package if the host feed stays blank.".into(),
-                AMBER,
+                "Waiting for a game",
+                "Install MangoHud for your game’s runtime and use the launch options from Settings → Widgets.".into(),
+                MUTED,
             );
         }
         if !setup.mangohud && !setup.gamescope {

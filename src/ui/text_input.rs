@@ -1,12 +1,25 @@
 use std::ops::Range;
 
 use gpui::{
-    Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase, FocusHandle, HitboxBehavior,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, Render, TextRun, Window, canvas, fill,
-    point, prelude::*, px, size,
+    Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase, Entity, FocusHandle,
+    HitboxBehavior, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, Render, TextRun,
+    Window, canvas, fill, point, prelude::*, px, size,
 };
 
 use super::theme::*;
+
+pub(super) fn field(
+    theme: Theme,
+    name: &'static str,
+    input: Entity<TextInput>,
+) -> impl IntoElement {
+    col()
+        .id(name)
+        .flex_1()
+        .gap(r(4.))
+        .child(theme.label(name))
+        .child(input)
+}
 
 pub(super) struct TextInput {
     pub value: String,

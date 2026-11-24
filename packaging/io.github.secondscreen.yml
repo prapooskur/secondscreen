@@ -16,9 +16,18 @@ finish-args:
   - --talk-name=org.gnome.evolution.dataserver.Subprocess.Backend.*
   - --talk-name=org.mpris.MediaPlayer2.*
   - --filesystem=home:ro
+  - --filesystem=/media:ro
+  - --filesystem=/mnt:ro
+  - --filesystem=/run/media:ro
+  - --filesystem=xdg-run/secondscreen-mangohud:create
+  - --filesystem=xdg-run/secondscreen-gamescope:create
+  - --filesystem=/tmp/discord-ipc-0:ro
   - --filesystem=xdg-run/discord-ipc-0:ro
   - --filesystem=xdg-run/app/com.discordapp.Discord:ro
+  - --filesystem=xdg-run/app/com.discordapp.DiscordCanary:ro
+  - --filesystem=xdg-run/app/com.discordapp.DiscordPTB:ro
   - --filesystem=xdg-run/app/dev.vencord.Vesktop:ro
+  - --filesystem=xdg-run/snap.discord:ro
 modules:
   - name: wl-clipboard
     buildsystem: meson

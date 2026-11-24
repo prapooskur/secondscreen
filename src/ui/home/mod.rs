@@ -21,6 +21,7 @@ use super::{
     Dashboard, Tooltip,
     icons::{Icon, icon},
     media::MEDIA_TAB_HEIGHT,
+    overlay::Overlay,
     theme::*,
 };
 
@@ -368,7 +369,7 @@ impl Dashboard {
                 editing,
                 move |window, cx| {
                     edit_view.update(cx, |this, cx| {
-                        this.close_settings(window, cx);
+                        this.close_overlay(window, cx);
                         if this.home.editing {
                             this.home.leave();
                         } else {
@@ -404,11 +405,11 @@ impl Dashboard {
                 "settings",
                 "Settings",
                 Icon::Settings,
-                self.settings.open,
+                self.overlay.open == Some(Overlay::Settings),
                 move |window, cx| {
                     settings_view.update(cx, |this, cx| {
-                        if this.settings.open {
-                            this.close_settings(window, cx);
+                        if this.overlay.open == Some(Overlay::Settings) {
+                            this.close_overlay(window, cx);
                         } else {
                             this.open_settings(this.settings.section, window, cx);
                         }
@@ -552,7 +553,7 @@ impl Dashboard {
                 theme.button("first-widget", Some(TEAL)).child("Add widget"),
                 move |window, cx| {
                     view.update(cx, |this, cx| {
-                        this.close_settings(window, cx);
+                        this.close_overlay(window, cx);
                         this.home.editing = true;
                         this.focus_dashboard(window, cx);
                         this.home.catalog = true;

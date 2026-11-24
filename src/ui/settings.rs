@@ -4,10 +4,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-use gpui::{
-    Context, Entity, FocusHandle, IntoElement, PathPromptOptions, SharedString, Styled, Task,
-    Window, div, prelude::*,
-};
+use gpui::{Context, Entity, IntoElement, SharedString, Styled, Window, div, prelude::*};
 
 use crate::{
     config::{DISCORD_REDIRECT_URI, DiscordCredentials, Preferences, ThemePreference},
@@ -16,11 +13,11 @@ use crate::{
 };
 
 use super::{
-    CONTENT_X, CONTENT_Y, Dashboard, Tooltip,
-    home::{Badge, import_profile_image},
+    Dashboard, Tooltip,
     icons::{Icon, icon},
     monitor::capacity,
-    text_input::TextInput,
+    overlay::Overlay,
+    text_input::{TextInput, field},
     theme::*,
     utilities::FPS_LAUNCH_OPTIONS,
 };
@@ -34,16 +31,14 @@ pub(super) enum Section {
     Audio,
     Storage,
     Discord,
-    Profiles,
     Notifications,
     Integrations,
     HomeAssistant,
 }
 
 impl Section {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 9] = [
         Self::General,
-        Self::Profiles,
         Self::Widgets,
         Self::Notifications,
         Self::Discord,
@@ -62,7 +57,6 @@ impl Section {
             Self::Audio => ("Audio devices", Icon::Speaker, AMBER),
             Self::Storage => ("Storage", Icon::Disk, BLUE),
             Self::Discord => ("Discord", Icon::Discord, VIOLET),
-            Self::Profiles => ("Profiles", Icon::Edit, TEAL),
             Self::Notifications => ("Notifications", Icon::Bell, BLUE),
             Self::Integrations => ("Integration status", Icon::Activity, TEAL),
             Self::HomeAssistant => ("Home Assistant", Icon::Home, BLUE),
@@ -81,35 +75,25 @@ impl Section {
 }
 
 pub(super) struct SettingsView {
-    pub(super) open: bool,
     pub(super) section: Section,
     pub(super) quick_controls_setup: bool,
-    pub(super) focus: FocusHandle,
-    previous_focus: Option<FocusHandle>,
     start_at_login: bool,
     discord_fields: Option<DiscordFields>,
     discord_saved: bool,
     widget_fields: Option<(Entity<TextInput>, Entity<TextInput>)>,
     launch_options_copy: LaunchOptionsCopy,
-    profile_label: Option<Entity<TextInput>>,
-    profile_picker: Option<Task<()>>,
 }
 
 impl SettingsView {
-    pub(super) fn new(focus: FocusHandle) -> Self {
+    pub(super) fn new() -> Self {
         Self {
-            open: false,
             section: Section::default(),
             quick_controls_setup: false,
-            focus,
-            previous_focus: None,
             start_at_login: false,
             discord_fields: None,
             discord_saved: false,
             widget_fields: None,
             launch_options_copy: LaunchOptionsCopy::Ready,
-            profile_label: None,
-            profile_picker: None,
         }
     }
 }
@@ -166,7 +150,7 @@ impl Dashboard {
         self.home_assistant.dismiss_picker();
         self.settings.section = section;
         self.settings.quick_controls_setup = false;
-        self.show_settings(window, cx);
+        self.show_overlay(Overlay::Settings, window, cx);
     }
 
     pub(super) fn open_quick_controls_setup(
@@ -175,75 +159,22 @@ impl Dashboard {
         cx: &mut Context<Self>,
     ) {
         self.settings.quick_controls_setup = true;
-        self.show_settings(window, cx);
+        self.show_overlay(Overlay::Settings, window, cx);
     }
 
-    fn show_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.settings.open {
-            self.settings.previous_focus = window.focused(cx);
-            self.settings.open = true;
-            self.gesture.borrow_mut().take();
-            self.focus_settings(window, cx);
-        }
-        cx.notify();
-    }
-
-    pub(super) fn focus_settings(&self, window: &mut Window, _cx: &mut Context<Self>) {
-        #[cfg(feature = "ui-gpui")]
-        window.focus(&self.settings.focus);
-        #[cfg(not(feature = "ui-gpui"))]
-        window.focus(&self.settings.focus, _cx);
-    }
-
-    pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.settings.open {
-            self.settings.open = false;
-            self.settings.quick_controls_setup = false;
-            self.home_assistant.close_settings();
-            self.settings.widget_fields = None;
-            if !matches!(
-                self.settings.launch_options_copy,
-                LaunchOptionsCopy::Copying
-            ) {
-                self.settings.launch_options_copy = LaunchOptionsCopy::Ready;
-            }
-            self.settings.profile_label = None;
-            self.settings.profile_picker = None;
-            let previous = self
-                .settings
-                .previous_focus
-                .take()
-                .filter(|focus| self.focus.contains(focus, window))
-                .unwrap_or_else(|| self.focus.clone());
-            #[cfg(feature = "ui-gpui")]
-            window.focus(&previous);
-            #[cfg(not(feature = "ui-gpui"))]
-            window.focus(&previous, cx);
-            cx.notify();
+    pub(super) fn reset_settings(&mut self) {
+        self.settings.quick_controls_setup = false;
+        self.home_assistant.close_settings();
+        self.settings.widget_fields = None;
+        if !matches!(
+            self.settings.launch_options_copy,
+            LaunchOptionsCopy::Copying
+        ) {
+            self.settings.launch_options_copy = LaunchOptionsCopy::Ready;
         }
     }
 
-    pub(super) fn settings_overlay(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::current(cx);
-        split()
-            .absolute()
-            .inset_0()
-            .justify_end()
-            .px(r(CONTENT_X))
-            .py(r(CONTENT_Y))
-            .child(
-                div()
-                    .id("settings-backdrop")
-                    .absolute()
-                    .inset_0()
-                    .bg(theme.color(SCRIM).opacity(0.52))
-                    .occlude()
-                    .on_click(cx.listener(|this, _, window, cx| this.close_settings(window, cx))),
-            )
-            .child(self.settings_panel(cx))
-    }
-
-    fn settings_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn settings_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::current(cx);
         let section = self.settings.section;
         let setup = self.settings.quick_controls_setup;
@@ -282,7 +213,6 @@ impl Dashboard {
                 Section::Widgets => self.widget_settings(cx).into_any_element(),
                 Section::Discord => self.discord_settings(cx).into_any_element(),
                 Section::HomeAssistant => self.home_assistant_settings(cx).into_any_element(),
-                Section::Profiles => self.profile_settings(cx).into_any_element(),
                 Section::Integrations => self.integration_settings(theme).into_any_element(),
                 _ => self.visibility_settings(section, cx).into_any_element(),
             };
@@ -293,168 +223,13 @@ impl Dashboard {
                 .child(content)
                 .into_any_element()
         };
-        theme
-            .panel()
-            .id("settings-panel")
-            .w(r(540.))
-            .max_w_full()
-            .h_full()
-            .flex_none()
-            .occlude()
-            .track_focus(&self.settings.focus)
-            .tab_index(0)
-            .tab_stop(false)
-            .tab_group()
-            .overflow_hidden()
-            .p(r(12.))
-            .gap(r(9.))
-            .child(
-                row()
-                    .justify_between()
-                    .child(theme.title(if setup { "Quick controls" } else { "Settings" }))
-                    .child(
-                        theme.bind(
-                            theme
-                                .button("dismiss-settings", None)
-                                .size(r(28.))
-                                .px_0()
-                                .child(icon(Icon::Close, theme.color(TEXT), 14.))
-                                .tooltip(|_, cx| {
-                                    cx.new(|_| Tooltip("Close settings".into())).into()
-                                }),
-                            move |window, cx| {
-                                view.update(cx, |this, cx| this.close_settings(window, cx))
-                            },
-                        ),
-                    ),
-            )
-            .when(!setup, |it| it.child(tabs))
-            .child(body)
-    }
-
-    fn profile_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::current(cx);
-        let (index, profile) = self.home.active_profile();
-        let initial_label = profile.label(index);
-        let input = self
-            .settings
-            .profile_label
-            .get_or_insert_with(|| {
-                cx.new(|cx| {
-                    let mut input = TextInput::with_placeholder("Letter or number", cx);
-                    input.set_value(initial_label, cx);
-                    input
-                })
-            })
-            .clone();
-        let view = cx.entity();
-        let save = theme.bind(
-            theme
-                .button("save-profile-label", Some(TEAL))
-                .child("Save label"),
-            {
-                let input = input.clone();
-                let view = view.clone();
-                move |_, cx| {
-                    let mut chars = input.read(cx).value.trim().chars();
-                    let badge = match (chars.next(), chars.next()) {
-                        (Some(label), None) if label.is_alphanumeric() => {
-                            Ok(Some(Badge::Label(label)))
-                        }
-                        _ => Err(anyhow::anyhow!("Enter a single letter or number.")),
-                    };
-                    view.update(cx, |this, cx| {
-                        this.settings.profile_picker = None;
-                        this.save_profile_badge(index, badge, cx);
-                    });
-                }
-            },
-        );
-        let choose = theme.bind(
-            theme
-                .button("choose-profile-image", None)
-                .child("Choose SVG or PNG"),
-            {
-                let view = view.clone();
-                move |_, cx| view.update(cx, |this, cx| this.choose_profile_image(index, cx))
-            },
-        );
-        let reset = theme.bind(
-            theme
-                .button("reset-profile-badge", None)
-                .child("Use default"),
-            move |_, cx| {
-                view.update(cx, |this, cx| {
-                    this.settings.profile_picker = None;
-                    this.save_profile_badge(index, Ok(None), cx);
-                });
-            },
-        );
-        col()
-            .gap(r(10.))
-            .flex_none()
-            .child(
-                row()
-                    .gap(r(10.))
-                    .child(
-                        row()
-                            .size(r(36.))
-                            .justify_center()
-                            .rounded(r(8.))
-                            .bg(theme.color(TEAL).opacity(0.13))
-                            .text_color(theme.color(TEAL))
-                            .child(profile.button_content(index, 26.)),
-                    )
-                    .child(theme.title(format!("Profile {}", index + 1))),
-            )
-            .child(field(theme, "Letter or number", input))
-            .child(
-                row()
-                    .gap(r(6.))
-                    .flex_wrap()
-                    .child(save)
-                    .child(choose)
-                    .child(reset),
-            )
-    }
-
-    fn choose_profile_image(&mut self, index: usize, cx: &mut Context<Self>) {
-        let result = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some("Use as profile image".into()),
-        });
-        self.settings.profile_picker = Some(cx.spawn(async move |this, cx| {
-            let badge = match result.await {
-                Ok(Ok(Some(paths))) => {
-                    let Some(path) = paths.into_iter().next() else {
-                        return;
-                    };
-                    blocking::unblock(move || import_profile_image(&path))
-                        .await
-                        .map(Some)
-                }
-                Ok(Err(error)) => Err(error),
-                _ => return,
-            };
-            let _ = this.update(cx, |this, cx| this.save_profile_badge(index, badge, cx));
-        }));
-    }
-
-    fn save_profile_badge(
-        &mut self,
-        index: usize,
-        badge: anyhow::Result<Option<Badge>>,
-        cx: &mut Context<Self>,
-    ) {
-        match badge.and_then(|badge| self.set_profile_badge(index, badge, cx)) {
-            Ok(()) => self.settings.profile_label = None,
-            Err(error) => {
-                self.set_error(format!("{error:#}"), cx);
-                cx.notify();
-            }
-        }
+        self.overlay_panel(
+            Overlay::Settings,
+            theme.title(if setup { "Quick controls" } else { "Settings" }),
+            cx,
+        )
+        .when(!setup, |it| it.child(tabs))
+        .child(body)
     }
 
     fn widget_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -643,7 +418,7 @@ impl Dashboard {
                     }
                 };
                 let _ = this.update(cx, |this, cx| {
-                    this.settings.launch_options_copy = if this.settings.open {
+                    this.settings.launch_options_copy = if this.overlay.open == Some(Overlay::Settings) {
                         copy
                     } else {
                         LaunchOptionsCopy::Ready
@@ -1118,7 +893,7 @@ impl Dashboard {
         let mut preferences = self.preferences.clone();
         preferences.discord = credentials.clone();
         if self.save_preferences(preferences, cx) {
-            self.focus_settings(window, cx);
+            self.focus_overlay(window, cx);
             self.settings.discord_fields = None;
             self.settings.discord_saved =
                 credentials.as_ref().is_some_and(DiscordCredentials::valid);
@@ -1215,17 +990,4 @@ fn choice_button(
         } else {
             off.to_owned()
         }))
-}
-
-pub(super) fn field(
-    theme: Theme,
-    name: &'static str,
-    input: Entity<TextInput>,
-) -> impl IntoElement {
-    col()
-        .id(name)
-        .flex_1()
-        .gap(r(4.))
-        .child(theme.label(name))
-        .child(input)
 }

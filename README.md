@@ -22,7 +22,7 @@ Open the **Linux packages** run for your commit under **Actions** on GitHub. Eve
 | RPM | Fedora 44 | `sudo dnf install ./*.rpm` |
 | Flatpak | GNOME 51 runtime from Flathub | `flatpak install --user ./*.flatpak` |
 
-Launch **Second Screen** from your app menu in a Wayland session. Flatpak keeps its settings separately under `~/.var/app/io.github.secondscreen`. The sandbox limits host integrations such as login launchers, compositor control, desktop notification monitoring, and FPS feeds from host games.
+Launch **Second Screen** from your app menu in a Wayland session. Flatpak keeps its settings separately under `~/.var/app/io.github.secondscreen`. The sandbox limits host integrations such as login launchers, compositor control, desktop notification monitoring, and Gamescope FPS feeds.
 
 ### Build packages locally
 
@@ -56,7 +56,7 @@ cargo run --release --locked
 
 The Wayland session needs a working Vulkan driver. The viewer builds against GTK 3 and WebKitGTK 4.1 (`gtk3-devel` and `webkit2gtk4.1-devel` on Fedora). It loads those libraries when a web view opens and uses the system GStreamer codecs for playback. The audio mixer uses `pactl` with a PipeWire PulseAudio server or PulseAudio 15+. Media discovery uses the session D-Bus and works with players that advertise MPRIS. The Steam launch options **Copy** button uses `wl-clipboard` for mouse clicks in the default build.
 
-Drag the grip on the right-hand rail to move the window to your bar monitor. Press **F11** or click the fullscreen button near the bottom of the rail. **Esc** dismisses Settings or the active editing controls before leaving fullscreen. **Tab** moves between controls, **Enter** activates buttons, and arrow keys adjust a focused slider. Enable **Start fullscreen** in **Settings → General** or pass `--fullscreen` to open fullscreen.
+Drag the grip on the right-hand rail to move the window to your bar monitor. Press **F11** or click the fullscreen button near the bottom of the rail. **Esc** dismisses an open overlay or the active editing controls before leaving fullscreen. **Tab** moves between controls, **Enter** activates buttons, and arrow keys adjust a focused slider. Enable **Start fullscreen** in **Settings → General** or pass `--fullscreen` to open fullscreen.
 
 In **Settings → General**, enable **Start at login** to register the current executable with your desktop’s XDG autostart service. Your session must process XDG autostart entries. If you move the executable, toggle **Start at login** off and back on to update its path.
 
@@ -72,7 +72,7 @@ cargo run --release --locked --no-default-features --features ui-gpui-fast
 
 Choose **Edit layout** to add widgets from the catalog and show widget names and controls at the top. Use **×** to remove a widget or the arrows to change its order. Drag a widget’s bottom-right corner to resize. Use the width and height controls for single steps, or focus the corner and press the arrow keys. Choose **Done** to return to Home.
 
-Use the left rail to switch profiles. **+** creates an empty profile and selects it, up to five total. The existing Home layout becomes profile 1. Each profile saves its own layout and widget options. Select the pencil on the left rail to give the active profile a single letter, a number, or an SVG or PNG image. Secondscreen imports a copy of the image and remembers which profile was selected.
+Use the left rail to switch profiles. **+** creates an empty profile and selects it, up to five total. The existing Home layout becomes profile 1. Each profile saves its own layout and widget options. Select the pencil on the left rail to open the profile editor on the left side of the dashboard. Give the active profile a single letter, a number, or an SVG or PNG image. Secondscreen imports a copy of the image and remembers which profile was selected.
 
 Home fits four grid rows and up to five columns in the visible area. Widgets can span two to four visible rows. When the grid extends to the right, scroll horizontally with a trackpad, use **Shift** + mouse wheel, or use the arrows in the right-hand rail. The app keeps each widget’s requested size when space is limited and saves the layout in `${XDG_CONFIG_HOME:-~/.config}/secondscreen/home.json`.
 

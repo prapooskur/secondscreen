@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::config;
 
 use super::{
-    super::{Dashboard, Tooltip, icons::Icon, settings::Section, theme::*},
+    super::{Dashboard, Tooltip, icons::Icon, overlay::Overlay, theme::*},
     Layout, RAIL_BUTTON_SIZE, RAIL_WIDTH, rail_control,
 };
 
@@ -258,12 +258,12 @@ impl Dashboard {
             .child(rail_control(
                 theme,
                 "edit-profile",
-                "Customize profile button",
+                "Edit profile",
                 Icon::Edit,
                 false,
                 move |window, cx| {
                     edit.update(cx, |this, cx| {
-                        this.open_settings(Section::Profiles, window, cx)
+                        this.show_overlay(Overlay::Profile, window, cx)
                     })
                 },
             ))

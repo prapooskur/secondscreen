@@ -6,6 +6,8 @@ mod home_assistant;
 mod icons;
 mod media;
 mod monitor;
+mod overlay;
+mod profile_editor;
 mod settings;
 mod slider;
 mod text_input;
@@ -38,7 +40,7 @@ use crate::{
     platform::Controls,
 };
 use theme::*;
-use {home::Kind, settings::Section};
+use {home::Kind, overlay::Overlay, settings::Section};
 
 pub const WINDOW_TITLE: &str = "Second Screen";
 const HISTORY: usize = 60;
@@ -82,6 +84,8 @@ pub struct Dashboard {
     utilities: utilities::Utilities,
     preferences: Preferences,
     display: display::DisplayWatch,
+    overlay: overlay::OverlayView,
+    profile_editor: profile_editor::ProfileEditor,
     settings: settings::SettingsView,
     metrics: Metrics,
     history: History,
@@ -174,7 +178,9 @@ impl Dashboard {
             utilities: utilities::Utilities::new(),
             preferences,
             display: display::DisplayWatch::new(fullscreen, placing_at_startup),
-            settings: settings::SettingsView::new(cx.focus_handle()),
+            overlay: overlay::OverlayView::new(cx.focus_handle()),
+            profile_editor: profile_editor::ProfileEditor::default(),
+            settings: settings::SettingsView::new(),
             metrics: Metrics::default(),
             history: History::default(),
             storage: Vec::new(),
@@ -195,7 +201,7 @@ impl Dashboard {
     }
 
     fn showing_settings(&self, section: Section) -> bool {
-        self.settings.open
+        self.overlay.open == Some(Overlay::Settings)
             && !self.settings.quick_controls_setup
             && self.settings.section == section
     }
@@ -415,7 +421,7 @@ impl Dashboard {
         }
         match key.key.as_str() {
             "f11" => self.toggle_fullscreen(window),
-            "escape" if self.settings.open => self.close_settings(window, cx),
+            "escape" if self.overlay.open.is_some() => self.close_overlay(window, cx),
             "escape" if self.home.escape() => {
                 self.focus_dashboard(window, cx);
                 cx.notify();
@@ -436,7 +442,9 @@ impl Dashboard {
                     } else {
                         window.focus_next(cx);
                     }
-                    if !self.settings.open || self.settings.focus.contains_focused(window, cx) {
+                    if self.overlay.open.is_none()
+                        || self.overlay.focus.contains_focused(window, cx)
+                    {
                         break;
                     }
                     // GPUI traverses the whole window. Skip dashboard controls under the overlay.
@@ -543,9 +551,11 @@ impl Render for Dashboard {
             .bg(theme.color(BACK))
             .overflow_hidden()
             .child(home)
-            .when(self.settings.open, |root| {
-                root.child(self.settings_overlay(cx))
-            })
+            .children(
+                self.overlay
+                    .open
+                    .map(|overlay| self.render_overlay(overlay, cx)),
+            )
             .children(self.notice(theme))
             .into_any_element()
     }

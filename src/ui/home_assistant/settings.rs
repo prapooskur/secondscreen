@@ -3,7 +3,11 @@ use gpui::{Context, IntoElement, SharedString, Window, prelude::*};
 use crate::config::HomeAssistantCredentials;
 
 use super::{Binding, Connection, ConnectionFields, Picker};
-use crate::ui::{Dashboard, Section, settings::field, text_input::TextInput, theme::*};
+use crate::ui::{
+    Dashboard, Section,
+    text_input::{TextInput, field},
+    theme::*,
+};
 
 impl Dashboard {
     pub(in crate::ui) fn choose_home_assistant(
@@ -207,7 +211,7 @@ impl Dashboard {
         let mut preferences = self.preferences.clone();
         preferences.home_assistant = None;
         if self.save_preferences(preferences, cx) {
-            self.focus_settings(window, cx);
+            self.focus_overlay(window, cx);
             self.home_assistant.fields = None;
             self.home_assistant.verification_error = None;
             self.home_assistant.stop_worker();
@@ -283,7 +287,7 @@ impl Dashboard {
                                 entity: id.clone(),
                             };
                             if this.set_home_assistant_binding(profile, widget, binding, cx) {
-                                this.close_settings(window, cx);
+                                this.close_overlay(window, cx);
                             }
                         });
                     },

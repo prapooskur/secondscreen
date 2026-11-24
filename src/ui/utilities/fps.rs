@@ -75,10 +75,16 @@ pub(super) struct Feed {
 impl Feed {
     pub fn open() -> Result<Self> {
         let dir = runtime_dir()?;
+        // Flatpak can share a directory containing a FIFO, but cannot mount the FIFO itself.
+        let gamescope_pipe = if std::env::var_os("FLATPAK_ID").is_some() {
+            "secondscreen-gamescope/secondscreen-fps"
+        } else {
+            "secondscreen-fps"
+        };
         Ok(Self {
             mango: mangohud::Feed::new(dir.join(MANGOHUD_DIR)),
             gamescope: None,
-            gamescope_path: dir.join("secondscreen-fps"),
+            gamescope_path: dir.join(gamescope_pipe),
         })
     }
 
