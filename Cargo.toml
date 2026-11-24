@@ -53,6 +53,7 @@ log = "0.4"
 sysinfo = { version = "0.40", default-features = false, features = ["component", "gpu", "network", "system"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.13", default-features = false, features = ["async-io", "background"] }
 async-io = "2"
 gpui = { version = "0.2.2", optional = true, default-features = false, features = ["wayland"] }
 gpui-fast-backend = { package = "gpui-fast", version = "0.1.17", optional = true, default-features = false, features = ["wayland", "font-kit"] }

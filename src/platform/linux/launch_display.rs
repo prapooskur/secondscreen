@@ -6,6 +6,8 @@ use std::{env, time::Duration};
 
 use anyhow::{Context, Result};
 
+use crate::platform::in_flatpak;
+
 pub use wayland::Displays;
 
 const RETRY_INTERVAL: Duration = Duration::from_millis(75);
@@ -46,6 +48,9 @@ enum Desktop {
 
 impl Desktop {
     fn current() -> Option<Self> {
+        if in_flatpak() {
+            return None;
+        }
         // Recognize the desktop first in case a nested session inherits SWAYSOCK.
         let desktop = env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
         for desktop in desktop.split(':') {

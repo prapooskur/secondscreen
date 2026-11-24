@@ -10,6 +10,8 @@ use std::{
     time::Instant,
 };
 
+use crate::platform::in_flatpak;
+
 const MANGOHUD_DIR: &str = "secondscreen-mangohud";
 pub(in crate::ui) const LAUNCH_OPTIONS: &str = r#"MANGOHUD_CONFIG="autostart_log=1,output_folder=$XDG_RUNTIME_DIR/secondscreen-mangohud" mangohud %command%"#;
 
@@ -76,7 +78,7 @@ impl Feed {
     pub fn open() -> Result<Self> {
         let dir = runtime_dir()?;
         // Flatpak can share a directory containing a FIFO, but cannot mount the FIFO itself.
-        let gamescope_pipe = if std::env::var_os("FLATPAK_ID").is_some() {
+        let gamescope_pipe = if in_flatpak() {
             "secondscreen-gamescope/secondscreen-fps"
         } else {
             "secondscreen-fps"

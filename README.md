@@ -22,26 +22,21 @@ Open the **Linux packages** run for your commit under **Actions** on GitHub. Eve
 | RPM | Fedora 44 | `sudo dnf install ./*.rpm` |
 | Flatpak | GNOME 51 runtime from Flathub | `flatpak install --user ./*.flatpak` |
 
-Launch **Second Screen** from your app menu in a Wayland session. Flatpak keeps its settings separately under `~/.var/app/io.github.secondscreen`. The sandbox limits host integrations such as login launchers, compositor control, desktop notification monitoring, and Gamescope FPS feeds.
+Launch **Second Screen** from your app menu in a Wayland session. Flatpak keeps its settings separately under `~/.var/app/io.github.secondscreen`. Host notification monitoring and compositor-specific display placement require a native package. The Storage tile reports usage for filesystems visible inside the sandbox, including drives mounted under `/media`, `/mnt`, and `/run/media`.
 
 ### Build packages locally
 
-For a DEB, install the Debian or Ubuntu build dependencies below and `dpkg-dev`. For an RPM on Fedora, install `gcc`, `gcc-c++`, `make`, `pkgconf-pkg-config`, `fontconfig-devel`, `freetype-devel`, `wayland-devel`, `libxkbcommon-devel`, `'pkgconfig(xkbcommon-x11)'`, `webkit2gtk4.1-devel`, and `evolution-data-server-devel`. Run the commands for your format from the repository root.
+With Rust 1.95 or newer, run the script for your format from the repository root.
 
-```sh
-# DEB writes to target/debian/
-cargo install --locked cargo-deb --version 3.8.0
-cargo build --release --locked
-cargo deb --locked --no-build
+| Package | Command | Default output directory |
+| --- | --- | --- |
+| DEB | `./packaging/build-deb.sh` | `target/debian/` |
+| RPM | `./packaging/build-rpm.sh` | `target/generate-rpm/` |
+| Flatpak | `./packaging/build-flatpak.sh` | `target/packaging/` |
 
-# RPM writes to target/generate-rpm/
-cargo install --locked cargo-generate-rpm --version 0.21.1
-CARGO_PROFILE_RELEASE_STRIP=symbols cargo build --release --locked
-cargo generate-rpm
-
-# Flatpak requires flatpak, flatpak-builder, and Cargo, and writes to target/packaging/
-bash packaging/build-flatpak.sh
-```
+- **DEB** uses the Debian or Ubuntu build dependencies below plus `dpkg-dev`. The script installs `cargo-deb` if it is missing.
+- **RPM** uses the Fedora packages `gcc`, `gcc-c++`, `make`, `pkgconf-pkg-config`, `fontconfig-devel`, `freetype-devel`, `wayland-devel`, `libxkbcommon-devel`, `'pkgconfig(xkbcommon-x11)'`, `webkit2gtk4.1-devel`, and `evolution-data-server-devel`. The script installs `cargo-generate-rpm` if it is missing.
+- **Flatpak** requires `flatpak` and `flatpak-builder`. The script installs the runtime and SDK from Flathub in your user installation. If they are already installed, pass `--skip-install-deps`.
 
 ## Run on Linux
 
@@ -58,7 +53,7 @@ The Wayland session needs a working Vulkan driver. The viewer builds against GTK
 
 Drag the grip on the right-hand rail to move the window to your bar monitor. Press **F11** or click the fullscreen button near the bottom of the rail. **Esc** dismisses an open overlay or the active editing controls before leaving fullscreen. **Tab** moves between controls, **Enter** activates buttons, and arrow keys adjust a focused slider. Enable **Start fullscreen** in **Settings → General** or pass `--fullscreen` to open fullscreen.
 
-In **Settings → General**, enable **Start at login** to register the current executable with your desktop’s XDG autostart service. Your session must process XDG autostart entries. If you move the executable, toggle **Start at login** off and back on to update its path.
+In **Settings → General**, enable **Start at login** to open Second Screen when you sign in. The Flatpak uses your desktop’s Background portal. Native packages write an XDG autostart entry. If you move a native executable, toggle **Start at login** off and back on to update its path.
 
 Use **Launch display** in **Settings → General** to choose a connected output on Sway or KDE Plasma 6 on Wayland. The dashboard moves to that display and returns to it when it reconnects or the system wakes from sleep, preserving the selected fullscreen or windowed mode. If the display is disconnected at launch, the desktop chooses an output until the selected display returns. On GNOME, the desktop chooses the display.
 
@@ -106,6 +101,8 @@ For client-secret login, add exactly `http://127.0.0.1` under **OAuth2 → Redir
 
 Discord voice RPC requires an approved Discord application or access as an authorized tester of the application. Open Discord desktop with the authorized account. In **Settings → Discord**, enter your application ID and its client secret, then save and click **Connect** in the Discord widget to authorize access. Add it from **Edit layout** if needed. You can supply a Discord OAuth access token with the `identify`, `rpc`, `rpc.voice.read`, and `rpc.voice.write` scopes in place of the client secret. Second Screen saves OAuth authorization in the desktop keyring through Secret Service and reconnects when Discord opens. It refreshes expired tokens using the saved grant. On desktops without a working keyring, OAuth credentials obtained during authorization last until the app exits. Discord can restore prior voice settings when the RPC connection closes. [Discord RPC documentation](https://docs.discord.com/developers/topics/rpc)
 
+When using Second Screen’s Flatpak, open Discord first so Flatpak can mount its IPC socket. If you restart a native Discord client, reopen Second Screen to pick up the new socket.
+
 Use the **Media apps**, **Audio devices**, and **Storage** sections of Settings to choose which sources appear in the widgets. Settings saves credentials and visibility preferences to the user-only file `${XDG_CONFIG_HOME:-~/.config}/secondscreen/settings.json`. Existing deployments can still use `SECONDSCREEN_DISCORD_CLIENT_ID` with `SECONDSCREEN_DISCORD_CLIENT_SECRET` or `SECONDSCREEN_DISCORD_ACCESS_TOKEN`. Saved Discord credentials take precedence.
 
 Storage lists whole drives exposed by Linux, including unmounted drives. It shows usage when a mounted filesystem can be attributed to one drive. Storage visibility is now saved per drive, so select your drives in Settings after upgrading from mount-level visibility.
@@ -128,10 +125,16 @@ Add these tiles from **Edit layout → Add widget**. Open **Settings → Widgets
 MANGOHUD_CONFIG="autostart_log=1,output_folder=$XDG_RUNTIME_DIR/secondscreen-mangohud" mangohud %command%
 ```
 
-The existing Gamescope launch options still provide current FPS. Gamescope reports an average every 300 frames, so the lows appear as dashes with that feed.
+Gamescope reports an average every 300 frames, so the lows appear as dashes with that feed. Add the FPS tile or open **Settings → Integration status** to start the reader. For native packages, use:
 
 ```sh
 gamescope --stats-path "$XDG_RUNTIME_DIR/secondscreen-fps" -- %command%
+```
+
+For Flatpak, use the shared runtime directory:
+
+```sh
+gamescope --stats-path "$XDG_RUNTIME_DIR/secondscreen-gamescope/secondscreen-fps" -- %command%
 ```
 
 Open **Settings → Integration status** to check Calendar, FPS, and Notifications even if the tiles are absent from the active profile. The panel reports connection and feed status with setup steps for missing dependencies and desktop restrictions.

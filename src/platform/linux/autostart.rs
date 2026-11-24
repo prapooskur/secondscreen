@@ -4,22 +4,37 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
+use ashpd::desktop::background::Background;
 
-use crate::{config, platform::APP_ID};
+use crate::{
+    config,
+    platform::{APP_ID, in_flatpak},
+};
 
 fn entry_path() -> Result<PathBuf> {
-    let directory =
-        config::config_home().context("No user configuration directory is available.")?;
+    let directory = if in_flatpak() {
+        config::xdg_home("HOST_XDG_CONFIG_HOME", ".config")
+    } else {
+        config::config_home()
+    }
+    .context("No user configuration directory is available.")?;
     Ok(directory
         .join("autostart")
         .join(format!("{APP_ID}.desktop")))
 }
 
-pub fn enabled() -> Result<bool> {
-    let entry = match fs::read_to_string(entry_path()?) {
+pub fn enabled() -> Result<Option<bool>> {
+    let path = entry_path()?;
+    let entry = match fs::read_to_string(&path) {
         Ok(entry) => entry,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            // A custom host directory created by the portal may only be visible after relaunch.
+            if in_flatpak() && !path.parent().is_some_and(Path::is_dir) {
+                return Ok(None);
+            }
+            return Ok(Some(false));
+        }
         Err(error) => return Err(error).context("Could not read the login launcher"),
     };
     let hidden = entry
@@ -30,10 +45,13 @@ pub fn enabled() -> Result<bool> {
         .take_while(|line| !line.starts_with('['))
         .filter_map(|line| line.split_once('='))
         .any(|(key, value)| key.trim() == "Hidden" && value.trim() == "true");
-    Ok(!hidden)
+    Ok(Some(!hidden))
 }
 
 pub fn set_enabled(enabled: bool) -> Result<()> {
+    if in_flatpak() {
+        return futures_lite::future::block_on(set_flatpak_enabled(enabled));
+    }
     let path = entry_path()?;
     if enabled {
         let executable = env::current_exe().context("Could not locate Second Screen")?;
@@ -53,6 +71,23 @@ pub fn set_enabled(enabled: bool) -> Result<()> {
             Err(error) => Err(error).context("Could not remove the login launcher"),
         }
     }
+}
+
+async fn set_flatpak_enabled(enabled: bool) -> Result<()> {
+    let request = Background::request()
+        .reason("Open Second Screen when you sign in.")
+        .auto_start(enabled)
+        .send()
+        .await
+        .context("Could not reach the desktop's Background portal")?;
+    let response = request
+        .response()
+        .context("The desktop declined the login launcher request")?;
+    ensure!(
+        response.auto_start() == enabled,
+        "The desktop did not update the login launcher"
+    );
+    Ok(())
 }
 
 fn desktop_exec(path: &Path) -> Result<String> {

@@ -9,7 +9,7 @@ use gpui::{Context, Entity, IntoElement, SharedString, Styled, Window, div, prel
 use crate::{
     config::{DISCORD_REDIRECT_URI, DiscordCredentials, Preferences, ThemePreference},
     model::{AudioChannel, AudioKind, DiscordAction},
-    platform::{autostart, launch_display},
+    platform::{autostart, in_flatpak, launch_display},
 };
 
 use super::{
@@ -78,6 +78,7 @@ pub(super) struct SettingsView {
     pub(super) section: Section,
     pub(super) quick_controls_setup: bool,
     start_at_login: bool,
+    start_at_login_pending: bool,
     discord_fields: Option<DiscordFields>,
     discord_saved: bool,
     widget_fields: Option<(Entity<TextInput>, Entity<TextInput>)>,
@@ -90,6 +91,7 @@ impl SettingsView {
             section: Section::default(),
             quick_controls_setup: false,
             start_at_login: false,
+            start_at_login_pending: false,
             discord_fields: None,
             discord_saved: false,
             widget_fields: None,
@@ -143,7 +145,8 @@ impl Dashboard {
     ) {
         if section == Section::General && !self.showing_settings(section) {
             match autostart::enabled() {
-                Ok(enabled) => self.settings.start_at_login = enabled,
+                Ok(Some(enabled)) => self.settings.start_at_login = enabled,
+                Ok(None) => {}
                 Err(error) => self.set_error(format!("{error:#}"), cx),
             }
         }
@@ -475,7 +478,11 @@ impl Dashboard {
                 theme,
                 "start-at-login-row",
                 "Start at login",
-                "Open Second Screen when you sign in.",
+                if self.settings.start_at_login_pending {
+                    "Waiting for the desktop to update the login launcher…"
+                } else {
+                    "Open Second Screen when you sign in."
+                },
                 theme.bind(
                     choice_button(
                         theme,
@@ -486,17 +493,7 @@ impl Dashboard {
                     ),
                     move |_, cx| {
                         autostart_view.update(cx, |this, cx| {
-                            let enabled = !this.settings.start_at_login;
-                            match autostart::set_enabled(enabled) {
-                                Ok(()) => {
-                                    this.settings.start_at_login = enabled;
-                                    this.error = None;
-                                }
-                                Err(error) => {
-                                    this.set_error(format!("{error:#}"), cx);
-                                }
-                            }
-                            cx.notify();
+                            this.toggle_start_at_login(cx);
                         });
                     },
                 ),
@@ -526,10 +523,38 @@ impl Dashboard {
             .child(self.launch_display_settings(theme, cx))
     }
 
+    fn toggle_start_at_login(&mut self, cx: &mut Context<Self>) {
+        if self.settings.start_at_login_pending {
+            return;
+        }
+        let enabled = !self.settings.start_at_login;
+        self.settings.start_at_login_pending = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = blocking::unblock(move || autostart::set_enabled(enabled)).await;
+            let _ = this.update(cx, |this, cx| {
+                this.settings.start_at_login_pending = false;
+                match result {
+                    Ok(()) => {
+                        this.settings.start_at_login = enabled;
+                        this.error = None;
+                    }
+                    Err(error) => this.set_error(format!("{error:#}"), cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn launch_display_settings(&self, theme: Theme, cx: &Context<Self>) -> impl IntoElement {
         let saved = self.preferences.launch_display.as_deref();
         let supported = launch_display::supported();
         let (displays, note) = match &self.display.displays {
+            _ if in_flatpak() => (
+                &[][..],
+                "Display selection requires a native package on Sway or KDE Plasma 6.".into(),
+            ),
             _ if !supported => (
                 &[][..],
                 "Display selection is available on Sway and KDE Plasma 6.".into(),

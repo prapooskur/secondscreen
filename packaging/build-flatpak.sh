@@ -1,7 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if (( $# > 1 )) || [[ $# -eq 1 && $1 != --skip-install-deps ]]; then
+    printf 'Usage: %s [--skip-install-deps]\n' "${0##*/}" >&2
+    exit 2
+fi
+
 cd "$(dirname "$0")/.."
+
+for tool in cargo flatpak flatpak-builder; do
+    if ! command -v "$tool" > /dev/null; then
+        printf 'Required command not found: %s\n' "$tool" >&2
+        exit 1
+    fi
+done
 
 app_id=io.github.secondscreen
 work_dir=target/packaging/flatpak

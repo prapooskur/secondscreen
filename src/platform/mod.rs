@@ -6,6 +6,11 @@ pub use linux::{autostart, calendar, launch_display, start};
 
 pub const APP_ID: &str = "io.github.secondscreen";
 
+#[cfg(target_os = "linux")]
+pub fn in_flatpak() -> bool {
+    std::env::var_os("FLATPAK_ID").is_some()
+}
+
 use async_channel::Sender;
 
 use crate::model::{AudioAction, DiscordAction, MediaAction};

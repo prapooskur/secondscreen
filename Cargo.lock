@@ -6411,6 +6411,7 @@ name = "secondscreen"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ashpd 0.13.13",
  "async-channel 2.5.0",
  "async-io",
  "base64 0.22.1",

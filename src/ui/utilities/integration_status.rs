@@ -1,6 +1,9 @@
 use gpui::{IntoElement, Styled, prelude::*};
 
-use crate::{platform::calendar::Status as CalendarStatus, ui::theme::*};
+use crate::{
+    platform::{calendar::Status as CalendarStatus, in_flatpak},
+    ui::theme::*,
+};
 
 use super::{Dashboard, fps, notifications};
 
@@ -102,7 +105,7 @@ impl Dashboard {
         if in_flatpak() {
             return (
                 "Waiting for a game",
-                "Install MangoHud for your game’s runtime and use the launch options from Settings → Widgets.".into(),
+                "Use the MangoHud launch options in Settings → Widgets or the Flatpak Gamescope options in the README.".into(),
                 MUTED,
             );
         }
@@ -120,10 +123,6 @@ impl Dashboard {
         };
         ("Waiting for a game", detail.into(), MUTED)
     }
-}
-
-fn in_flatpak() -> bool {
-    std::env::var_os("FLATPAK_ID").is_some()
 }
 
 fn status_row(

@@ -152,7 +152,7 @@ fn nonempty(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 
-fn xdg_home(variable: &str, fallback: &str) -> Option<PathBuf> {
+pub(crate) fn xdg_home(variable: &str, fallback: &str) -> Option<PathBuf> {
     env::var_os(variable)
         .filter(|path| Path::new(path).is_absolute())
         .map(PathBuf::from)
