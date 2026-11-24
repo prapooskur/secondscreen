@@ -11,6 +11,7 @@ use async_channel::Sender;
 use crate::model::{AudioAction, DiscordAction, MediaAction};
 
 pub struct Controls {
+    pub storage: std::sync::mpsc::Sender<bool>,
     pub audio: Sender<AudioAction>,
     pub media: Sender<(String, MediaAction)>,
     pub discord: Sender<DiscordAction>,

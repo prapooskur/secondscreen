@@ -38,6 +38,8 @@ pub(super) struct Home {
     catalog: bool,
     resizing: Option<Resize>,
     scroll: ScrollHandle,
+    visible: [bool; Kind::ALL.len()],
+    media_progress_visible: bool,
 }
 
 struct Resize {
@@ -88,6 +90,11 @@ impl Grid {
     fn span_height(self, rows: usize) -> f32 {
         rows as f32 * (self.height + GAP) - GAP
     }
+
+    fn intersects(self, tile: Placement, offset: f32, viewport_width: f32) -> bool {
+        let left = tile.x as f32 * (self.width + GAP) + offset;
+        left < viewport_width && left + self.span_width(usize::from(tile.columns)) > 0.
+    }
 }
 
 impl Home {
@@ -110,6 +117,8 @@ impl Home {
             catalog: false,
             resizing: None,
             scroll: ScrollHandle::new(),
+            visible: [false; Kind::ALL.len()],
+            media_progress_visible: false,
         }
     }
 
@@ -121,14 +130,11 @@ impl Home {
     }
 
     pub(super) fn shows(&self, kind: Kind) -> bool {
-        !self.catalog && self.contains(kind)
+        self.visible[kind as usize]
     }
 
     pub(super) fn shows_media_progress(&self) -> bool {
-        !self.catalog
-            && self
-                .widgets()
-                .any(|widget| widget.kind == Kind::Media && widget.rows >= 3)
+        self.media_progress_visible
     }
 
     pub(super) fn active_profile(&self) -> (usize, &Profile) {
@@ -194,61 +200,88 @@ impl Home {
 
 impl Dashboard {
     pub(super) fn home_page(
-        &self,
+        &mut self,
         width: f32,
         height: f32,
         scale: f32,
         fullscreen: bool,
-        cx: &Context<Self>,
+        cx: &mut Context<Self>,
     ) -> gpui::Div {
         let viewport_width = (width - 2. * (RAIL_WIDTH + GAP)).max(1.);
         let grid = Grid::new(viewport_width, height);
-        let mut scrolling = None;
+        let placements = if self.home.catalog {
+            Vec::new()
+        } else {
+            layout::place(self.home.widgets(), grid.columns)
+        };
+        let visible_columns = usize::from(grid.columns);
+        let columns = placements
+            .iter()
+            .map(|tile| tile.x + usize::from(tile.columns))
+            .max()
+            .unwrap_or_default()
+            .max(visible_columns);
+        let content_width = grid.span_width(columns);
+        let overflow = px(((content_width - viewport_width) * scale).max(0.));
+        let scrolling = (overflow > px(0.5)).then(|| HorizontalScroll {
+            step: px((grid.span_width(visible_columns) + GAP) * scale),
+            limit: overflow,
+        });
+        let offset = self.home.scroll.offset().x.clamp(-overflow, px(0.));
+        if !self.home.catalog && offset != self.home.scroll.offset().x {
+            self.home.scroll.set_offset(point(offset, px(0.)));
+        }
+        let visible =
+            |tile: &Placement| grid.intersects(*tile, f32::from(offset) / scale, viewport_width);
+        self.home.visible.fill(false);
+        self.home.media_progress_visible = false;
+        for tile in placements.iter().filter(|tile| visible(tile)) {
+            let kind = tile.widget.kind;
+            self.home.visible[kind as usize] = true;
+            if kind == Kind::Media {
+                self.home.media_progress_visible = tile.rows >= 3;
+            } else if kind == Kind::Viewer {
+                self.ensure_viewer(tile.widget.id, cx);
+            }
+        }
+        if self.home.catalog {
+            for viewer in self.viewers.values() {
+                viewer.read(cx).hide();
+            }
+        }
+        self.sync_utilities(cx);
+
         let content = if self.home.catalog {
             self.widget_catalog(grid, cx).into_any_element()
+        } else if placements.is_empty() {
+            self.empty_home(cx).into_any_element()
         } else {
-            let placements = layout::place(self.home.widgets(), grid.columns);
-            if placements.is_empty() {
-                self.empty_home(cx).into_any_element()
-            } else {
-                let columns = placements
-                    .iter()
-                    .map(|tile| tile.x + usize::from(tile.columns))
-                    .max()
-                    .unwrap_or_default();
-                let visible_width = grid.span_width(usize::from(grid.columns));
-                let content_width = grid.span_width(columns).max(visible_width);
-                let overflow = px((content_width - viewport_width) * scale);
-                if overflow > px(0.5) {
-                    scrolling = Some(HorizontalScroll {
-                        step: px((visible_width + GAP) * scale),
-                        limit: overflow,
-                    });
-                }
-                let count = placements.len();
-                let viewport = col()
-                    .id("home-widget-scroll")
-                    .flex_1()
-                    .overflow_hidden()
-                    .track_scroll(&self.home.scroll)
-                    .when(scrolling.is_none(), |it| it.items_center())
-                    .child(
-                        div()
-                            .relative()
-                            .w(r(content_width))
-                            .h(r(grid.span_height(usize::from(VISIBLE_ROWS))))
-                            .flex_none()
-                            .children(placements.into_iter().enumerate().map(|(index, tile)| {
-                                self.widget_tile(tile, index, count, grid, scale, cx)
-                            })),
-                    );
-                col()
-                    .flex_1()
-                    .relative()
-                    .child(viewport)
-                    .children(scrolling.map(|scroll| self.track_home_scroll(scroll.limit)))
-                    .into_any_element()
-            }
+            let count = placements.len();
+            let tiles = placements
+                .into_iter()
+                .enumerate()
+                .filter(|(_, tile)| visible(tile) || self.keep_offscreen(tile.widget))
+                .map(|(index, tile)| self.widget_tile(tile, index, count, grid, scale, cx));
+            let viewport = col()
+                .id("home-widget-scroll")
+                .flex_1()
+                .overflow_hidden()
+                .track_scroll(&self.home.scroll)
+                .when(scrolling.is_none(), |it| it.items_center())
+                .child(
+                    div()
+                        .relative()
+                        .w(r(content_width))
+                        .h(r(grid.span_height(usize::from(VISIBLE_ROWS))))
+                        .flex_none()
+                        .children(tiles),
+                );
+            col()
+                .flex_1()
+                .relative()
+                .child(viewport)
+                .children(scrolling.map(|scroll| self.track_home_scroll(scroll.limit)))
+                .into_any_element()
         };
 
         split()
@@ -267,6 +300,29 @@ impl Dashboard {
             .when(self.home.resizing.is_some(), |it| {
                 it.child(self.track_resize(cx))
             })
+    }
+
+    fn keep_offscreen(&self, widget: Widget) -> bool {
+        // Retain editor controls and scrollable lists so their interaction state survives scrolling.
+        if self.home.editing {
+            return true;
+        }
+        match widget.kind {
+            Kind::Memory | Kind::Network => false,
+            Kind::Performance => {
+                self.home
+                    .sensor_editor
+                    .is_some_and(|(id, _)| id == widget.id)
+                    || self
+                        .home
+                        .layout()
+                        .sensors
+                        .get(&widget.id)
+                        .is_some_and(|options| options.mode == options::SensorMode::List)
+            }
+            Kind::Viewer => self.viewers.contains_key(&widget.id),
+            _ => true,
+        }
     }
 
     fn control_rail(
@@ -886,33 +942,13 @@ impl Dashboard {
         .inset_0()
     }
 
-    pub(super) fn sync_viewers(&mut self, cx: &mut Context<Self>) {
-        if self.home.catalog {
-            for viewer in self.viewers.values() {
-                viewer.read(cx).hide();
-            }
-            return;
-        }
-        for widget in self
-            .home
-            .layout()
-            .widgets
-            .iter()
-            .filter(|w| w.kind == Kind::Viewer)
-        {
-            let id = widget.id;
-            self.viewers.entry(id).or_insert_with(|| {
-                let options = self
-                    .home
-                    .layout()
-                    .viewers
-                    .get(&id)
-                    .cloned()
-                    .unwrap_or_default();
-                let dashboard = cx.weak_entity();
-                cx.new(|cx| super::viewer::Viewer::new(options, dashboard, id, cx))
-            });
-        }
+    fn ensure_viewer(&mut self, id: u32, cx: &mut Context<Self>) {
+        let layout = &self.home.layout().viewers;
+        self.viewers.entry(id).or_insert_with(|| {
+            let options = layout.get(&id).cloned().unwrap_or_default();
+            let dashboard = cx.weak_entity();
+            cx.new(|cx| super::viewer::Viewer::new(options, dashboard, id, cx))
+        });
     }
 
     pub(super) fn set_viewer_options(
@@ -998,6 +1034,22 @@ fn tile_button(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn horizontal_visibility_includes_only_intersecting_tiles() {
+        let grid = Grid {
+            columns: 2,
+            width: 100.,
+            height: 50.,
+        };
+        let tiles = layout::place([Kind::Performance.widget(); 3], grid.columns);
+        let width = grid.span_width(2);
+        assert!(grid.intersects(tiles[0], 0., width));
+        assert!(!grid.intersects(tiles[2], 0., width));
+        assert!(grid.intersects(tiles[0], -99., width));
+        assert!(!grid.intersects(tiles[0], -100., width));
+        assert!(grid.intersects(tiles[2], -100., width));
+    }
 
     #[test]
     fn two_stacked_two_row_widgets_fill_the_visible_grid() {

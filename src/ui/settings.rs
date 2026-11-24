@@ -851,8 +851,7 @@ impl Dashboard {
             ),
             Section::Storage => (
                 &self.preferences.hidden_drives,
-                self.metrics
-                    .storage
+                self.storage
                     .iter()
                     .map(|disk| {
                         let total = format!("{} total", capacity(disk.total));

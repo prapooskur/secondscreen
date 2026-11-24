@@ -9,11 +9,19 @@ use async_channel::{RecvError, Sender};
 use async_io::Timer;
 use futures_lite::future;
 use std::{
+    sync::mpsc::{self, RecvTimeoutError},
     thread,
     time::{Duration, Instant},
 };
 
-use crate::{config::DiscordCredentials, model::Update, monitor::Monitor, platform::Controls};
+use crate::{
+    config::DiscordCredentials,
+    model::Update,
+    monitor::{Monitor, storage},
+    platform::Controls,
+};
+
+const STORAGE_INTERVAL: Duration = Duration::from_secs(5);
 
 pub fn start(
     updates: Sender<Update>,
@@ -42,16 +50,45 @@ pub fn start(
             thread::sleep(Duration::from_secs(1));
         }
     })?;
+    let storage = storage_worker(updates.clone())?;
     let audio = worker("audio-mixer", updates.clone(), audio::Mixer::default)?;
     let media = worker("media-player", updates.clone(), media::Media::default)?;
     let discord = worker("discord-rpc", updates, move || {
         discord::Discord::new(discord_credentials)
     })?;
     Ok(Controls {
+        storage,
         audio,
         media,
         discord,
     })
+}
+
+fn storage_worker(updates: Sender<Update>) -> std::io::Result<mpsc::Sender<bool>> {
+    let (commands, receiver) = mpsc::channel::<bool>();
+    thread::Builder::new()
+        .name("storage-monitor".into())
+        .spawn(move || {
+            while let Ok(active) = receiver.recv() {
+                if !active {
+                    continue;
+                }
+                loop {
+                    if updates
+                        .send_blocking(Update::Storage(storage::sample()))
+                        .is_err()
+                    {
+                        return;
+                    }
+                    match receiver.recv_timeout(STORAGE_INTERVAL) {
+                        Ok(true) | Err(RecvTimeoutError::Timeout) => {}
+                        Ok(false) => break,
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    }
+                }
+            }
+        })?;
+    Ok(commands)
 }
 
 trait Integration {

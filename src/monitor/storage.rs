@@ -13,7 +13,7 @@ use rustix::fs::{AtFlags, Mode, OFlags, StatxFlags, fstat, fstatvfs, major, mino
 
 use crate::model::DiskUsage;
 
-pub(super) fn sample() -> Vec<DiskUsage> {
+pub(crate) fn sample() -> Vec<DiskUsage> {
     let sys = Path::new("/sys");
     let mut disks = read_disks(sys, Path::new("/dev/disk/by-id"));
     if !disks.is_empty()

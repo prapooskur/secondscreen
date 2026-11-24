@@ -4,7 +4,7 @@ use sysinfo::{Gpus, Networks, System};
 use crate::model::{Metrics, Sensor};
 
 mod sensors;
-mod storage;
+pub(crate) mod storage;
 
 pub struct Monitor {
     system: System,
@@ -124,7 +124,6 @@ impl Monitor {
             download: elapsed.map_or(0.0, |seconds| received as f32 / seconds),
             upload: elapsed.map_or(0.0, |seconds| sent as f32 / seconds),
             network_available,
-            storage: storage::sample(),
         }
     }
 }

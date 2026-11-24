@@ -62,17 +62,45 @@ impl Utilities {
         Self::default()
     }
 
-    fn record_fps(&mut self, result: anyhow::Result<Option<fps::Reading>>) {
-        self.fps_error = result
+    fn record_fps(&mut self, result: anyhow::Result<Option<fps::Reading>>) -> bool {
+        let error = result
             .as_ref()
             .err()
             .map(|e| format!("FPS feed unavailable · {e:#}"));
         let reading = result.ok().flatten();
+        let redraw = self.fps_reading.is_some() || reading.is_some() || self.fps_error != error;
         if reading.as_ref().map(|r| r.source) != self.fps_reading.as_ref().map(|r| r.source) {
             self.fps_history.clear();
         }
         append(&mut self.fps_history, reading.as_ref().map(|r| r.current));
         self.fps_reading = reading;
+        self.fps_error = error;
+        redraw
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fps_redraws_on_feed_changes_and_samples_only() {
+        let mut utilities = Utilities::default();
+        assert!(!utilities.record_fps(Ok(None)));
+        assert!(utilities.record_fps(Err(anyhow::anyhow!("offline"))));
+        assert!(!utilities.record_fps(Err(anyhow::anyhow!("offline"))));
+        for _ in 0..2 {
+            assert!(utilities.record_fps(Ok(Some(fps::Reading {
+                source: fps::Source::Gamescope,
+                current: 60.,
+                low_1: None,
+                low_01: None,
+            }))));
+        }
+        assert_eq!(utilities.fps_history.len(), 2);
+        assert!(utilities.record_fps(Ok(None)));
+        assert!(utilities.fps_history.is_empty());
+        assert!(!utilities.record_fps(Ok(None)));
     }
 }
 
@@ -131,8 +159,9 @@ impl Dashboard {
                     feed = next_feed;
                     if this
                         .update(cx, |this, cx| {
-                            this.utilities.record_fps(reading);
-                            cx.notify();
+                            if this.utilities.record_fps(reading) && this.home.shows(Kind::Fps) {
+                                cx.notify();
+                            }
                         })
                         .is_err()
                     {
@@ -191,7 +220,9 @@ impl Dashboard {
                                     })
                             }
                         }
-                        cx.notify();
+                        if this.home.shows(Kind::Weather) {
+                            cx.notify();
+                        }
                     })
                     .is_err()
                 {
@@ -216,7 +247,9 @@ impl Dashboard {
                             if this
                                 .update(cx, |this, cx| {
                                     this.utilities.notification_error = None;
-                                    cx.notify();
+                                    if this.home.shows(Kind::Notifications) {
+                                        cx.notify();
+                                    }
                                 })
                                 .is_err()
                             {
@@ -229,7 +262,9 @@ impl Dashboard {
                                             let notices = &mut this.utilities.notices;
                                             notices.truncate(29);
                                             notices.push_front(notice);
-                                            cx.notify();
+                                            if this.home.shows(Kind::Notifications) {
+                                                cx.notify();
+                                            }
                                         })
                                         .is_err()
                                 {
@@ -243,7 +278,9 @@ impl Dashboard {
                     if this
                         .update(cx, |this, cx| {
                             this.utilities.notification_error = Some(error);
-                            cx.notify();
+                            if this.home.shows(Kind::Notifications) {
+                                cx.notify();
+                            }
                         })
                         .is_err()
                     {

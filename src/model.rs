@@ -11,7 +11,6 @@ pub struct Metrics {
     pub download: f32,
     pub upload: f32,
     pub network_available: bool,
-    pub storage: Vec<DiskUsage>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -270,6 +269,7 @@ pub enum DiscordAction {
 
 pub enum Update {
     Metrics(Metrics),
+    Storage(Vec<DiskUsage>),
     Audio(AudioState),
     Media(MediaState),
     MediaSeekFailed {

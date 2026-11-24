@@ -81,6 +81,8 @@ pub struct Dashboard {
     settings: settings::SettingsView,
     metrics: Metrics,
     history: History,
+    storage: Vec<DiskUsage>,
+    storage_active: bool,
     audio: AudioState,
     audio_kind: AudioKind,
     media: MediaState,
@@ -167,6 +169,8 @@ impl Dashboard {
             settings: settings::SettingsView::new(cx.focus_handle()),
             metrics: Metrics::default(),
             history: History::default(),
+            storage: Vec::new(),
+            storage_active: false,
             audio: AudioState::default(),
             audio_kind: AudioKind::Playback,
             media: MediaState::default(),
@@ -190,10 +194,7 @@ impl Dashboard {
             Update::Metrics(metrics) => {
                 let redraw = [Kind::Performance, Kind::Memory, Kind::Network]
                     .into_iter()
-                    .any(|kind| self.home.shows(kind))
-                    || ((self.home.shows(Kind::Storage)
-                        || self.showing_settings(Section::Storage))
-                        && self.metrics.storage != metrics.storage);
+                    .any(|kind| self.home.shows(kind));
                 let mut previous = std::mem::take(&mut self.history.sensors);
                 for sensor in &metrics.sensors {
                     let mut samples = previous.remove(&sensor.id).unwrap_or_default();
@@ -214,6 +215,17 @@ impl Dashboard {
                 );
                 self.metrics = metrics;
                 if redraw {
+                    Refresh::Periodic
+                } else {
+                    Refresh::None
+                }
+            }
+            Update::Storage(drives) => {
+                if drives == self.storage {
+                    return Refresh::None;
+                }
+                self.storage = drives;
+                if self.storage_active {
                     Refresh::Periodic
                 } else {
                     Refresh::None
@@ -338,8 +350,7 @@ impl Dashboard {
     }
 
     fn visible_disks(&self) -> Vec<&DiskUsage> {
-        self.metrics
-            .storage
+        self.storage
             .iter()
             .filter(|disk| !self.preferences.hidden_drives.contains_key(&disk.id))
             .collect()
@@ -455,16 +466,6 @@ impl Dashboard {
 impl Render for Dashboard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::current(cx);
-        self.sync_viewers(cx);
-        self.sync_utilities(cx);
-        let artwork = self
-            .home
-            .shows(Kind::Media)
-            .then(|| self.current_player())
-            .flatten()
-            .and_then(|player| player.track.as_ref())
-            .and_then(|track| track.artwork.as_ref());
-        media::retain_album_art(artwork, window, cx);
         let size = window.viewport_size();
         let scale = (f32::from(size.width) / 1400.)
             .min(f32::from(size.height) / 430.)
@@ -479,6 +480,20 @@ impl Render for Dashboard {
             window.is_fullscreen(),
             cx,
         );
+        let storage_active =
+            self.home.shows(Kind::Storage) || self.showing_settings(Section::Storage);
+        if storage_active != self.storage_active {
+            self.storage_active = storage_active;
+            let _ = self.controls.storage.send(storage_active);
+        }
+        let artwork = self
+            .home
+            .contains(Kind::Media)
+            .then(|| self.current_player())
+            .flatten()
+            .and_then(|player| player.track.as_ref())
+            .and_then(|track| track.artwork.as_ref());
+        media::retain_album_art(artwork, window, cx);
 
         col()
             .relative()
