@@ -24,7 +24,7 @@ Launch **Second Screen** from your app menu in a Wayland session. Flatpak keeps 
 
 ### Build packages locally
 
-For a DEB, install the Debian or Ubuntu build dependencies below and `dpkg-dev`. For an RPM on Fedora, install `gcc`, `gcc-c++`, `make`, `pkgconf-pkg-config`, `fontconfig-devel`, `freetype-devel`, `wayland-devel`, `libxkbcommon-devel`, `webkit2gtk4.1-devel`, and `evolution-data-server-devel`. Run the commands for your format from the repository root.
+For a DEB, install the Debian or Ubuntu build dependencies below and `dpkg-dev`. For an RPM on Fedora, install `gcc`, `gcc-c++`, `make`, `pkgconf-pkg-config`, `fontconfig-devel`, `freetype-devel`, `wayland-devel`, `libxkbcommon-devel`, `'pkgconfig(xkbcommon-x11)'`, `webkit2gtk4.1-devel`, and `evolution-data-server-devel`. Run the commands for your format from the repository root.
 
 ```sh
 # DEB writes to target/debian/
@@ -58,7 +58,7 @@ Drag the grip on the right-hand rail to move the window to your bar monitor. Pre
 
 In **Settings → General**, enable **Start at login** to register the current executable with your desktop’s XDG autostart service. Your session must process XDG autostart entries. If you move the executable, toggle **Start at login** off and back on to update its path.
 
-Use **Launch display** in **Settings → General** to choose a connected output on Sway or KDE Plasma 6 on Wayland. The selection applies to both windowed and fullscreen launches. If the display is disconnected, Second Screen opens on the desktop’s default output and keeps your selection. On GNOME, the desktop chooses the launch display.
+Use **Launch display** in **Settings → General** to choose a connected output on Sway or KDE Plasma 6 on Wayland. The dashboard moves to that display and returns to it when it reconnects or the system wakes from sleep, preserving the selected fullscreen or windowed mode. If the display is disconnected at launch, the desktop chooses an output until the selected display returns. On GNOME, the desktop chooses the display.
 
 The same app can also be built with GPUI Fast:
 
@@ -109,7 +109,7 @@ Add these tiles from **Edit layout → Add widget**. Open **Settings → Widgets
 - **World clock** shows local time and your chosen IANA time zones. Enter names such as `America/New_York, Asia/Kolkata`. Each clock follows its zone’s daylight-saving rules.
 - **Calendar** marks dates with events from the enabled calendars in Evolution Data Server, which GNOME Calendar and Evolution share. Select a date to see its events in local time. Use the arrows to browse months, or click the month name to return to today. The widget refreshes every 30 seconds. Install `evolution-data-server` on the host if your desktop does not already provide it, including when using Flatpak.
 - **Weather / AQI** shows current conditions, today’s hourly temperatures in the location’s time zone, and a ten-day forecast with color-coded low-to-high ranges. Hover over the chart for the temperature at a specific hour. The tile also shows wind, sunrise and sunset, and US AQI. Enter a city name or exact latitude and longitude. City search uses the first matching location. The widget refreshes every 15 minutes and retries after five minutes when data is unavailable. [Open-Meteo weather](https://open-meteo.com/) · [Air quality data from CAMS via Open-Meteo](https://open-meteo.com/en/docs/air-quality-api)
-- **Notifications** shows the latest 30 incoming Freedesktop desktop notifications while the tile is on Home. The history stays in memory. To clear it, choose **Clear** on the tile in **Edit layout**. The desktop session bus must allow notification monitoring.
+- **Notifications** shows the latest 30 incoming Freedesktop desktop notifications while the tile is on Home. Use **Settings → Notifications** to hide individual apps or message bodies. Apps appear in Settings as they send notifications. Filters persist across restarts, and the history stays in memory. To clear it, choose **Clear** on the tile in **Edit layout**. The desktop session bus must allow notification monitoring.
 - **FPS** shows current FPS, 1% low, 0.1% low, and a 60-second graph. Install MangoHud and add the tile. In **Edit layout**, choose **Setup** on the FPS tile and copy the launch options into Steam. For a standalone game, replace `%command%` with its executable. Start Secondscreen once per login before launching the game so it can create `$XDG_RUNTIME_DIR/secondscreen-mangohud` for MangoHud's per-frame CSV files. Current FPS uses the latest second of frame times. Each low is the frame rate of the slowest 1% or 0.1% of frames in the latest 60 seconds, rounded up to at least one frame.
 
 ```sh
@@ -121,3 +121,5 @@ The existing Gamescope launch options still provide current FPS. Gamescope repor
 ```sh
 gamescope --stats-path "$XDG_RUNTIME_DIR/secondscreen-fps" -- %command%
 ```
+
+Open **Settings → Integration status** to check Calendar, FPS, and Notifications even if the tiles are absent from the active profile. The panel reports connection and feed status with setup steps for missing dependencies and desktop restrictions.

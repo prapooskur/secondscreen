@@ -1,16 +1,17 @@
 mod calendar;
 mod fps;
+mod integration_status;
 mod notifications;
 mod weather;
 mod weather_chart;
 mod weather_tile;
 
-use super::{Dashboard, HISTORY, append, home::Kind, monitor::graph, theme::*};
+use super::{Dashboard, HISTORY, Section, append, home::Kind, monitor::graph, theme::*};
 use futures_lite::StreamExt;
 use gpui::{Context, IntoElement, Styled, Task, prelude::*};
 use jiff::{Timestamp, Zoned, tz::TimeZone};
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     time::{Duration, Instant},
 };
 
@@ -42,6 +43,8 @@ pub(super) struct Utilities {
     calendar: calendar::Calendar,
     ticker: Option<(bool, Task<()>)>,
     fps_task: Option<Task<()>>,
+    fps_setup_task: Option<Task<()>>,
+    fps_setup: Option<fps::Setup>,
     fps_reading: Option<fps::Reading>,
     fps_history: VecDeque<f32>,
     fps_error: Option<String>,
@@ -51,8 +54,9 @@ pub(super) struct Utilities {
     weather_error: Option<String>,
     weather_at: Option<Instant>,
     notices: VecDeque<notifications::Notice>,
+    pub(super) notification_apps: BTreeMap<String, String>,
     notification_task: Option<Task<()>>,
-    notification_error: Option<String>,
+    notification_status: notifications::Status,
 }
 
 impl Utilities {
@@ -157,7 +161,20 @@ impl Dashboard {
     }
 
     fn sync_fps(&mut self, cx: &mut Context<Self>) {
-        if !self.home.contains(Kind::Fps) {
+        let checking = self.showing_settings(Section::Integrations);
+        if !checking {
+            self.utilities.fps_setup_task = None;
+            self.utilities.fps_setup = None;
+        } else if self.utilities.fps_setup_task.is_none() {
+            self.utilities.fps_setup_task = Some(cx.spawn(async move |this, cx| {
+                let setup = blocking::unblock(fps::Setup::check).await;
+                let _ = this.update(cx, |this, cx| {
+                    this.utilities.fps_setup = Some(setup);
+                    cx.notify();
+                });
+            }));
+        }
+        if !self.home.contains(Kind::Fps) && !checking {
             if self.utilities.fps_task.take().is_some() {
                 self.utilities.record_fps(Ok(None));
             }
@@ -178,7 +195,14 @@ impl Dashboard {
                     feed = next_feed;
                     if this
                         .update(cx, |this, cx| {
-                            if this.utilities.record_fps(reading) && this.home.shows(Kind::Fps) {
+                            let previous = this
+                                .showing_settings(Section::Integrations)
+                                .then(|| this.fps_integration_status());
+                            let redraw = this.utilities.record_fps(reading);
+                            if (redraw && this.home.shows(Kind::Fps))
+                                || previous
+                                    .is_some_and(|status| status != this.fps_integration_status())
+                            {
                                 cx.notify();
                             }
                         })
@@ -254,52 +278,50 @@ impl Dashboard {
     }
 
     fn sync_notifications(&mut self, cx: &mut Context<Self>) {
-        if !self.home.contains(Kind::Notifications) {
-            self.utilities.notification_task = None;
-            self.utilities.notification_error = None;
+        let has_tile = self.home.contains(Kind::Notifications);
+        if !has_tile {
             self.utilities.notices.clear();
+        }
+        let active = has_tile
+            || self.showing_settings(Section::Notifications)
+            || self.showing_settings(Section::Integrations);
+        if !active {
+            self.utilities.notification_task = None;
+            self.utilities.notification_status = notifications::Status::Connecting;
         } else if self.utilities.notification_task.is_none() {
             self.utilities.notification_task = Some(cx.spawn(async move |this, cx| {
                 loop {
-                    let error = match notifications::listen().await {
+                    let status = match notifications::listen().await {
                         Ok(mut stream) => {
                             if this
                                 .update(cx, |this, cx| {
-                                    this.utilities.notification_error = None;
-                                    if this.home.shows(Kind::Notifications) {
-                                        cx.notify();
-                                    }
+                                    this.set_notification_status(
+                                        notifications::Status::Listening,
+                                        cx,
+                                    );
                                 })
                                 .is_err()
                             {
                                 break;
                             }
                             while let Some(Ok(msg)) = stream.next().await {
-                                if let Some(notice) = notifications::notice(&msg)
-                                    && this
-                                        .update(cx, |this, cx| {
-                                            let notices = &mut this.utilities.notices;
-                                            notices.truncate(29);
-                                            notices.push_front(notice);
-                                            if this.home.shows(Kind::Notifications) {
-                                                cx.notify();
-                                            }
-                                        })
-                                        .is_err()
+                                if this
+                                    .update(cx, |this, cx| this.receive_notification(msg, cx))
+                                    .is_err()
                                 {
                                     return;
                                 }
                             }
-                            "Notification bus disconnected".into()
+                            notifications::Status::Disconnected
                         }
-                        Err(e) => format!("Desktop notification feed unavailable · {e}"),
+                        Err(error) => {
+                            log::debug!("Desktop notification feed unavailable: {error}");
+                            notifications::Status::from_error(&error)
+                        }
                     };
                     if this
                         .update(cx, |this, cx| {
-                            this.utilities.notification_error = Some(error);
-                            if this.home.shows(Kind::Notifications) {
-                                cx.notify();
-                            }
+                            this.set_notification_status(status, cx);
                         })
                         .is_err()
                     {
@@ -311,6 +333,60 @@ impl Dashboard {
                 }
             }));
         }
+    }
+
+    fn set_notification_status(&mut self, status: notifications::Status, cx: &mut Context<Self>) {
+        if self.utilities.notification_status == status {
+            return;
+        }
+        self.utilities.notification_status = status;
+        if self.home.shows(Kind::Notifications)
+            || self.showing_settings(Section::Notifications)
+            || self.showing_settings(Section::Integrations)
+        {
+            cx.notify();
+        }
+    }
+
+    fn receive_notification(&mut self, msg: zbus::Message, cx: &mut Context<Self>) {
+        let has_tile = self.home.contains(Kind::Notifications);
+        let editing_filters = self.showing_settings(Section::Notifications);
+        if !(has_tile || editing_filters) {
+            return;
+        }
+        let Some(notice) = notifications::notice(&msg) else {
+            return;
+        };
+        let apps = &mut self.utilities.notification_apps;
+        let app_changed = apps.get(&notice.key) != Some(&notice.app);
+        if app_changed {
+            apps.insert(notice.key.clone(), notice.app.clone());
+        }
+        let show_notice = has_tile
+            && !self
+                .preferences
+                .hidden_notification_apps
+                .contains_key(&notice.key);
+        if show_notice {
+            let notices = &mut self.utilities.notices;
+            notices.truncate(29);
+            notices.push_front(notice);
+        }
+        if (show_notice && self.home.shows(Kind::Notifications)) || (app_changed && editing_filters)
+        {
+            cx.notify();
+        }
+    }
+
+    pub(super) fn apply_notification_filters(&mut self) {
+        let hidden = &self.preferences.hidden_notification_apps;
+        self.utilities
+            .notices
+            .retain(|notice| !hidden.contains_key(&notice.key));
+    }
+
+    pub(super) fn notification_status_message(&self) -> &'static str {
+        self.utilities.notification_status.message()
     }
 
     pub(super) fn world_clock(&self, theme: Theme, height: f32) -> impl IntoElement {
@@ -359,8 +435,8 @@ impl Dashboard {
             .flex_1()
             .overflow_y_scroll()
             .gap(r(7.));
-        if let Some(error) = &state.notification_error {
-            list = list.child(theme.quiet(error.clone()));
+        if state.notification_status != notifications::Status::Listening {
+            list = list.child(theme.quiet(state.notification_status.message()));
         } else if state.notices.is_empty() {
             list = list.child(theme.quiet("Waiting for desktop notifications…"));
         }
@@ -376,9 +452,10 @@ impl Dashboard {
                         .child(theme.quiet(n.time.clone())),
                 )
                 .child(theme.label(n.title.clone()))
-                .when(!n.body.is_empty(), |it| {
-                    it.child(theme.quiet(n.body.clone()))
-                })
+                .when(
+                    !self.preferences.hide_notification_bodies && !n.body.is_empty(),
+                    |it| it.child(theme.quiet(n.body.clone())),
+                )
         }))
     }
 

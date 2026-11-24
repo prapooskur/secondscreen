@@ -581,7 +581,7 @@ pub(super) fn source_button(view: Entity<Viewer>, cx: &App) -> impl IntoElement 
 impl Dashboard {
     pub(super) fn open_discord(&mut self, link: &str, window: &mut Window, cx: &mut Context<Self>) {
         if window.is_fullscreen() {
-            window.toggle_fullscreen()
+            self.toggle_fullscreen(window);
         }
         cx.open_url(&discord_target(link));
     }

@@ -9,55 +9,27 @@ use serde::{Deserialize, de::DeserializeOwned};
 
 use crate::platform::APP_ID;
 
-use super::{Display, RETRY_INTERVAL, WINDOW_TIMEOUT};
+use super::{RETRY_INTERVAL, WINDOW_TIMEOUT};
 
-#[derive(Deserialize)]
-struct Output {
-    name: String,
-    make: String,
-    model: String,
-    rect: Size,
-    active: bool,
-}
-
-#[derive(Deserialize)]
-struct Size {
-    width: u32,
-    height: u32,
-}
-
-pub(super) fn connected() -> Result<Vec<Display>> {
-    let outputs: Vec<Output> = request("get_outputs", None)?;
-    Ok(outputs
-        .into_iter()
-        .filter(|output| output.active)
-        .map(|output| {
-            Display::with_size(
-                output.name,
-                &output.make,
-                &output.model,
-                output.rect.width,
-                output.rect.height,
-            )
-        })
-        .collect())
-}
-
-pub(super) fn place_window(display: &str) -> Result<()> {
+pub(super) fn place_window(display: &str, fullscreen: bool) -> Result<()> {
     let deadline = Instant::now() + WINDOW_TIMEOUT;
     loop {
         let tree: Node = request("get_tree", None)?;
-        if let Some((id, output)) = tree.dashboard(process::id(), None) {
+        if let Some((window, output)) = tree.dashboard(process::id(), None) {
+            let id = window.id;
             if output != Some(display) {
-                let display = display.replace('\\', "\\\\").replace('"', "\\\"");
-                let command = format!("[con_id={id}] move container to output \"{display}\"");
-                let replies: Vec<CommandReply> = request("command", Some(&command))?;
-                ensure!(
-                    !replies.is_empty() && replies.iter().all(|reply| reply.success),
-                    "Sway declined the window move"
-                );
+                let quoted = display.replace('\\', "\\\\").replace('"', "\\\"");
+                command(&format!(
+                    "[con_id={id}] move container to output \"{quoted}\""
+                ))?;
+                let tree: Node = request("get_tree", None)?;
+                let (window, output) = tree
+                    .dashboard(process::id(), None)
+                    .context("Sway no longer reports the dashboard window")?;
+                ensure!(output == Some(display), "Sway did not move the dashboard");
+                return restore_fullscreen(window, fullscreen);
             }
-            return Ok(());
+            return restore_fullscreen(window, fullscreen);
         }
         ensure!(
             Instant::now() < deadline,
@@ -65,6 +37,23 @@ pub(super) fn place_window(display: &str) -> Result<()> {
         );
         thread::sleep(RETRY_INTERVAL);
     }
+}
+
+fn restore_fullscreen(window: &Node, fullscreen: bool) -> Result<()> {
+    if (window.fullscreen_mode != 0) != fullscreen {
+        let mode = if fullscreen { "enable" } else { "disable" };
+        command(&format!("[con_id={}] fullscreen {mode}", window.id))?;
+    }
+    Ok(())
+}
+
+fn command(command: &str) -> Result<()> {
+    let replies: Vec<CommandReply> = request("command", Some(command))?;
+    ensure!(
+        !replies.is_empty() && replies.iter().all(|reply| reply.success),
+        "Sway declined the dashboard command"
+    );
+    Ok(())
 }
 
 fn request<T: DeserializeOwned>(kind: &str, command: Option<&str>) -> Result<T> {
@@ -94,6 +83,8 @@ struct Node {
     kind: String,
     app_id: Option<String>,
     pid: Option<u32>,
+    #[serde(default)]
+    fullscreen_mode: u8,
     nodes: Vec<Node>,
     floating_nodes: Vec<Node>,
 }
@@ -103,14 +94,14 @@ impl Node {
         &'a self,
         pid: u32,
         output: Option<&'a str>,
-    ) -> Option<(u64, Option<&'a str>)> {
+    ) -> Option<(&'a Self, Option<&'a str>)> {
         let output = if self.kind == "output" {
             self.name.as_deref()
         } else {
             output
         };
         if self.pid == Some(pid) && self.app_id.as_deref() == Some(APP_ID) {
-            return Some((self.id, output));
+            return Some((self, output));
         }
         self.nodes
             .iter()

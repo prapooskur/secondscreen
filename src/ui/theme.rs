@@ -7,7 +7,7 @@ use crate::config::ThemePreference;
 
 use super::icons::{Icon, icon};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Color {
     dark: u32,
     light: u32,

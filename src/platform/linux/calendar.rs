@@ -5,8 +5,6 @@ use std::{
 
 use jiff::{Span, Timestamp, Zoned, civil::Date, tz::TimeZone};
 
-const UNAVAILABLE: &str = "System calendar unavailable";
-
 pub struct Event {
     pub title: String,
     pub start: Zoned,
@@ -51,7 +49,29 @@ struct Instance {
 #[derive(Default)]
 pub struct Month {
     pub events: Vec<Event>,
-    pub issue: Option<&'static str>,
+    pub status: Status,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum Status {
+    #[default]
+    Ready,
+    Partial,
+    NoSelectedCalendars,
+    CalendarsUnavailable,
+    ServiceUnavailable,
+}
+
+impl Status {
+    pub fn issue(self) -> Option<&'static str> {
+        match self {
+            Self::Ready => None,
+            Self::Partial => Some("Some calendars are unavailable"),
+            Self::NoSelectedCalendars => Some("No calendars selected"),
+            Self::CalendarsUnavailable => Some("Selected calendars are unavailable"),
+            Self::ServiceUnavailable => Some("System calendar unavailable"),
+        }
+    }
 }
 
 unsafe extern "C" {
@@ -126,16 +146,18 @@ pub fn fetch(first: Date) -> Month {
         });
         Ok(Month {
             events,
-            issue: match status {
-                0 => None,
-                1 => Some("Some calendars are unavailable"),
-                _ => Some(UNAVAILABLE),
+            status: match status {
+                0 => Status::Ready,
+                1 => Status::Partial,
+                2 => Status::NoSelectedCalendars,
+                -2 => Status::CalendarsUnavailable,
+                _ => Status::ServiceUnavailable,
             },
         })
     })();
     result.unwrap_or(Month {
         events: Vec::new(),
-        issue: Some(UNAVAILABLE),
+        status: Status::ServiceUnavailable,
     })
 }
 

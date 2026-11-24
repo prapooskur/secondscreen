@@ -31,7 +31,27 @@ static gboolean collect_event(ICalComponent *component, ICalTime *start, ICalTim
     return TRUE;
 }
 
-// Returns 0 on success, 1 when some calendars failed, and -1 if the feed is unavailable.
+static gboolean service_running(const char *name)
+{
+    GDBusConnection *bus = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL);
+    if (!bus)
+        return FALSE;
+
+    GVariant *reply = g_dbus_connection_call_sync(bus, "org.freedesktop.DBus",
+        "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameHasOwner",
+        g_variant_new("(s)", name), G_VARIANT_TYPE("(b)"),
+        G_DBUS_CALL_FLAGS_NONE, 3000, NULL, NULL);
+    gboolean running = FALSE;
+    if (reply) {
+        g_variant_get(reply, "(b)", &running);
+        g_variant_unref(reply);
+    }
+    g_object_unref(bus);
+    return running;
+}
+
+// Returns 0 on success, 1 on partial failure, 2 with no selected calendars,
+// -1 if a required service is unavailable, and -2 if every selected calendar failed.
 int secondscreen_calendar_events(int64_t start, int64_t end, const char *timezone,
     EventCallback callback, void *data)
 {
@@ -65,7 +85,11 @@ int secondscreen_calendar_events(int64_t start, int64_t end, const char *timezon
             loaded = TRUE;
             g_object_unref(client);
         }
-        status = failed ? (loaded ? 1 : -1) : 0;
+        status = loaded ? (failed ? 1 : 0) : (failed ? -2 : 2);
+        // EDS can return an empty registry even when the source service is absent.
+        if ((status == 2 && !service_running("org.gnome.evolution.dataserver.Sources5")) ||
+            (status == -2 && !service_running("org.gnome.evolution.dataserver.Calendar8")))
+            status = -1;
         g_list_free_full(sources, g_object_unref);
         g_object_unref(registry);
     }

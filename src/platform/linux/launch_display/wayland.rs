@@ -1,48 +1,88 @@
+use std::collections::BTreeMap;
+
 use anyhow::{Context, Result};
 use wayland_client::{
-    Connection, Dispatch, Proxy, QueueHandle, WEnum,
-    globals::{GlobalListContents, registry_queue_init},
+    Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum,
+    globals::{GlobalList, GlobalListContents, registry_queue_init},
     protocol::{wl_output, wl_registry},
 };
 
 use super::Display;
 
-pub(super) fn connected() -> Result<Vec<Display>> {
-    let connection =
-        Connection::connect_to_env().context("Could not connect to the Wayland display")?;
-    let (globals, mut queue) = registry_queue_init::<Outputs>(&connection)?;
-    let handle = queue.handle();
-    let mut outputs = Outputs::default();
-    for global in globals.contents().clone_list() {
-        if global.interface == wl_output::WlOutput::interface().name && global.version >= 4 {
-            globals.registry().bind::<wl_output::WlOutput, _, _>(
-                global.name,
-                4,
-                &handle,
-                outputs.0.len(),
-            );
-            outputs.0.push(Output::default());
-        }
-    }
-    queue.roundtrip(&mut outputs)?;
-    Ok(outputs
-        .0
-        .into_iter()
-        .filter_map(|output| {
-            let name = output.name?;
-            Some(Display::with_size(
-                name,
-                &output.make,
-                &output.model,
-                output.width,
-                output.height,
-            ))
+pub struct Displays {
+    globals: GlobalList,
+    queue: EventQueue<Outputs>,
+    outputs: Outputs,
+}
+
+impl Displays {
+    pub fn open() -> Result<Self> {
+        let connection =
+            Connection::connect_to_env().context("Could not connect to the Wayland display")?;
+        let (globals, queue) = registry_queue_init::<Outputs>(&connection)?;
+        Ok(Self {
+            globals,
+            queue,
+            outputs: Outputs::default(),
         })
-        .collect())
+    }
+
+    pub fn scan(&mut self) -> Result<Vec<Display>> {
+        self.queue.roundtrip(&mut self.outputs)?;
+        let names: Vec<_> = self.globals.contents().with_list(|globals| {
+            globals
+                .iter()
+                .filter(|global| {
+                    global.interface == wl_output::WlOutput::interface().name && global.version >= 4
+                })
+                .map(|global| global.name)
+                .collect()
+        });
+        self.outputs.0.retain(|id, (proxy, _)| {
+            let present = names.contains(id);
+            if !present {
+                proxy.release();
+            }
+            present
+        });
+        let handle = self.queue.handle();
+        let mut bound = false;
+        for id in names {
+            self.outputs.0.entry(id).or_insert_with(|| {
+                bound = true;
+                let proxy = self.globals.registry().bind(id, 4, &handle, id);
+                (proxy, Output::default())
+            });
+        }
+        if bound {
+            self.queue.roundtrip(&mut self.outputs)?;
+        }
+        let mut displays: Vec<_> = self.globals.contents().with_list(|globals| {
+            self.outputs
+                .0
+                .iter()
+                .filter_map(|(&id, (_, output))| {
+                    let name = output.name.as_ref()?;
+                    globals.iter().any(|global| global.name == id).then(|| {
+                        Display::with_size(
+                            id,
+                            name.clone(),
+                            &output.make,
+                            &output.model,
+                            output.width,
+                            output.height,
+                        )
+                    })
+                })
+                .collect()
+        });
+        displays.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+        Ok(displays)
+    }
 }
 
 #[derive(Default)]
-struct Outputs(Vec<Output>);
+struct Outputs(BTreeMap<u32, (wl_output::WlOutput, Output)>);
 
 #[derive(Default)]
 struct Output {
@@ -65,16 +105,18 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Outputs {
     }
 }
 
-impl Dispatch<wl_output::WlOutput, usize> for Outputs {
+impl Dispatch<wl_output::WlOutput, u32> for Outputs {
     fn event(
         state: &mut Self,
         _: &wl_output::WlOutput,
         event: wl_output::Event,
-        index: &usize,
+        id: &u32,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        let output = &mut state.0[*index];
+        let Some((_, output)) = state.0.get_mut(id) else {
+            return;
+        };
         match event {
             wl_output::Event::Name { name } => output.name = Some(name),
             wl_output::Event::Geometry { make, model, .. } => {

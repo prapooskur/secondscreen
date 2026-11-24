@@ -100,7 +100,6 @@ fn main() -> anyhow::Result<()> {
             log::warn!("Could not register bundled fonts: {error}");
         }
 
-        let launch_display = preferences.launch_display.clone();
         let bounds = Bounds::centered(None, size(px(1440.), px(432.)), cx);
         let result = cx.open_window(
             WindowOptions {
@@ -117,18 +116,13 @@ fn main() -> anyhow::Result<()> {
             },
             |window, cx| {
                 window.set_window_title("Second Screen");
-                cx.new(|cx| ui::Dashboard::new(controls, receiver, preferences, window, cx))
+                cx.new(|cx| {
+                    ui::Dashboard::new(controls, receiver, preferences, fullscreen, window, cx)
+                })
             },
         );
         match result {
             Ok(_) => {
-                if let Some(display) = launch_display {
-                    std::thread::spawn(move || {
-                        if let Err(error) = platform::launch_display::place_window(&display) {
-                            log::warn!("Could not launch on {display}: {error:#}");
-                        }
-                    });
-                }
                 let on_close = |cx: &mut App| {
                     if cx.windows().is_empty() {
                         cx.quit();

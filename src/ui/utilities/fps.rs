@@ -5,7 +5,7 @@ use rustix::fs::{CWD, Mode, OFlags, mkfifoat, open};
 use std::{
     fs::{self, File},
     io::{ErrorKind, Read},
-    os::unix::fs::FileTypeExt,
+    os::unix::fs::{FileTypeExt, PermissionsExt},
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -26,6 +26,30 @@ pub(super) fn prepare_mangohud() -> Result<()> {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == ErrorKind::AlreadyExists && path.is_dir() => Ok(()),
         Err(error) => Err(error).with_context(|| format!("Could not create {}", path.display())),
+    }
+}
+
+pub(super) struct Setup {
+    pub mangohud: bool,
+    pub gamescope: bool,
+    pub logging_error: Option<String>,
+}
+
+impl Setup {
+    pub fn check() -> Self {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let available = |name| {
+            std::env::split_paths(&path).any(|dir| {
+                fs::metadata(dir.join(name)).is_ok_and(|metadata| {
+                    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+                })
+            })
+        };
+        Self {
+            mangohud: available("mangohud"),
+            gamescope: available("gamescope"),
+            logging_error: prepare_mangohud().err().map(|error| format!("{error:#}")),
+        }
     }
 }
 

@@ -35,17 +35,21 @@ pub(super) enum Section {
     Storage,
     Discord,
     Profiles,
+    Notifications,
+    Integrations,
 }
 
 impl Section {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 9] = [
         Self::General,
         Self::Profiles,
         Self::Widgets,
+        Self::Notifications,
+        Self::Discord,
+        Self::Integrations,
         Self::Media,
         Self::Audio,
         Self::Storage,
-        Self::Discord,
     ];
 
     fn presentation(self) -> (&'static str, Icon, Color) {
@@ -57,6 +61,8 @@ impl Section {
             Self::Storage => ("Storage", Icon::Disk, BLUE),
             Self::Discord => ("Discord", Icon::Discord, VIOLET),
             Self::Profiles => ("Profiles", Icon::Edit, TEAL),
+            Self::Notifications => ("Notifications", Icon::Bell, BLUE),
+            Self::Integrations => ("Integration status", Icon::Activity, TEAL),
         }
     }
 
@@ -65,6 +71,7 @@ impl Section {
             Self::Media => &mut preferences.hidden_media,
             Self::Audio => &mut preferences.hidden_audio,
             Self::Storage => &mut preferences.hidden_drives,
+            Self::Notifications => &mut preferences.hidden_notification_apps,
             _ => unreachable!(),
         }
     }
@@ -76,8 +83,6 @@ pub(super) struct SettingsView {
     pub(super) focus: FocusHandle,
     previous_focus: Option<FocusHandle>,
     start_at_login: bool,
-    launch_displays: Option<Result<Vec<launch_display::Display>, String>>,
-    display_query: Option<Task<()>>,
     discord_fields: Option<DiscordFields>,
     discord_saved: bool,
     widget_fields: Option<(Entity<TextInput>, Entity<TextInput>)>,
@@ -94,8 +99,6 @@ impl SettingsView {
             focus,
             previous_focus: None,
             start_at_login: false,
-            launch_displays: None,
-            display_query: None,
             discord_fields: None,
             discord_saved: false,
             widget_fields: None,
@@ -155,18 +158,6 @@ impl Dashboard {
                 Ok(enabled) => self.settings.start_at_login = enabled,
                 Err(error) => self.set_error(format!("{error:#}"), cx),
             }
-            if launch_display::supported() {
-                self.settings.launch_displays = None;
-                self.settings.display_query = Some(cx.spawn(async move |this, cx| {
-                    let displays = blocking::unblock(launch_display::connected)
-                        .await
-                        .map_err(|error| format!("{error:#}"));
-                    let _ = this.update(cx, |this, cx| {
-                        this.settings.launch_displays = Some(displays);
-                        cx.notify();
-                    });
-                }));
-            }
         }
         self.settings.section = section;
         if !self.settings.open {
@@ -188,7 +179,6 @@ impl Dashboard {
     pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings.open {
             self.settings.open = false;
-            self.settings.display_query = None;
             self.settings.widget_fields = None;
             if !matches!(
                 self.settings.launch_options_copy,
@@ -267,6 +257,7 @@ impl Dashboard {
             Section::Widgets => self.widget_settings(cx).into_any_element(),
             Section::Discord => self.discord_settings(cx).into_any_element(),
             Section::Profiles => self.profile_settings(cx).into_any_element(),
+            Section::Integrations => self.integration_settings(theme).into_any_element(),
             _ => self.visibility_settings(section, cx).into_any_element(),
         };
         theme
@@ -744,7 +735,7 @@ impl Dashboard {
     fn launch_display_settings(&self, theme: Theme, cx: &Context<Self>) -> impl IntoElement {
         let saved = self.preferences.launch_display.as_deref();
         let supported = launch_display::supported();
-        let (displays, note) = match &self.settings.launch_displays {
+        let (displays, note) = match &self.display.displays {
             _ if !supported => (
                 &[][..],
                 "Display selection is available on Sway and KDE Plasma 6.".into(),
@@ -754,23 +745,30 @@ impl Dashboard {
             Some(Ok(displays)) => {
                 let note = match saved {
                     Some(name) if !displays.iter().any(|display| display.name == name) => {
-                        format!("{name} is disconnected. The desktop will choose a display.").into()
+                        format!("Waiting for {name} to reconnect.").into()
                     }
-                    _ => "Applies on next launch.".into(),
+                    Some(name) => match &self.display.placement_error {
+                        Some((output, error)) if output == name => {
+                            format!("Retrying placement on {name}. {error}").into()
+                        }
+                        _ => "Moves back to this display when it reconnects.".into(),
+                    },
+                    None => "Let the desktop choose where the dashboard opens.".into(),
                 };
                 (displays.as_slice(), note)
             }
         };
 
-        let choices = std::iter::once((None, "Desktop default", None)).chain(displays.iter().map(
-            |display| {
+        let disconnected = saved.filter(|name| !displays.iter().any(|d| d.name == *name));
+        let choices = std::iter::once((None, "Desktop default", None))
+            .chain(disconnected.map(|name| (Some(name.to_owned()), name, None)))
+            .chain(displays.iter().map(|display| {
                 (
                     Some(display.name.clone()),
                     display.name.as_str(),
                     Some(SharedString::from(display.description.clone())),
                 )
-            },
-        ));
+            }));
         let buttons = row()
             .justify_end()
             .max_w(gpui::relative(0.72))
@@ -821,6 +819,11 @@ impl Dashboard {
                 "Choose which drives appear in the Storage widget.",
                 "Detected drives appear here.",
             ),
+            Section::Notifications => (
+                "Notifications",
+                "Choose which apps appear on the dashboard.",
+                "Apps appear here as they send desktop notifications.",
+            ),
             _ => unreachable!(),
         };
         let (hidden, detected): (&BTreeMap<_, _>, Vec<_>) = match section {
@@ -864,6 +867,22 @@ impl Dashboard {
                     })
                     .collect(),
             ),
+            Section::Notifications => (
+                &self.preferences.hidden_notification_apps,
+                self.utilities
+                    .notification_apps
+                    .iter()
+                    .map(|(key, name)| {
+                        (
+                            key.clone(),
+                            (
+                                name.clone(),
+                                key.strip_prefix("desktop:").unwrap_or("").to_owned(),
+                            ),
+                        )
+                    })
+                    .collect(),
+            ),
             _ => unreachable!(),
         };
         let mut choices = BTreeMap::new();
@@ -872,7 +891,11 @@ impl Dashboard {
                 key.clone(),
                 Choice {
                     name: name.clone(),
-                    detail: "Unavailable".into(),
+                    detail: if section == Section::Notifications {
+                        "Saved filter".into()
+                    } else {
+                        "Unavailable".into()
+                    },
                     hidden: true,
                 },
             );
@@ -900,6 +923,33 @@ impl Dashboard {
             .flex_none()
             .child(theme.title(title_text))
             .child(theme.quiet(hint))
+            .when(section == Section::Notifications, |it| {
+                let view = cx.entity();
+                it.child(preference_row(
+                    theme,
+                    "notification-bodies-row",
+                    "Message bodies",
+                    "Show only the app, title, and time when bodies are hidden.",
+                    theme.bind(
+                        choice_button(
+                            theme,
+                            "notification-bodies",
+                            !self.preferences.hide_notification_bodies,
+                            "Shown",
+                            "Hidden",
+                        ),
+                        move |_, cx| {
+                            view.update(cx, |this, cx| {
+                                let mut preferences = this.preferences.clone();
+                                preferences.hide_notification_bodies =
+                                    !preferences.hide_notification_bodies;
+                                this.save_preferences(preferences, cx);
+                            });
+                        },
+                    ),
+                ))
+                .child(theme.quiet(self.notification_status_message()))
+            })
             .when(choices.is_empty(), |it| {
                 it.child(theme.quiet(empty).py(r(10.)))
             })
@@ -922,7 +972,11 @@ impl Dashboard {
                                 if hidden.remove(&key).is_none() {
                                     hidden.insert(key.clone(), saved_name.clone());
                                 }
-                                this.save_preferences(preferences, cx);
+                                if this.save_preferences(preferences, cx)
+                                    && section == Section::Notifications
+                                {
+                                    this.apply_notification_filters();
+                                }
                             });
                         },
                     ),

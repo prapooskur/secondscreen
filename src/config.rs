@@ -24,6 +24,8 @@ pub struct Preferences {
     pub hidden_media: BTreeMap<String, String>,
     pub hidden_audio: BTreeMap<String, String>,
     pub hidden_drives: BTreeMap<String, String>,
+    pub hidden_notification_apps: BTreeMap<String, String>,
+    pub hide_notification_bodies: bool,
     pub discord: Option<DiscordCredentials>,
 }
 

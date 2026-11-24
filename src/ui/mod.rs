@@ -1,5 +1,6 @@
 mod audio;
 mod discord;
+mod display;
 mod home;
 mod icons;
 mod media;
@@ -78,6 +79,7 @@ pub struct Dashboard {
     home: home::Home,
     utilities: utilities::Utilities,
     preferences: Preferences,
+    display: display::DisplayWatch,
     settings: settings::SettingsView,
     metrics: Metrics,
     history: History,
@@ -101,6 +103,7 @@ impl Dashboard {
         controls: Controls,
         updates: Receiver<Update>,
         preferences: Preferences,
+        fullscreen: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -166,6 +169,7 @@ impl Dashboard {
             home: home::Home::load(),
             utilities: utilities::Utilities::new(),
             preferences,
+            display: display::DisplayWatch::new(fullscreen),
             settings: settings::SettingsView::new(cx.focus_handle()),
             metrics: Metrics::default(),
             history: History::default(),
@@ -464,12 +468,14 @@ impl Dashboard {
     }
 
     fn toggle_fullscreen(&mut self, window: &mut Window) {
+        self.display.fullscreen = !window.is_fullscreen();
         window.toggle_fullscreen();
     }
 }
 
 impl Render for Dashboard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_display(cx);
         let theme = Theme::current(cx);
         let size = window.viewport_size();
         let scale = (f32::from(size.width) / 1400.)

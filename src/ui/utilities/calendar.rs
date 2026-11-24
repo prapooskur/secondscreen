@@ -26,11 +26,13 @@ struct Feed {
 
 impl Dashboard {
     pub(super) fn sync_calendar(&mut self, cx: &mut Context<Self>) {
-        let state = &mut self.utilities.calendar;
-        if !self.home.contains(Kind::Calendar) {
-            state.feed = None;
+        if !self.home.contains(Kind::Calendar)
+            && !self.showing_settings(super::Section::Integrations)
+        {
+            self.utilities.calendar.feed = None;
             return;
         }
+        let state = &mut self.utilities.calendar;
         let first = state
             .month
             .unwrap_or_else(|| Zoned::now().date().first_of_month());
@@ -54,7 +56,9 @@ impl Dashboard {
                             && feed.requested == month
                         {
                             feed.snapshot = Some(snapshot);
-                            if dashboard.home.shows(Kind::Calendar) {
+                            if dashboard.home.shows(Kind::Calendar)
+                                || dashboard.showing_settings(super::Section::Integrations)
+                            {
                                 cx.notify();
                             }
                         }
@@ -222,6 +226,16 @@ impl Dashboard {
     }
 }
 
+impl Calendar {
+    pub(super) fn status(&self) -> Option<calendar::Status> {
+        self.feed
+            .as_ref()?
+            .snapshot
+            .as_ref()
+            .map(|month| month.status)
+    }
+}
+
 fn agenda(
     theme: Theme,
     selected: Date,
@@ -239,7 +253,7 @@ fn agenda(
             .iter()
             .filter(|event| event.occurs_on(selected))
             .peekable();
-        if let Some(issue) = snapshot.issue {
+        if let Some(issue) = snapshot.status.issue() {
             events = events.child(theme.quiet(issue).flex_none());
         } else if entries.peek().is_none() {
             events = events.child(theme.quiet("No events").flex_none());

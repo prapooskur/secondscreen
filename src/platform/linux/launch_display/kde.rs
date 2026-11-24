@@ -18,7 +18,7 @@ use super::{RETRY_INTERVAL, WINDOW_TIMEOUT};
 
 const KWIN: &str = "org.kde.KWin";
 
-pub(super) fn place_window(display: &str) -> Result<()> {
+pub(super) fn place_window(display: &str, fullscreen: bool) -> Result<()> {
     let runtime = env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .context("No Wayland runtime directory is available")?
@@ -38,7 +38,7 @@ pub(super) fn place_window(display: &str) -> Result<()> {
     let mut file = tempfile::NamedTempFile::new_in(runtime)?;
     writeln!(
         file,
-        "const pid = {pid};\nconst appId = {app};\nconst outputName = {output};\nconst pluginName = {plugin};\n{script}",
+        "const pid = {pid};\nconst appId = {app};\nconst outputName = {output};\nconst fullscreen = {fullscreen};\nconst pluginName = {plugin};\n{script}",
         app = serde_json::to_string(APP_ID)?,
         output = serde_json::to_string(display)?,
         plugin = serde_json::to_string(&name)?,

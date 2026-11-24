@@ -4,18 +4,22 @@ mod wayland;
 
 use std::{env, time::Duration};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+
+pub use wayland::Displays;
 
 const RETRY_INTERVAL: Duration = Duration::from_millis(75);
 const WINDOW_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Display {
+    pub id: u32,
     pub name: String,
     pub description: String,
 }
 
 impl Display {
-    fn with_size(name: String, make: &str, model: &str, width: u32, height: u32) -> Self {
+    fn with_size(id: u32, name: String, make: &str, model: &str, width: u32, height: u32) -> Self {
         let mut description = [make, model]
             .into_iter()
             .filter(|value| !value.is_empty() && *value != "Unknown")
@@ -27,7 +31,11 @@ impl Display {
             }
             description.push_str(&format!("{width} × {height}"));
         }
-        Self { name, description }
+        Self {
+            id,
+            name,
+            description,
+        }
     }
 }
 
@@ -54,45 +62,15 @@ impl Desktop {
             .is_some_and(|socket| !socket.is_empty())
             .then_some(Self::Sway)
     }
-
-    fn displays(&self) -> Result<Vec<Display>> {
-        match self {
-            Self::Sway => sway::connected(),
-            Self::Kde => wayland::connected(),
-        }
-    }
 }
 
 pub fn supported() -> bool {
     Desktop::current().is_some()
 }
 
-pub fn connected() -> Result<Vec<Display>> {
-    let Some(desktop) = Desktop::current() else {
-        return Ok(Vec::new());
-    };
-    let mut displays = desktop.displays()?;
-    displays.sort_unstable_by(|a, b| a.name.cmp(&b.name));
-    Ok(displays)
-}
-
-pub fn place_window(display: &str) -> Result<()> {
-    let Some(desktop) = Desktop::current() else {
-        return Ok(());
-    };
-    let displays = desktop.displays()?;
-    if !displays.iter().any(|output| output.name == display) {
-        log::debug!(
-            "Launch display {display} is unavailable. Connected outputs: {:?}",
-            displays
-                .iter()
-                .map(|output| &output.name)
-                .collect::<Vec<_>>()
-        );
-        return Ok(());
-    }
-    match desktop {
-        Desktop::Sway => sway::place_window(display),
-        Desktop::Kde => kde::place_window(display),
+pub fn place_window(display: &str, fullscreen: bool) -> Result<()> {
+    match Desktop::current().context("Display placement is unavailable on this desktop")? {
+        Desktop::Sway => sway::place_window(display, fullscreen),
+        Desktop::Kde => kde::place_window(display, fullscreen),
     }
 }
