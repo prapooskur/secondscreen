@@ -20,6 +20,10 @@ jobs:
             libfreetype-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libwebkit2gtk-4.1-dev libecal2.0-dev
       - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ubuntu-24.04
       - name: Build DEB
         run: |
           cargo install --locked cargo-deb --version 3.8.0
@@ -48,6 +52,10 @@ jobs:
             webkit2gtk4.1-devel evolution-data-server-devel
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: fedora-44
       - name: Build RPM
         run: |
           cargo install --locked cargo-generate-rpm --version 0.21.1
@@ -68,12 +76,45 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo downloads
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: 'false'
+          cache-bin: 'false'
+          cache-all-crates: 'true'
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y flatpak flatpak-builder
+      - name: Install Flatpak runtimes and SDK
+        id: flatpak-runtimes
+        shell: bash
+        run: |
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak-builder --user --install-deps-from=flathub --install-deps-only --assumeyes \
+            --state-dir=target/packaging/flatpak/state \
+            target/packaging/flatpak/build packaging/io.github.secondscreen.yml
+          digest=$(
+            {
+              flatpak-builder --version
+              flatpak list --user --runtime --columns=ref | LC_ALL=C sort | while IFS= read -r ref; do
+                printf '%s ' "$ref"
+                flatpak info --user --show-commit "runtime/$ref"
+              done
+            } | sha256sum
+          )
+          echo "digest=${digest%% *}" >> "$GITHUB_OUTPUT"
+      - name: Cache Flatpak build stages
+        uses: actions/cache@v5
+        with:
+          path: |
+            target/packaging/flatpak/state/cache
+            target/packaging/flatpak/state/downloads
+          key: flatpak-builder-v1-${{ runner.arch }}-${{ steps.flatpak-runtimes.outputs.digest }}-${{ hashFiles('packaging/io.github.secondscreen.yml', 'packaging/build-flatpak.sh') }}
+          restore-keys: |
+            flatpak-builder-v1-${{ runner.arch }}-${{ steps.flatpak-runtimes.outputs.digest }}-
       - name: Build Flatpak bundle
-        run: bash packaging/build-flatpak.sh
+        run: bash packaging/build-flatpak.sh --skip-install-deps
       - name: Smoke test Flatpak
         run: |
           flatpak install --user --noninteractive ./target/packaging/*.flatpak

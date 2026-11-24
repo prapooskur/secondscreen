@@ -9,8 +9,14 @@ flathub=https://dl.flathub.org/repo/flathub.flatpakrepo
 bundle="target/packaging/secondscreen-$(flatpak --default-arch).flatpak"
 
 cargo vendor --locked "$work_dir/vendor" > /dev/null
-flatpak remote-add --user --if-not-exists flathub "$flathub"
-flatpak-builder --user --install-deps-from=flathub --assumeyes \
+
+deps_args=()
+if [[ ${1:-} != --skip-install-deps ]]; then
+    flatpak remote-add --user --if-not-exists flathub "$flathub"
+    deps_args=(--install-deps-from=flathub --assumeyes)
+fi
+
+flatpak-builder --user "${deps_args[@]}" \
     --force-clean --disable-rofiles-fuse --jobs="${CARGO_BUILD_JOBS:-2}" \
     --state-dir="$work_dir/state" --repo="$work_dir/repo" --default-branch=stable \
     "$work_dir/build" "packaging/$app_id.yml"
