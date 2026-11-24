@@ -1,0 +1,85 @@
+name: Linux packages
+
+on: push
+
+permissions:
+  contents: read
+
+env:
+  CARGO_BUILD_JOBS: '2'
+
+jobs:
+  deb:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential dpkg-dev pkg-config libfontconfig-dev \
+            libfreetype-dev libwayland-dev libxkbcommon-dev libwebkit2gtk-4.1-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build DEB
+        run: |
+          cargo install --locked cargo-deb --version 3.8.0
+          cargo build --release --locked
+          cargo deb --locked --no-build
+      - name: Smoke test DEB
+        run: |
+          sudo apt-get install -y ./target/debian/*.deb
+          secondscreen --help
+      - uses: actions/upload-artifact@v7
+        with:
+          name: secondscreen-deb-x86_64
+          path: target/debian/*.deb
+          if-no-files-found: error
+
+  rpm:
+    runs-on: ubuntu-24.04
+    container: fedora:44
+    env:
+      CARGO_PROFILE_RELEASE_STRIP: symbols
+    steps:
+      - name: Install build dependencies
+        run: |
+          dnf install -y git gcc gcc-c++ make pkgconf-pkg-config fontconfig-devel \
+            freetype-devel wayland-devel libxkbcommon-devel webkit2gtk4.1-devel
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build RPM
+        run: |
+          cargo install --locked cargo-generate-rpm --version 0.21.1
+          cargo build --release --locked
+          cargo generate-rpm
+      - name: Smoke test RPM
+        run: |
+          dnf install -y ./target/generate-rpm/*.rpm
+          secondscreen --help
+      - uses: actions/upload-artifact@v7
+        with:
+          name: secondscreen-rpm-x86_64
+          path: target/generate-rpm/*.rpm
+          if-no-files-found: error
+
+  flatpak:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+      - name: Build Flatpak bundle
+        run: bash packaging/build-flatpak.sh
+      - name: Smoke test Flatpak
+        run: |
+          flatpak install --user --noninteractive ./target/packaging/*.flatpak
+          flatpak run --user io.github.secondscreen --help
+          flatpak run --user --command=pactl io.github.secondscreen --version
+          flatpak run --user --command=wl-copy io.github.secondscreen --version
+      - uses: actions/upload-artifact@v7
+        with:
+          name: secondscreen-flatpak-x86_64
+          path: target/packaging/*.flatpak
+          if-no-files-found: error

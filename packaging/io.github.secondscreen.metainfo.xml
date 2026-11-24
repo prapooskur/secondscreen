@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.secondscreen</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <name>Second Screen</name>
+  <summary>Dashboard for ultrawide secondary monitors</summary>
+  <description>
+    <p>Put live system metrics, media controls, an audio mixer, and other configurable widgets on a secondary display.</p>
+  </description>
+  <launchable type="desktop-id">io.github.secondscreen.desktop</launchable>
+  <url type="homepage">https://github.com/prapooskur/secondscreen</url>
+</component>

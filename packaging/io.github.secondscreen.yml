@@ -1,0 +1,73 @@
+app-id: io.github.secondscreen
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: secondscreen
+finish-args:
+  - --socket=wayland
+  - --device=dri
+  - --share=network
+  - --socket=pulseaudio
+  - --talk-name=org.freedesktop.secrets
+  - --talk-name=org.mpris.MediaPlayer2.*
+  - --filesystem=home:ro
+  - --filesystem=xdg-run/discord-ipc-0:ro
+  - --filesystem=xdg-run/app/com.discordapp.Discord:ro
+  - --filesystem=xdg-run/app/dev.vencord.Vesktop:ro
+modules:
+  - name: wl-clipboard
+    buildsystem: meson
+    post-install:
+      - install -Dm644 COPYING /app/share/licenses/wl-clipboard/COPYING
+    cleanup:
+      - /bin/wl-paste
+      - /share/bash-completion
+      - /share/fish
+      - /share/man
+      - /share/zsh
+    sources:
+      - type: archive
+        url: https://codeload.github.com/bugaevc/wl-clipboard/tar.gz/refs/tags/v2.3.0
+        archive-type: tar-gzip
+        sha256: b4dc560973f0cd74e02f817ffa2fd44ba645a4f1ea94b7b9614dacc9f895f402
+
+  - name: secondscreen
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/secondscreen/.cargo
+    build-commands:
+      - >-
+        cargo --config 'source.crates-io.replace-with="vendored-sources"'
+        --config 'source.vendored-sources.directory="vendor"'
+        build --release --frozen --jobs "$FLATPAK_BUILDER_N_JOBS"
+      - install -Dm755 target/release/secondscreen /app/bin/secondscreen
+      - install -Dm644 io.github.secondscreen.desktop /app/share/applications/io.github.secondscreen.desktop
+      - install -Dm644 io.github.secondscreen.svg /app/share/icons/hicolor/scalable/apps/io.github.secondscreen.svg
+      - install -Dm644 io.github.secondscreen.metainfo.xml /app/share/metainfo/io.github.secondscreen.metainfo.xml
+      - install -Dm644 -t /app/share/licenses/secondscreen assets/fonts/*-OFL.txt
+    sources:
+      - type: file
+        path: ../Cargo.toml
+      - type: file
+        path: ../Cargo.lock
+      - type: file
+        path: ../build.rs
+      - type: dir
+        path: ../src
+        dest: src
+      - type: dir
+        path: ../assets
+        dest: assets
+      - type: dir
+        path: ../target/packaging/flatpak/vendor
+        dest: vendor
+      - type: file
+        path: io.github.secondscreen.desktop
+      - type: file
+        path: io.github.secondscreen.svg
+      - type: file
+        path: io.github.secondscreen.metainfo.xml

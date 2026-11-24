@@ -10,6 +10,37 @@ The app opens to a single resizable widget grid. Use **Edit layout** in the righ
 - **Discord** shows a green ring around each speaker’s avatar and a **LIVE** badge when the desktop client reports a Go Live stream. The widget also provides controls to connect, mute, deafen, and leave a call.
 - **Viewer** displays web pages, iframes, YouTube, Twitch, and local media inside the grid. Discord voice channel links open in Discord.
 
+## Install on Linux
+
+Open the **Linux packages** run for your commit under **Actions** on GitHub. Every push builds x86-64 packages with the default GPUI backend. Download and unzip the artifact for your distribution, then install the package inside it.
+
+| Package | Build environment | Install |
+| --- | --- | --- |
+| DEB | Ubuntu 24.04 | `sudo apt install ./*.deb` |
+| RPM | Fedora 44 | `sudo dnf install ./*.rpm` |
+| Flatpak | GNOME 51 runtime from Flathub | `flatpak install --user ./*.flatpak` |
+
+Launch **Second Screen** from your app menu in a Wayland session. Flatpak keeps its settings separately under `~/.var/app/io.github.secondscreen`. The sandbox limits host integrations such as login launchers, compositor control, desktop notification monitoring, and FPS feeds from host games.
+
+### Build packages locally
+
+For a DEB, install the Debian or Ubuntu build dependencies below and `dpkg-dev`. For an RPM on Fedora, install `gcc`, `gcc-c++`, `make`, `pkgconf-pkg-config`, `fontconfig-devel`, `freetype-devel`, `wayland-devel`, `libxkbcommon-devel`, and `webkit2gtk4.1-devel`. Run the commands for your format from the repository root.
+
+```sh
+# DEB writes to target/debian/
+cargo install --locked cargo-deb --version 3.8.0
+cargo build --release --locked
+cargo deb --locked --no-build
+
+# RPM writes to target/generate-rpm/
+cargo install --locked cargo-generate-rpm --version 0.21.1
+CARGO_PROFILE_RELEASE_STRIP=symbols cargo build --release --locked
+cargo generate-rpm
+
+# Flatpak requires flatpak, flatpak-builder, and Cargo, and writes to target/packaging/
+bash packaging/build-flatpak.sh
+```
+
 ## Run on Linux
 
 Build with Rust 1.95 or newer and keep the provided Cargo lockfile. On Debian or Ubuntu, install the build and audio dependencies:

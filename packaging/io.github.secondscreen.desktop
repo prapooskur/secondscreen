@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Second Screen
+Comment=Dashboard for ultrawide secondary monitors
+Exec=secondscreen
+Icon=io.github.secondscreen
+Terminal=false
+Categories=Utility;

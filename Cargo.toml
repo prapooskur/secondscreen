@@ -4,6 +4,40 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 description = "A desktop control panel for ultrawide secondary displays"
+repository = "https://github.com/prapooskur/secondscreen"
+
+[package.metadata.deb]
+maintainer = "Prasiddh <61389919+prapooskur@users.noreply.github.com>"
+section = "utils"
+depends = "$auto, libvulkan1, libwebkit2gtk-4.1-0, pulseaudio-utils, wl-clipboard"
+recommends = "gstreamer1.0-plugins-good, gstreamer1.0-libav"
+assets = [
+    ["target/release/secondscreen", "usr/bin/secondscreen", "755"],
+    ["packaging/io.github.secondscreen.desktop", "usr/share/applications/", "644"],
+    ["packaging/io.github.secondscreen.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["packaging/io.github.secondscreen.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["assets/fonts/*-OFL.txt", "usr/share/doc/secondscreen/", "644"],
+]
+
+[package.metadata.generate-rpm]
+license = "Unspecified"
+assets = [
+    { source = "target/release/secondscreen", dest = "/usr/bin/secondscreen", mode = "755" },
+    { source = "packaging/io.github.secondscreen.desktop", dest = "/usr/share/applications/", mode = "644" },
+    { source = "packaging/io.github.secondscreen.svg", dest = "/usr/share/icons/hicolor/scalable/apps/", mode = "644" },
+    { source = "packaging/io.github.secondscreen.metainfo.xml", dest = "/usr/share/metainfo/", mode = "644" },
+    { source = "assets/fonts/*-OFL.txt", dest = "/usr/share/licenses/secondscreen/", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+vulkan-loader = "*"
+"libwebkit2gtk-4.1.so.0()(64bit)" = "*"
+pulseaudio-utils = "*"
+wl-clipboard = "*"
+
+[package.metadata.generate-rpm.recommends]
+gstreamer1-plugins-good = "*"
+gstreamer1-plugin-libav = "*"
 
 [features]
 default = ["ui-gpui"]
