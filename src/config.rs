@@ -152,15 +152,23 @@ fn nonempty(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 
-pub fn config_home() -> Option<PathBuf> {
-    env::var_os("XDG_CONFIG_HOME")
+fn xdg_home(variable: &str, fallback: &str) -> Option<PathBuf> {
+    env::var_os(variable)
         .filter(|path| Path::new(path).is_absolute())
         .map(PathBuf::from)
         .or_else(|| {
             env::var_os("HOME")
                 .filter(|path| Path::new(path).is_absolute())
-                .map(|home| PathBuf::from(home).join(".config"))
+                .map(|home| PathBuf::from(home).join(fallback))
         })
+}
+
+pub fn config_home() -> Option<PathBuf> {
+    xdg_home("XDG_CONFIG_HOME", ".config")
+}
+
+pub fn cache_home() -> Option<PathBuf> {
+    xdg_home("XDG_CACHE_HOME", ".cache")
 }
 
 pub fn path(file: &str) -> Option<PathBuf> {

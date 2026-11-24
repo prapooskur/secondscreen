@@ -27,7 +27,7 @@ impl Dashboard {
             .overflow_y_scroll()
             .p(r(10.))
             .gap(r(10.));
-        let Some(report) = &state.report else {
+        let Some(cached) = &state.report else {
             let message = state.weather_error.as_deref().unwrap_or_else(|| {
                 if state.weather_query.is_empty() {
                     "Choose a location in Settings → Widgets."
@@ -38,6 +38,7 @@ impl Dashboard {
             return tile.child(theme.quiet(message.to_owned()));
         };
 
+        let report = &cached.report;
         let forecast = report.weather.as_ref();
         let today = forecast.and_then(|weather| {
             weather
@@ -114,13 +115,13 @@ impl Dashboard {
                     .as_ref()
                     .map(|error| theme.quiet(error.clone())),
             )
-            .children(state.weather_at.map(|at| {
-                let minutes = at.elapsed().as_secs() / 60;
+            .child({
+                let minutes = cached.updated_at.elapsed().unwrap_or_default().as_secs() / 60;
                 theme
                     .quiet(format!("Open-Meteo / CAMS · {minutes} min ago"))
                     .text_size(r(10.))
                     .flex_none()
-            }))
+            })
     }
 }
 

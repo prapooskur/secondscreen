@@ -4,8 +4,12 @@ use reqwest::{
     StatusCode,
     blocking::{Client, RequestBuilder},
 };
-use serde::{Deserialize, de::DeserializeOwned};
-use std::time::Duration;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use sha2::{Digest, Sha256};
+use std::{
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime},
+};
 
 const GEOCODING: &str = "https://geocoding-api.open-meteo.com/v1/search";
 const FORECAST: &str = "https://api.open-meteo.com/v1/forecast";
@@ -14,10 +18,12 @@ const CURRENT_FIELDS: &str = "temperature_2m,weather_code,is_day,wind_speed_10m"
 const DAILY_FIELDS: &str = "weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset";
 const SHORT_TIMEOUT: Duration = Duration::from_secs(8);
 const FORECAST_TIMEOUT: Duration = Duration::from_secs(15);
-pub(super) const FORECAST_DAYS: usize = 10;
+const REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
+pub(super) const RETRY_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const FORECAST_DAYS: usize = 10;
 pub(super) const HOURS_PER_DAY: usize = 24;
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub(super) struct Place {
     pub name: String,
     latitude: f64,
@@ -99,7 +105,7 @@ fn locate(client: &Client, query: &str) -> Result<Place> {
 struct AirResponse {
     current: Option<Air>,
 }
-#[derive(Default, Deserialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 pub(super) struct Conditions {
     time: Option<String>,
     pub temperature_2m: Option<f32>,
@@ -108,6 +114,7 @@ pub(super) struct Conditions {
     pub wind_speed_10m: Option<f32>,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
 pub(super) struct Day {
     pub date: Date,
     pub weather_code: Option<u8>,
@@ -169,6 +176,7 @@ struct ForecastResponse {
     hourly: Option<HourlyReading>,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
 pub(super) struct Weather {
     pub current: Option<Conditions>,
     pub days: Vec<Day>,
@@ -235,10 +243,67 @@ struct Air {
     us_aqi: Option<f32>,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
 pub(super) struct Report {
     pub place: Place,
     pub weather: Option<Weather>,
     pub aqi: Option<f32>,
+}
+
+impl Report {
+    pub(super) fn is_complete(&self) -> bool {
+        self.aqi.is_some()
+            && self.weather.as_ref().is_some_and(|forecast| {
+                forecast.current.is_some()
+                    && forecast.days.len() == FORECAST_DAYS
+                    && forecast.has_hourly_temperatures()
+            })
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(super) struct CachedReport {
+    pub report: Report,
+    pub updated_at: SystemTime,
+    pub fetched_at: SystemTime,
+    pub complete: bool,
+}
+
+impl CachedReport {
+    pub(super) fn load(path: &Path) -> Option<Self> {
+        crate::config::read_json(path).unwrap_or_else(|error| {
+            log::debug!("Could not read cached weather: {error:#}");
+            None
+        })
+    }
+
+    pub(super) fn save(&self, path: &Path) {
+        if let Err(error) = crate::config::write_json(path, self) {
+            log::debug!("Could not cache weather: {error:#}");
+        }
+    }
+
+    pub(super) fn refresh_delay(&self, now: SystemTime) -> Duration {
+        let Ok(age) = now.duration_since(self.fetched_at) else {
+            return Duration::ZERO;
+        };
+        let interval = if self.complete {
+            REFRESH_INTERVAL
+        } else {
+            RETRY_INTERVAL
+        };
+        interval.saturating_sub(age)
+    }
+}
+
+pub(super) fn cache_path(query: &str) -> Option<PathBuf> {
+    crate::config::cache_home().map(|home| cache_file(&home, query))
+}
+
+fn cache_file(home: &Path, query: &str) -> PathBuf {
+    let key = Sha256::digest(query.as_bytes());
+    home.join("secondscreen/weather")
+        .join(format!("{key:x}.json"))
 }
 
 pub(super) fn fetch(query: &str, known: Option<Place>) -> Result<Report> {
@@ -447,6 +512,7 @@ mod tests {
         let forecast = format!("{base}/forecast");
         let air = format!("{base}/air");
         let mut utilities = super::super::Utilities::default();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         for expected in [Some(42.), None] {
             let report = fetch_at(&client, place.clone(), &forecast, &air).unwrap();
             assert_eq!(report.aqi, expected);
@@ -475,16 +541,18 @@ mod tests {
             assert_eq!(weather.days[2].high, Some(12.));
             assert_eq!(weather.days[2].weather_code, Some(63));
             assert_eq!(weather.days[9].date.to_string(), "2027-01-06");
-            utilities.record_weather(report);
+            utilities.record_weather(report, now);
         }
         let air_only = fetch_at(&client, place.clone(), &forecast, &air).unwrap();
         assert!(air_only.weather.is_none());
-        let forecast_at = utilities.weather_at;
-        utilities.record_weather(air_only);
+        let refreshed_at = now + RETRY_INTERVAL;
+        utilities.record_weather(air_only, refreshed_at);
         let combined = utilities.report.unwrap();
-        assert_eq!(combined.aqi, Some(52.));
-        assert_eq!(combined.weather.unwrap().days.len(), FORECAST_DAYS);
-        assert_eq!(utilities.weather_at, forecast_at);
+        assert_eq!(combined.report.aqi, Some(52.));
+        assert_eq!(combined.report.weather.unwrap().days.len(), FORECAST_DAYS);
+        assert_eq!(combined.updated_at, now);
+        assert_eq!(combined.fetched_at, refreshed_at);
+        assert!(!combined.complete);
         assert!(utilities.weather_error.is_some());
         let Err(error) = fetch_at(&client, place, &forecast, &air) else {
             panic!("a denied forecast and missing AQI should fail");
@@ -493,6 +561,67 @@ mod tests {
         assert!(!format!("{error:#}").contains("latitude="));
         worker.join().unwrap();
         assert!(coordinates("91, 10").is_err());
+    }
+
+    #[test]
+    fn cached_weather_survives_reload_with_its_original_refresh_deadline() {
+        let cache = tempfile::tempdir().unwrap();
+        let path = cache_file(cache.path(), "London");
+        let fetched_at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let forecast = serde_json::from_str::<ForecastResponse>(
+            r#"{
+                "current":{"time":"2026-12-28T14:15","temperature_2m":12.5},
+                "hourly":{"time":["2026-12-28T00:00"],"temperature_2m":[9.1]},
+                "daily":{"time":["2026-12-28"],"sunrise":["2026-12-28T08:04"]}
+            }"#,
+        )
+        .unwrap()
+        .weather()
+        .unwrap();
+        let mut cached = CachedReport {
+            report: Report {
+                place: Place {
+                    name: "London".into(),
+                    latitude: 51.5,
+                    longitude: -0.12,
+                    country: "United Kingdom".into(),
+                },
+                weather: Some(forecast),
+                aqi: Some(42.),
+            },
+            fetched_at,
+            updated_at: fetched_at,
+            complete: true,
+        };
+        cached.save(&path);
+        let reloaded = CachedReport::load(&path).unwrap();
+        assert_eq!(reloaded.updated_at, fetched_at);
+        assert_eq!(reloaded.report.place.name, "London");
+        assert_eq!(reloaded.report.aqi, Some(42.));
+        assert_eq!(
+            reloaded.refresh_delay(fetched_at + RETRY_INTERVAL),
+            REFRESH_INTERVAL - RETRY_INTERVAL,
+        );
+        assert!(
+            reloaded
+                .refresh_delay(fetched_at + REFRESH_INTERVAL)
+                .is_zero()
+        );
+        let forecast = reloaded.report.weather.unwrap();
+        assert_eq!(forecast.days[0].date.to_string(), "2026-12-28");
+        assert_eq!(forecast.days[0].sunrise.unwrap().to_string(), "08:04:00");
+        assert_eq!(forecast.hourly[0], Some(9.1));
+        assert!(CachedReport::load(&cache_file(cache.path(), "Tokyo")).is_none());
+
+        cached.complete = false;
+        cached.save(&path);
+        let reloaded = CachedReport::load(&path).unwrap();
+        assert_eq!(reloaded.refresh_delay(fetched_at), RETRY_INTERVAL);
+        assert!(
+            reloaded
+                .refresh_delay(fetched_at + RETRY_INTERVAL)
+                .is_zero()
+        );
     }
 
     #[test]

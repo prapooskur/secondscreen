@@ -60,7 +60,7 @@ gpui-fast-platform = { version = "0.1.17", optional = true, default-features = f
 blocking = "1"
 base64 = "0.22"
 futures-lite = "2"
-jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
+jiff = { version = "0.2", default-features = false, features = ["serde", "std", "tz-system", "tzdb-zoneinfo"] }
 freedesktop-icons = "0.4"
 oo7 = { version = "0.5", default-features = false, features = ["async-std", "native_crypto"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }

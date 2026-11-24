@@ -12,7 +12,7 @@ use gpui::{Context, IntoElement, Styled, Task, prelude::*};
 use jiff::{Timestamp, Zoned, tz::TimeZone};
 use std::{
     collections::{BTreeMap, VecDeque},
-    time::{Duration, Instant},
+    time::{Duration, SystemTime},
 };
 
 pub(super) fn clock_zones(saved: &Option<Vec<String>>) -> Vec<String> {
@@ -50,9 +50,8 @@ pub(super) struct Utilities {
     fps_error: Option<String>,
     weather_query: String,
     weather_task: Option<Task<()>>,
-    report: Option<weather::Report>,
+    report: Option<weather::CachedReport>,
     weather_error: Option<String>,
-    weather_at: Option<Instant>,
     notices: VecDeque<notifications::Notice>,
     pub(super) notification_apps: BTreeMap<String, String>,
     notification_task: Option<Task<()>>,
@@ -83,21 +82,28 @@ impl Utilities {
         redraw
     }
 
-    fn record_weather(&mut self, mut report: weather::Report) {
-        let forecast_updated = report.weather.is_some();
-        if !forecast_updated {
-            report.weather = self
-                .report
-                .as_mut()
-                .and_then(|previous| previous.weather.take());
+    fn record_weather(
+        &mut self,
+        mut report: weather::Report,
+        now: SystemTime,
+    ) -> &weather::CachedReport {
+        let complete = report.is_complete();
+        let mut updated_at = now;
+        self.weather_error = None;
+        if report.weather.is_none()
+            && let Some(previous) = self.report.take()
+            && previous.report.weather.is_some()
+        {
+            report.weather = previous.report.weather;
+            updated_at = previous.updated_at;
+            self.weather_error = Some("Forecast refresh failed · showing the last forecast".into());
         }
-        let showing_last_forecast = !forecast_updated && report.weather.is_some();
-        if !showing_last_forecast {
-            self.weather_at = Some(Instant::now());
-        }
-        self.weather_error = showing_last_forecast
-            .then(|| "Forecast refresh failed · showing the last forecast".into());
-        self.report = Some(report);
+        self.report.insert(weather::CachedReport {
+            report,
+            updated_at,
+            fetched_at: now,
+            complete,
+        })
     }
 }
 
@@ -217,62 +223,97 @@ impl Dashboard {
     }
 
     fn sync_weather(&mut self, cx: &mut Context<Self>) {
-        let query = if self.home.contains(Kind::Weather) {
-            self.preferences.weather_location.trim()
-        } else {
-            ""
-        };
-        if self.utilities.weather_query == query {
-            return;
+        let query = self.preferences.weather_location.trim();
+        if self.utilities.weather_query != query {
+            self.utilities.weather_query = query.into();
+            self.utilities.weather_task = None;
+            self.utilities.report = None;
+            self.utilities.weather_error = None;
         }
-        self.utilities.weather_query = query.into();
-        self.utilities.weather_task = None;
-        self.utilities.report = None;
-        self.utilities.weather_error = None;
-        self.utilities.weather_at = None;
-        if query.is_empty() {
+        if query.is_empty()
+            || !self.home.contains(Kind::Weather)
+            || self.utilities.weather_task.is_some()
+        {
             return;
         }
         let query = query.to_owned();
+        let cached_delay = self
+            .utilities
+            .report
+            .as_ref()
+            .map(|cached| cached.refresh_delay(SystemTime::now()));
         self.utilities.weather_task = Some(cx.spawn(async move |this, cx| {
-            let mut place = None;
-            loop {
-                let query = query.clone();
-                let known = place.clone();
-                let result = blocking::unblock(move || weather::fetch(&query, known)).await;
-                let complete = result.as_ref().is_ok_and(|r| {
-                    r.weather.as_ref().is_some_and(|w| {
-                        w.current.is_some()
-                            && w.days.len() == weather::FORECAST_DAYS
-                            && w.has_hourly_temperatures()
-                    }) && r.aqi.is_some()
-                });
+            let cache_path = weather::cache_path(&query);
+            let mut delay = cached_delay.unwrap_or_default();
+            if let (None, Some(path)) = (cached_delay, cache_path.clone())
+                && let Some(cached) =
+                    blocking::unblock(move || weather::CachedReport::load(&path)).await
+            {
+                delay = cached.refresh_delay(SystemTime::now());
                 if this
                     .update(cx, |this, cx| {
-                        match result {
-                            Ok(report) => {
-                                place = Some(report.place.clone());
-                                this.utilities.record_weather(report);
-                            }
-                            Err(e) => {
-                                this.utilities.weather_error =
-                                    Some(if this.utilities.report.is_some() {
-                                        "Refresh failed · showing the last forecast".into()
-                                    } else {
-                                        e.to_string()
-                                    })
-                            }
-                        }
+                        this.utilities.report = Some(cached);
                         if this.home.shows(Kind::Weather) {
                             cx.notify();
                         }
                     })
                     .is_err()
                 {
-                    break;
+                    return;
                 }
-                let delay = Duration::from_secs(if complete { 900 } else { 300 });
-                cx.background_executor().timer(delay).await;
+            }
+            loop {
+                if !delay.is_zero() {
+                    cx.background_executor().timer(delay).await;
+                }
+                let Ok(Some(known_place)) = this.update(cx, |this, _| {
+                    if !this.home.contains(Kind::Weather) {
+                        // Let in-flight refreshes finish, but start no new requests while hidden.
+                        this.utilities.weather_task = None;
+                        return None;
+                    }
+                    Some(
+                        this.utilities
+                            .report
+                            .as_ref()
+                            .map(|cached| cached.report.place.clone()),
+                    )
+                }) else {
+                    break;
+                };
+                let query = query.clone();
+                let result = blocking::unblock(move || weather::fetch(&query, known_place)).await;
+                let Ok(cached) = this.update(cx, |this, cx| {
+                    let cached = match result {
+                        Ok(report) => Some(
+                            this.utilities
+                                .record_weather(report, SystemTime::now())
+                                .clone(),
+                        ),
+                        Err(e) => {
+                            this.utilities.weather_error =
+                                Some(if this.utilities.report.is_some() {
+                                    "Refresh failed · showing the last forecast".into()
+                                } else {
+                                    e.to_string()
+                                });
+                            None
+                        }
+                    };
+                    if this.home.shows(Kind::Weather) {
+                        cx.notify();
+                    }
+                    cached
+                }) else {
+                    break;
+                };
+                delay = weather::RETRY_INTERVAL;
+                if let Some(cached) = cached {
+                    delay = cached.refresh_delay(SystemTime::now());
+                    if let Some(path) = cache_path.clone() {
+                        blocking::unblock(move || cached.save(&path)).await;
+                    }
+                }
             }
         }));
     }
