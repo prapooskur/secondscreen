@@ -29,3 +29,4 @@ function placeWindow() {
 
 timer.timeout.connect(placeWindow);
 timer.start();
+placeWindow();

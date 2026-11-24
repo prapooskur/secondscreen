@@ -6,10 +6,33 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, de::DeserializeOwned};
+use sha2::{Digest, Sha256};
 
 use crate::platform::APP_ID;
 
 use super::{RETRY_INTERVAL, WINDOW_TIMEOUT};
+
+pub(super) fn startup_title(display: &str) -> Result<String> {
+    ensure!(
+        !display.is_empty()
+            && display
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+            && !matches!(display, "left" | "right" | "up" | "down" | "current"),
+        "Unsupported Sway output name for launch placement"
+    );
+    // Sway reuses identical for_window rules. The startup title scopes the rule
+    // to windows currently opening for this output, even after settings change.
+    let title = format!(
+        "Second Screen - launch {:x}",
+        Sha256::digest(display.as_bytes())
+    );
+    let app_id = APP_ID.replace('.', "[.]");
+    command(&format!(
+        "for_window [app_id=\"^{app_id}$\" title=\"^{title}$\"] move container to output {display}"
+    ))?;
+    Ok(title)
+}
 
 pub(super) fn place_window(display: &str, fullscreen: bool) -> Result<()> {
     let deadline = Instant::now() + WINDOW_TIMEOUT;

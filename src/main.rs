@@ -42,7 +42,10 @@ mod viewer;
 ))]
 fn main() -> anyhow::Result<()> {
     use anyhow::{Context as _, bail, ensure};
-    use gpui::{App, AppContext, Bounds, WindowBounds, WindowDecorations, WindowOptions, px, size};
+    use gpui::{
+        App, AppContext, Bounds, WindowBackgroundAppearance, WindowBounds, WindowDecorations,
+        WindowOptions, px, size,
+    };
     use std::{borrow::Cow, ffi::OsStr};
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
@@ -85,6 +88,14 @@ fn main() -> anyhow::Result<()> {
 
     let preferences = config::Preferences::load();
     fullscreen |= preferences.start_fullscreen;
+    let startup_title = preferences.launch_display.as_deref().and_then(|display| {
+        platform::launch_display::prepare_startup(display, ui::WINDOW_TITLE).unwrap_or_else(
+            |error| {
+                log::debug!("Could not prepare launch display: {error:#}");
+                None
+            },
+        )
+    });
     let (updates, receiver) = async_channel::unbounded();
     let controls = platform::start(updates, preferences.discord.clone())
         .context("Could not start desktop services")?;
@@ -110,14 +121,27 @@ fn main() -> anyhow::Result<()> {
                 }),
                 titlebar: None,
                 app_id: Some(platform::APP_ID.into()),
+                window_background: if startup_title.is_some() {
+                    WindowBackgroundAppearance::Transparent
+                } else {
+                    WindowBackgroundAppearance::Opaque
+                },
                 window_decorations: Some(WindowDecorations::Client),
                 window_min_size: Some(size(px(740.), px(300.))),
                 ..Default::default()
             },
             |window, cx| {
-                window.set_window_title("Second Screen");
+                window.set_window_title(startup_title.as_deref().unwrap_or(ui::WINDOW_TITLE));
                 cx.new(|cx| {
-                    ui::Dashboard::new(controls, receiver, preferences, fullscreen, window, cx)
+                    ui::Dashboard::new(
+                        controls,
+                        receiver,
+                        preferences,
+                        fullscreen,
+                        startup_title.is_some(),
+                        window,
+                        cx,
+                    )
                 })
             },
         );

@@ -1,28 +1,39 @@
 use std::time::Duration;
 
-use gpui::{Context, Task};
+use gpui::{Context, Task, Window, WindowBackgroundAppearance};
 use rustix::time::{ClockId, clock_gettime};
 
 use crate::platform::launch_display::{self, Display, Displays};
 
-use super::{Dashboard, settings::Section};
+use super::{Dashboard, WINDOW_TITLE, settings::Section};
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Default)]
 pub(super) struct DisplayWatch {
     pub fullscreen: bool,
+    pub placing_at_startup: bool,
     pub displays: Option<Result<Vec<Display>, String>>,
     pub placement_error: Option<(String, String)>,
     task: Option<Task<()>>,
 }
 
 impl DisplayWatch {
-    pub fn new(fullscreen: bool) -> Self {
+    pub fn new(fullscreen: bool, placing_at_startup: bool) -> Self {
         Self {
             fullscreen,
+            placing_at_startup,
             ..Self::default()
         }
+    }
+
+    fn reveal(&mut self, window: &mut Window) -> bool {
+        if !std::mem::take(&mut self.placing_at_startup) {
+            return false;
+        }
+        window.set_window_title(WINDOW_TITLE);
+        window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+        true
     }
 }
 
@@ -33,7 +44,7 @@ fn time_suspended() -> Duration {
 }
 
 impl Dashboard {
-    pub(super) fn sync_display(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn sync_display(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let active = (self.preferences.launch_display.is_some()
             || self.showing_settings(Section::General))
             && launch_display::supported();
@@ -41,13 +52,14 @@ impl Dashboard {
             self.display.task = None;
             self.display.displays = None;
             self.display.placement_error = None;
+            self.display.reveal(window);
             return;
         }
         if self.display.task.is_some() {
             return;
         }
 
-        self.display.task = Some(cx.spawn(async move |this, cx| {
+        self.display.task = Some(cx.spawn_in(window, async move |this, cx| {
             let mut tracker = None;
             let mut placed = None;
             let mut suspended = time_suspended();
@@ -71,7 +83,7 @@ impl Dashboard {
                 })
                 .await;
                 tracker = next;
-                let Ok(target) = this.update(cx, |this, cx| {
+                let Ok(target) = this.update_in(cx, |this, window, cx| {
                     let selected = this.preferences.launch_display.as_deref();
                     let target = displays
                         .as_ref()
@@ -91,7 +103,10 @@ impl Dashboard {
                     if changed {
                         this.display.displays = Some(displays);
                     }
-                    if (changed || clear_error) && this.showing_settings(Section::General) {
+                    let revealed = target.is_none() && this.display.reveal(window);
+                    if revealed
+                        || (changed || clear_error) && this.showing_settings(Section::General)
+                    {
                         cx.notify();
                     }
                     target.map(|target| (target, this.display.fullscreen))
@@ -108,7 +123,7 @@ impl Dashboard {
                                 .map(|error| (name, format!("{error:#}")))
                         })
                         .await;
-                        let Ok(current) = this.update(cx, |this, cx| {
+                        let Ok(current) = this.update_in(cx, |this, window, cx| {
                             if this.preferences.launch_display.as_ref() != Some(&target.0) {
                                 return false;
                             }
@@ -120,6 +135,9 @@ impl Dashboard {
                                 if this.showing_settings(Section::General) {
                                     cx.notify();
                                 }
+                            }
+                            if this.display.reveal(window) {
+                                cx.notify();
                             }
                             error.is_none() && this.display.fullscreen == fullscreen
                         }) else {

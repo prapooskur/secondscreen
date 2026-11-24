@@ -40,6 +40,7 @@ use crate::{
 use theme::*;
 use {home::Kind, settings::Section};
 
+pub const WINDOW_TITLE: &str = "Second Screen";
 const HISTORY: usize = 60;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const NOTICE_DURATION: Duration = Duration::from_secs(9);
@@ -106,6 +107,7 @@ impl Dashboard {
         updates: Receiver<Update>,
         preferences: Preferences,
         fullscreen: bool,
+        placing_at_startup: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -171,7 +173,7 @@ impl Dashboard {
             home: home::Home::load(),
             utilities: utilities::Utilities::new(),
             preferences,
-            display: display::DisplayWatch::new(fullscreen),
+            display: display::DisplayWatch::new(fullscreen, placing_at_startup),
             settings: settings::SettingsView::new(cx.focus_handle()),
             metrics: Metrics::default(),
             history: History::default(),
@@ -491,7 +493,11 @@ impl Dashboard {
 
 impl Render for Dashboard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.sync_display(cx);
+        self.sync_display(window, cx);
+        if self.display.placing_at_startup {
+            // Wayland must map the surface before the compositor can place it.
+            return col().size_full().into_any_element();
+        }
         let theme = Theme::current(cx);
         let size = window.viewport_size();
         let scale = (f32::from(size.width) / 1400.)
@@ -541,6 +547,7 @@ impl Render for Dashboard {
                 root.child(self.settings_overlay(cx))
             })
             .children(self.notice(theme))
+            .into_any_element()
     }
 }
 

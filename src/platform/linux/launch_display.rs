@@ -68,6 +68,30 @@ pub fn supported() -> bool {
     Desktop::current().is_some()
 }
 
+pub fn prepare_startup(display: &str, title: &str) -> Result<Option<String>> {
+    let Some(desktop) = Desktop::current() else {
+        return Ok(None);
+    };
+    // Leave an inherited, single-use Wayland connection for GPUI.
+    if env::var_os("WAYLAND_SOCKET").is_some() {
+        return Ok(None);
+    }
+    if !Displays::open()?
+        .scan()?
+        .iter()
+        .any(|output| output.name == display)
+    {
+        return Ok(None);
+    }
+    if let Desktop::Sway = desktop {
+        match sway::startup_title(display) {
+            Ok(title) => return Ok(Some(title)),
+            Err(error) => log::debug!("Could not prepare Sway launch placement: {error:#}"),
+        }
+    }
+    Ok(Some(title.into()))
+}
+
 pub fn place_window(display: &str, fullscreen: bool) -> Result<()> {
     match Desktop::current().context("Display placement is unavailable on this desktop")? {
         Desktop::Sway => sway::place_window(display, fullscreen),
