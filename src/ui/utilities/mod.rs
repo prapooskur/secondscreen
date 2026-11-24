@@ -1,3 +1,4 @@
+mod calendar;
 mod fps;
 mod notifications;
 mod weather;
@@ -6,8 +7,8 @@ mod weather_tile;
 
 use super::{Dashboard, HISTORY, append, home::Kind, monitor::graph, theme::*};
 use futures_lite::StreamExt;
-use gpui::{Context, IntoElement, Styled, Task, div, prelude::*};
-use jiff::{Span, Timestamp, Zoned, civil::Date, tz::TimeZone};
+use gpui::{Context, IntoElement, Styled, Task, prelude::*};
+use jiff::{Timestamp, Zoned, tz::TimeZone};
 use std::{
     collections::VecDeque,
     time::{Duration, Instant},
@@ -38,7 +39,7 @@ pub(super) use weather::coordinates;
 
 #[derive(Default)]
 pub(super) struct Utilities {
-    month: Option<Date>,
+    calendar: calendar::Calendar,
     ticker: Option<(bool, Task<()>)>,
     fps_task: Option<Task<()>>,
     fps_reading: Option<fps::Reading>,
@@ -132,6 +133,7 @@ impl Dashboard {
             });
             self.utilities.ticker = Some((clock, ticker));
         }
+        self.sync_calendar(cx);
         self.sync_fps(cx);
         self.sync_weather(cx);
         self.sync_notifications(cx);
@@ -331,65 +333,6 @@ impl Dashboard {
             );
         }
         clocks
-    }
-
-    pub(super) fn calendar(&self, height: f32, cx: &Context<Self>) -> impl IntoElement {
-        let theme = Theme::current(cx);
-        let today = Zoned::now().date();
-        let first = self.utilities.month.unwrap_or(today.first_of_month());
-        let mut nav = row().justify_between().gap(r(4.)).flex_none();
-        for (id, text, delta) in [
-            ("prev-month", "‹".to_owned(), -1),
-            ("this-month", first.strftime("%B %Y").to_string(), 0),
-            ("next-month", "›".to_owned(), 1),
-        ] {
-            let view = cx.entity();
-            nav = nav.child(theme.bind(
-                theme.button(id, None).h(r(23.)).px(r(7.)).child(text),
-                move |_, cx| {
-                    view.update(cx, |d, cx| {
-                        d.utilities.month = if delta == 0 {
-                            None
-                        } else {
-                            first.checked_add(Span::new().months(delta)).ok()
-                        };
-                        cx.notify();
-                    })
-                },
-            ));
-        }
-        let mut grid = col().id("calendar-days").flex_1().overflow_y_scroll();
-        let cell = |text: String, active: bool| {
-            div()
-                .flex_1()
-                .text_center()
-                .text_size(r(if height < 120. { 11. } else { 13. }))
-                .rounded(r(4.))
-                .when(active, |it| {
-                    it.bg(theme.color(VIOLET)).text_color(theme.color(BACK))
-                })
-                .child(text)
-        };
-        grid =
-            grid.child(row().text_color(theme.color(MUTED)).children(
-                ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map(|v| cell(v.into(), false)),
-            ));
-        let start = first.weekday().to_monday_zero_offset();
-        for week in 0..(start + first.days_in_month() + 6) / 7 {
-            grid = grid.child(row().flex_none().children((0..7).map(|col| {
-                let day = week * 7 + col - start + 1;
-                let valid = (1..=first.days_in_month()).contains(&day);
-                cell(
-                    if valid {
-                        day.to_string()
-                    } else {
-                        String::new()
-                    },
-                    first == today.first_of_month() && day == today.day(),
-                )
-            })));
-        }
-        col().flex_1().gap(r(3.)).child(nav).child(grid)
     }
 
     pub(super) fn notification_widget(&self, theme: Theme) -> impl IntoElement {

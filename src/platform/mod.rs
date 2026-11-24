@@ -2,7 +2,7 @@
 mod linux;
 
 #[cfg(target_os = "linux")]
-pub use linux::{autostart, launch_display, start};
+pub use linux::{autostart, calendar, launch_display, start};
 
 pub const APP_ID: &str = "io.github.secondscreen";
 

@@ -11,6 +11,9 @@ finish-args:
   - --share=network
   - --socket=pulseaudio
   - --talk-name=org.freedesktop.secrets
+  - --talk-name=org.gnome.evolution.dataserver.Calendar8
+  - --talk-name=org.gnome.evolution.dataserver.Sources5
+  - --talk-name=org.gnome.evolution.dataserver.Subprocess.Backend.*
   - --talk-name=org.mpris.MediaPlayer2.*
   - --filesystem=home:ro
   - --filesystem=xdg-run/discord-ipc-0:ro
@@ -32,6 +35,42 @@ modules:
         url: https://codeload.github.com/bugaevc/wl-clipboard/tar.gz/refs/tags/v2.3.0
         archive-type: tar-gzip
         sha256: b4dc560973f0cd74e02f817ffa2fd44ba645a4f1ea94b7b9614dacc9f895f402
+
+  - name: libical
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_INSTALL_LIBDIR:PATH=/app/lib
+      - -DBUILD_SHARED_LIBS=ON
+      - -DICAL_BUILD_DOCS=OFF
+      - -DWITH_CXX_BINDINGS=OFF
+    sources:
+      - type: archive
+        url: https://github.com/libical/libical/releases/download/v3.0.20/libical-3.0.20.tar.gz
+        sha256: e73de92f5a6ce84c1b00306446b290a2b08cdf0a80988eca0a2c9d5c3510b4c2
+
+  - name: evolution-data-server
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DENABLE_CANBERRA=OFF
+      - -DENABLE_GOA=OFF
+      - -DENABLE_GTK=OFF
+      - -DENABLE_GTK4=OFF
+      - -DENABLE_WEATHER=OFF
+      - -DENABLE_INTROSPECTION=OFF
+      - -DENABLE_VALA_BINDINGS=OFF
+      - -DENABLE_INSTALLED_TESTS=OFF
+      - -DENABLE_GTK_DOC=OFF
+      - -DENABLE_EXAMPLES=OFF
+      - -DWITH_OPENLDAP=OFF
+      - -DWITH_LIBDB=OFF
+    cleanup:
+      - /libexec
+      - /share/dbus-1
+      - /lib/systemd
+    sources:
+      - type: archive
+        url: https://download.gnome.org/sources/evolution-data-server/3.62/evolution-data-server-3.62.0.tar.xz
+        sha256: 78be88e9a511f5afe7ff2e363eade84b622dd0282647fc576edb2d4ff2962cba
 
   - name: secondscreen
     buildsystem: simple

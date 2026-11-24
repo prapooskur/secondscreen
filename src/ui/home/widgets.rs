@@ -44,7 +44,7 @@ impl Kind {
             Self::Storage => "Drive capacity and usage",
             Self::Viewer => "Web, video, Twitch, and slideshows",
             Self::WorldClock => "Time and date across time zones",
-            Self::Calendar => "Monthly calendar and today’s date",
+            Self::Calendar => "Month view and events from your system calendar",
             Self::Weather => "Today’s temperature, 10-day forecast, and air quality",
             Self::Notifications => "Recent desktop notifications",
             Self::Fps => "Current FPS, 1% low, and 0.1% low",
@@ -112,7 +112,7 @@ impl Dashboard {
                 storage_list(theme, "home-storage", self.visible_disks()).into_any_element()
             }
             Kind::WorldClock => self.world_clock(theme, height).into_any_element(),
-            Kind::Calendar => self.calendar(height, cx).into_any_element(),
+            Kind::Calendar => self.calendar(theme, width, height, cx).into_any_element(),
             Kind::Weather => self.weather_widget(theme, width, height).into_any_element(),
             Kind::Notifications => self.notification_widget(theme).into_any_element(),
             Kind::Fps => self
