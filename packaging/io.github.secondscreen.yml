@@ -25,7 +25,7 @@ modules:
     config-opts:
       - -Dfishcompletiondir=no
     post-install:
-      - install -Dm644 COPYING /app/share/licenses/wl-clipboard/COPYING
+      - install -Dm644 "$FLATPAK_BUILDER_BUILDDIR/COPYING" /app/share/licenses/wl-clipboard/COPYING
     cleanup:
       - /bin/wl-paste
       - /share/bash-completion
