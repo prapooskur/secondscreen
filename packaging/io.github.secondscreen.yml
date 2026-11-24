@@ -22,12 +22,13 @@ finish-args:
 modules:
   - name: wl-clipboard
     buildsystem: meson
+    config-opts:
+      - -Dfishcompletiondir=no
     post-install:
       - install -Dm644 COPYING /app/share/licenses/wl-clipboard/COPYING
     cleanup:
       - /bin/wl-paste
       - /share/bash-completion
-      - /share/fish
       - /share/man
       - /share/zsh
     sources:

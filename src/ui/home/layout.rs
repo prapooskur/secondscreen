@@ -1,4 +1,5 @@
 use super::options::SensorOptions;
+use super::quick_controls::QuickAction;
 use crate::ui::home_assistant::Binding;
 use crate::viewer::ViewerOptions;
 use serde::{Deserialize, Serialize};
@@ -27,10 +28,11 @@ pub(in crate::ui) enum Kind {
     Notifications,
     Fps,
     HomeAssistant,
+    QuickControls,
 }
 
 impl Kind {
-    pub(super) const ALL: [Self; 15] = [
+    pub(super) const ALL: [Self; 16] = [
         Self::Performance,
         Self::Media,
         Self::Audio,
@@ -46,6 +48,7 @@ impl Kind {
         Self::Notifications,
         Self::Fps,
         Self::HomeAssistant,
+        Self::QuickControls,
     ];
 
     pub(super) fn repeatable(self) -> bool {
@@ -57,7 +60,7 @@ impl Kind {
             id: self as u32 + 1,
             kind: self,
             columns: 1,
-            rows: if self == Self::HomeAssistant {
+            rows: if matches!(self, Self::HomeAssistant | Self::QuickControls) {
                 MIN_ROWS
             } else {
                 VISIBLE_ROWS
@@ -84,6 +87,8 @@ pub(super) struct Layout {
     pub viewers: BTreeMap<u32, ViewerOptions>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub home_assistant: BTreeMap<u32, Binding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quick_controls: Option<Vec<QuickAction>>,
 }
 
 impl Default for Layout {
@@ -104,6 +109,7 @@ impl Layout {
             sensors: BTreeMap::new(),
             viewers: BTreeMap::new(),
             home_assistant: BTreeMap::new(),
+            quick_controls: None,
         }
     }
 
@@ -140,6 +146,18 @@ impl Layout {
                 .iter()
                 .any(|w| w.id == *id && w.kind == Kind::HomeAssistant)
         });
+        if !seen.contains(&Kind::QuickControls) {
+            self.quick_controls = None;
+        } else if let Some(actions) = &mut self.quick_controls {
+            let mut unique = HashSet::new();
+            actions.retain(|action| unique.insert(*action));
+        }
+    }
+
+    pub fn quick_actions(&self) -> &[QuickAction] {
+        self.quick_controls
+            .as_deref()
+            .unwrap_or(QuickAction::DEFAULT)
     }
 
     pub fn add(&mut self, kind: Kind) {
@@ -217,6 +235,26 @@ pub(super) fn shifted_span(saved: u8, delta: i32, min: u8, max: u8) -> u8 {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn quick_controls_preserve_defaults_and_explicit_order_in_saved_layouts() {
+        let mut layout: Layout =
+            serde_json::from_str(r#"{"widgets":[{"kind":"quick_controls","columns":1,"rows":2}]}"#)
+                .unwrap();
+        layout.normalize();
+        assert_eq!(layout.quick_actions(), QuickAction::DEFAULT);
+
+        let order = [QuickAction::SwitchTheme, QuickAction::PlayPause];
+        layout.quick_controls = Some(vec![order[0], order[1], order[0]]);
+        let mut saved: Layout =
+            serde_json::from_str(&serde_json::to_string(&layout).unwrap()).unwrap();
+        saved.normalize();
+        assert_eq!(saved.quick_actions(), order);
+
+        layout.quick_controls = Some(Vec::new());
+        let saved: Layout = serde_json::from_str(&serde_json::to_string(&layout).unwrap()).unwrap();
+        assert!(saved.quick_actions().is_empty());
+    }
 
     #[test]
     fn upgrades_legacy_tiles_and_keeps_repeated_widgets_independent() {

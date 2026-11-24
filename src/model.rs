@@ -78,9 +78,14 @@ pub struct AudioState {
     pub issue: Option<String>,
 }
 
+pub const NORMAL_VOLUME_PERCENT: u16 = 100;
+
+#[derive(Clone)]
 pub enum AudioAction {
     Volume(AudioId, u16),
+    AdjustVolume(AudioId, i16),
     Mute(AudioId, bool),
+    ToggleMute(AudioId),
     Default(AudioId),
 }
 
@@ -226,6 +231,7 @@ pub struct MediaState {
     pub issue: Option<String>,
 }
 
+#[derive(Clone)]
 pub enum MediaAction {
     Toggle,
     Previous,

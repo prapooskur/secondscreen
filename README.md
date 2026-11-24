@@ -7,6 +7,7 @@ The app opens to a single resizable widget grid. Use **Edit layout** in the righ
 - **Performance** shows selected sensors as a chart, a pair, or a list. **Memory** and **Network** show live system readings and usage history. **Storage** shows each drive's capacity and the space used by mounted filesystems that can be attributed to that drive.
 - **Now playing** shows track details, album art, and playback controls. When multiple players are available, use the tabs at the top of the widget to switch between them. Make the widget at least three rows tall to see the seek bar.
 - **Audio** adjusts device volume and mute and lets you set the default output or microphone. Add **App mixer** to adjust playback and recording streams using app icons, mute buttons, and volume sliders. Hover over an icon to see the app and stream names.
+- **Quick controls** puts playback, audio, Discord voice, and dashboard shortcuts in a customizable grid. The icons reflow as you resize the tile. Scroll inside it when space is tight.
 - **Discord** shows a green ring around each speaker’s avatar and a **LIVE** badge when the desktop client reports a Go Live stream. The widget also provides controls to connect, mute, deafen, and leave a call.
 - **Home Assistant** shows the state of a selected entity and lets you control it from the dashboard.
 - **Viewer** displays web pages, iframes, YouTube, Twitch, and local media inside the grid. Discord voice channel links open in Discord.
@@ -74,6 +75,8 @@ Choose **Edit layout** to add widgets from the catalog and show widget names and
 Use the left rail to switch profiles. **+** creates an empty profile and selects it, up to five total. The existing Home layout becomes profile 1. Each profile saves its own layout and widget options. Select the pencil on the left rail to give the active profile a single letter, a number, or an SVG or PNG image. Secondscreen imports a copy of the image and remembers which profile was selected.
 
 Home fits four grid rows and up to five columns in the visible area. Widgets can span two to four visible rows. When the grid extends to the right, scroll horizontally with a trackpad, use **Shift** + mouse wheel, or use the arrows in the right-hand rail. The app keeps each widget’s requested size when space is limited and saves the layout in `${XDG_CONFIG_HOME:-~/.config}/secondscreen/home.json`.
+
+On the **Quick controls** tile, choose **Setup** in **Edit layout**. Use **+** to add an action, the up and down arrows to set its position, or **×** to remove it. Buttons fill each row from left to right. Each profile saves its own selection and order.
 
 ## Configure Performance
 

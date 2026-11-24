@@ -269,7 +269,12 @@ impl Dashboard {
             ))
     }
 
-    fn switch_profile(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn switch_profile(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.home.profiles.active == index || index >= self.home.profiles.items.len() {
             return;
         }

@@ -15,7 +15,9 @@ use std::{
 };
 
 use super::{Integration, app_icons::AppIcons};
-use crate::model::{AudioAction, AudioChannel, AudioId, AudioKind, AudioState, Update};
+use crate::model::{
+    AudioAction, AudioChannel, AudioId, AudioKind, AudioState, NORMAL_VOLUME_PERCENT, Update,
+};
 
 const NORMAL_VOLUME: u64 = 65_536;
 const RECOVERY_POLL: Duration = Duration::from_secs(2);
@@ -209,7 +211,7 @@ impl Mixer {
             .context("That audio channel is no longer available.")
     }
 
-    fn set_volume(&self, id: AudioId, percent: u16) -> Result<()> {
+    fn set_volume(&self, id: AudioId, percent: impl FnOnce(&[u32]) -> u16) -> Result<()> {
         self.channel(&id)?;
         // The desktop or a hardware volume knob may have changed the levels since the last poll.
         let channel = pulse_channels(id.kind)?
@@ -217,7 +219,7 @@ impl Mixer {
             .find(|channel| channel.index == id.index && channel.identity_name() == id.name)
             .context("That audio channel is no longer available.")?;
         let current = channel.channel_levels()?;
-        let levels = scale_volume(&current, percent);
+        let levels = scale_volume(&current, percent(&current));
         if levels == current {
             return Ok(());
         }
@@ -233,6 +235,18 @@ impl Mixer {
         let mut args = vec![command, index.as_str()];
         args.extend(levels.iter().map(String::as_str));
         pactl(&args)?;
+        Ok(())
+    }
+
+    fn set_mute(&self, id: AudioId, value: &str) -> Result<()> {
+        self.channel(&id)?;
+        let command = match id.kind {
+            AudioKind::Output => "set-sink-mute",
+            AudioKind::Input => "set-source-mute",
+            AudioKind::Playback => "set-sink-input-mute",
+            AudioKind::Recording => "set-source-output-mute",
+        };
+        pactl(&[command, &id.index.to_string(), value])?;
         Ok(())
     }
 }
@@ -308,10 +322,7 @@ impl PulseChannel {
             .volume
             .as_ref()
             .and_then(|volume| volume.values().map(|entry| entry.value).max())
-            .map(|value| {
-                let percent = (u64::from(value) * 100 + NORMAL_VOLUME / 2) / NORMAL_VOLUME;
-                u16::try_from(percent).unwrap_or(u16::MAX)
-            });
+            .map(volume_percent);
 
         Some(AudioChannel {
             is_default: default == Some(name.as_str()),
@@ -327,6 +338,11 @@ impl PulseChannel {
             muted: self.mute,
         })
     }
+}
+
+fn volume_percent(level: u32) -> u16 {
+    let percent = (u64::from(level) * 100 + NORMAL_VOLUME / 2) / NORMAL_VOLUME;
+    u16::try_from(percent).unwrap_or(u16::MAX)
 }
 
 fn scale_volume(current: &[u32], percent: u16) -> Vec<u32> {
@@ -389,21 +405,15 @@ impl Integration for Mixer {
 
     fn handle(&mut self, action: AudioAction, _: &Sender<Update>) -> Result<()> {
         match action {
-            AudioAction::Volume(id, volume) => self.set_volume(id, volume)?,
-            AudioAction::Mute(id, muted) => {
-                self.channel(&id)?;
-                let command = match id.kind {
-                    AudioKind::Output => "set-sink-mute",
-                    AudioKind::Input => "set-source-mute",
-                    AudioKind::Playback => "set-sink-input-mute",
-                    AudioKind::Recording => "set-source-output-mute",
-                };
-                pactl(&[
-                    command,
-                    &id.index.to_string(),
-                    if muted { "1" } else { "0" },
-                ])?;
-            }
+            AudioAction::Volume(id, volume) => self.set_volume(id, |_| volume)?,
+            AudioAction::AdjustVolume(id, step) => self.set_volume(id, |levels| {
+                let volume = volume_percent(levels.iter().copied().max().unwrap_or_default());
+                volume
+                    .saturating_add_signed(step)
+                    .min(volume.max(NORMAL_VOLUME_PERCENT))
+            })?,
+            AudioAction::Mute(id, muted) => self.set_mute(id, if muted { "1" } else { "0" })?,
+            AudioAction::ToggleMute(id) => self.set_mute(id, "toggle")?,
             AudioAction::Default(id) => {
                 self.channel(&id)?;
                 let command = match id.kind {

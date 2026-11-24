@@ -30,6 +30,7 @@ impl Kind {
             Self::Notifications => "Notifications",
             Self::Fps => "FPS",
             Self::HomeAssistant => "Home Assistant",
+            Self::QuickControls => "Quick controls",
         }
     }
 
@@ -50,6 +51,7 @@ impl Kind {
             Self::Notifications => "Recent desktop notifications",
             Self::Fps => "Current FPS, 1% low, and 0.1% low",
             Self::HomeAssistant => "Smart home controls",
+            Self::QuickControls => "Customizable controls and shortcuts",
         }
     }
 
@@ -70,6 +72,7 @@ impl Kind {
             Self::Notifications => Icon::Bell,
             Self::Fps => Icon::Gauge,
             Self::HomeAssistant => Icon::Home,
+            Self::QuickControls => Icon::Grid,
         }
     }
 
@@ -86,6 +89,7 @@ impl Kind {
             Self::Notifications => BLUE,
             Self::Fps => TEAL,
             Self::HomeAssistant => BLUE,
+            Self::QuickControls => TEAL,
         }
     }
 }
@@ -124,6 +128,9 @@ impl Dashboard {
                 .into_any_element(),
             Kind::HomeAssistant => self
                 .home_assistant_widget(tile.widget.id, height, cx)
+                .into_any_element(),
+            Kind::QuickControls => self
+                .quick_controls_widget(tile.widget.id, width, height, cx)
                 .into_any_element(),
             Kind::Viewer => div()
                 .flex()

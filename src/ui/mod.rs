@@ -193,7 +193,9 @@ impl Dashboard {
     }
 
     fn showing_settings(&self, section: Section) -> bool {
-        self.settings.open && self.settings.section == section
+        self.settings.open
+            && !self.settings.quick_controls_setup
+            && self.settings.section == section
     }
 
     fn apply(&mut self, update: Update, cx: &mut Context<Self>) -> Refresh {
@@ -246,6 +248,7 @@ impl Dashboard {
                 if self.showing_settings(Section::Audio)
                     || self.home.shows(Kind::Audio)
                     || self.home.shows(Kind::Mixer)
+                    || self.home.shows(Kind::QuickControls)
                 {
                     Refresh::Immediate
                 } else {
@@ -254,7 +257,9 @@ impl Dashboard {
             }
             Update::Media(mut state) => {
                 let show_media = self.home.shows(Kind::Media);
-                let details_changed = (show_media || self.showing_settings(Section::Media))
+                let details_changed = (show_media
+                    || self.home.shows(Kind::QuickControls)
+                    || self.showing_settings(Section::Media))
                     && (self.media.issue != state.issue
                         || self.media.players.len() != state.players.len()
                         || self
@@ -319,8 +324,16 @@ impl Dashboard {
                 if self.discord == state {
                     return Refresh::None;
                 }
+                let voice_controls_changed = match (&self.discord, &state) {
+                    (DiscordState::Connected(previous), DiscordState::Connected(current)) => {
+                        previous.muted != current.muted || previous.deafened != current.deafened
+                    }
+                    (DiscordState::Connected(_), _) | (_, DiscordState::Connected(_)) => true,
+                    _ => false,
+                };
                 self.discord = state;
                 if self.home.shows(Kind::Discord)
+                    || (self.home.shows(Kind::QuickControls) && voice_controls_changed)
                     || self.home.shows(Kind::Viewer)
                     || self.showing_settings(Section::Discord)
                 {

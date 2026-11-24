@@ -83,6 +83,7 @@ impl Section {
 pub(super) struct SettingsView {
     pub(super) open: bool,
     pub(super) section: Section,
+    pub(super) quick_controls_setup: bool,
     pub(super) focus: FocusHandle,
     previous_focus: Option<FocusHandle>,
     start_at_login: bool,
@@ -99,6 +100,7 @@ impl SettingsView {
         Self {
             open: false,
             section: Section::default(),
+            quick_controls_setup: false,
             focus,
             previous_focus: None,
             start_at_login: false,
@@ -155,8 +157,7 @@ impl Dashboard {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if section == Section::General && (!self.settings.open || self.settings.section != section)
-        {
+        if section == Section::General && !self.showing_settings(section) {
             match autostart::enabled() {
                 Ok(enabled) => self.settings.start_at_login = enabled,
                 Err(error) => self.set_error(format!("{error:#}"), cx),
@@ -164,6 +165,20 @@ impl Dashboard {
         }
         self.home_assistant.dismiss_picker();
         self.settings.section = section;
+        self.settings.quick_controls_setup = false;
+        self.show_settings(window, cx);
+    }
+
+    pub(super) fn open_quick_controls_setup(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings.quick_controls_setup = true;
+        self.show_settings(window, cx);
+    }
+
+    fn show_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.settings.open {
             self.settings.previous_focus = window.focused(cx);
             self.settings.open = true;
@@ -183,6 +198,7 @@ impl Dashboard {
     pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings.open {
             self.settings.open = false;
+            self.settings.quick_controls_setup = false;
             self.home_assistant.close_settings();
             self.settings.widget_fields = None;
             if !matches!(
@@ -230,6 +246,7 @@ impl Dashboard {
     fn settings_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::current(cx);
         let section = self.settings.section;
+        let setup = self.settings.quick_controls_setup;
         let view = cx.entity();
         let tabs = row()
             .flex_wrap()
@@ -257,14 +274,24 @@ impl Dashboard {
                     },
                 )
             }));
-        let body = match section {
-            Section::General => self.general_settings(cx).into_any_element(),
-            Section::Widgets => self.widget_settings(cx).into_any_element(),
-            Section::Discord => self.discord_settings(cx).into_any_element(),
-            Section::HomeAssistant => self.home_assistant_settings(cx).into_any_element(),
-            Section::Profiles => self.profile_settings(cx).into_any_element(),
-            Section::Integrations => self.integration_settings(theme).into_any_element(),
-            _ => self.visibility_settings(section, cx).into_any_element(),
+        let body = if setup {
+            self.quick_controls_setup(cx).into_any_element()
+        } else {
+            let content = match section {
+                Section::General => self.general_settings(cx).into_any_element(),
+                Section::Widgets => self.widget_settings(cx).into_any_element(),
+                Section::Discord => self.discord_settings(cx).into_any_element(),
+                Section::HomeAssistant => self.home_assistant_settings(cx).into_any_element(),
+                Section::Profiles => self.profile_settings(cx).into_any_element(),
+                Section::Integrations => self.integration_settings(theme).into_any_element(),
+                _ => self.visibility_settings(section, cx).into_any_element(),
+            };
+            col()
+                .id(("settings-content", section as usize))
+                .flex_1()
+                .overflow_y_scroll()
+                .child(content)
+                .into_any_element()
         };
         theme
             .panel()
@@ -284,7 +311,7 @@ impl Dashboard {
             .child(
                 row()
                     .justify_between()
-                    .child(theme.title("Settings"))
+                    .child(theme.title(if setup { "Quick controls" } else { "Settings" }))
                     .child(
                         theme.bind(
                             theme
@@ -301,14 +328,8 @@ impl Dashboard {
                         ),
                     ),
             )
-            .child(tabs)
-            .child(
-                col()
-                    .id(("settings-content", section as usize))
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .child(body),
-            )
+            .when(!setup, |it| it.child(tabs))
+            .child(body)
     }
 
     fn profile_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -660,15 +681,7 @@ impl Dashboard {
                         .px(r(9.))
                         .child(name),
                     move |window, cx| {
-                        view.update(cx, |this, cx| {
-                            if this.preferences.theme != preference {
-                                let mut preferences = this.preferences.clone();
-                                preferences.theme = preference;
-                                if this.save_preferences(preferences, cx) {
-                                    Theme::apply(preference, window.appearance(), cx);
-                                }
-                            }
-                        });
+                        view.update(cx, |this, cx| this.set_theme(preference, window, cx))
                     },
                 )
             }),
@@ -1133,6 +1146,21 @@ impl Dashboard {
         };
         cx.notify();
         saved
+    }
+
+    pub(super) fn set_theme(
+        &mut self,
+        preference: ThemePreference,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.preferences.theme != preference {
+            let mut preferences = self.preferences.clone();
+            preferences.theme = preference;
+            if self.save_preferences(preferences, cx) {
+                Theme::apply(preference, window.appearance(), cx);
+            }
+        }
     }
 }
 

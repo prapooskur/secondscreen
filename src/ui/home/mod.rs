@@ -2,6 +2,7 @@ mod layout;
 mod options;
 mod performance;
 mod profiles;
+mod quick_controls;
 mod widgets;
 
 use std::path::PathBuf;
@@ -143,7 +144,10 @@ impl Home {
         (index, &self.profiles.items[index])
     }
 
-    pub(super) fn home_assistant_binding(&self, id: u32) -> Option<&super::home_assistant::Binding> {
+    pub(super) fn home_assistant_binding(
+        &self,
+        id: u32,
+    ) -> Option<&super::home_assistant::Binding> {
         self.layout().home_assistant.get(&id)
     }
 
@@ -686,7 +690,10 @@ impl Dashboard {
             Kind::Performance => return Some(self.sensor_button(widget.id, cx).into_any_element()),
             Kind::Notifications => return Some(self.clear_notifications(cx).into_any_element()),
             Kind::HomeAssistant => {
-                return Some(self.choose_home_assistant(widget.id, "Entity", cx).into_any_element());
+                return Some(
+                    self.choose_home_assistant(widget.id, "Entity", cx)
+                        .into_any_element(),
+                );
             }
             Kind::Viewer => {
                 return self.viewers.get(&widget.id).map(|viewer| {
@@ -696,6 +703,9 @@ impl Dashboard {
             Kind::WorldClock => "Zones",
             Kind::Weather => "Location",
             Kind::Fps => "Setup",
+            Kind::QuickControls => {
+                return Some(self.quick_controls_setup_button(cx).into_any_element());
+            }
             _ => return None,
         };
         let view = cx.entity();
@@ -765,6 +775,9 @@ impl Dashboard {
                             layout.sensors.remove(&id);
                             layout.viewers.remove(&id);
                             layout.home_assistant.remove(&id);
+                            if widget.kind == Kind::QuickControls {
+                                layout.quick_controls = None;
+                            }
                             this.viewers.remove(&id);
                             super::monitor::discard_charts(Some(id), window, cx);
                             this.home.sensor_editor = None;

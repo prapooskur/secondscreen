@@ -371,15 +371,7 @@ impl Dashboard {
                     })
                     .child(div().min_w_0().truncate().child(name.clone()))
                     .tooltip(move |_, cx| cx.new(|_| super::Tooltip(name.clone())).into()),
-                move |_, cx| {
-                    view.update(cx, |this, cx| {
-                        if this.player.as_ref() != Some(&id) {
-                            this.player = Some(id.clone());
-                            this.update_seek();
-                            cx.notify();
-                        }
-                    })
-                },
+                move |_, cx| view.update(cx, |this, cx| this.select_player(&id, cx)),
             )
         });
         Some(
@@ -400,6 +392,14 @@ impl Dashboard {
                         .children(tabs),
                 ),
         )
+    }
+
+    pub(super) fn select_player(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.player.as_deref() != Some(id) {
+            self.player = Some(id.to_owned());
+            self.update_seek();
+            cx.notify();
+        }
     }
 }
 
