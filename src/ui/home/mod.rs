@@ -32,6 +32,7 @@ const MIN_COLUMN_WIDTH: f32 = 232.;
 const RAIL_WIDTH: f32 = 44.;
 const RAIL_BUTTON_SIZE: f32 = 34.;
 const WIDGET_CONTROL_HEIGHT: f32 = 28.;
+const WIDGET_CONTROL_INSET: f32 = 4.;
 
 pub(super) struct Home {
     profiles: Profiles,
@@ -635,16 +636,23 @@ impl Dashboard {
         let tabs = (kind == Kind::Media)
             .then(|| self.media_tabs(width - 2., cx))
             .flatten();
-        let body_height = height - if tabs.is_some() { MEDIA_TAB_HEIGHT } else { 0. };
-        let (padding, gap) = if body_height < 155. {
-            (8., 6.)
-        } else {
-            (13., 11.)
-        };
-        let mut content_height = body_height - 2. * (padding + 1.);
-        if editing {
-            content_height -= 2. * (WIDGET_CONTROL_HEIGHT + gap);
-        }
+        let tabs_height = if tabs.is_some() { MEDIA_TAB_HEIGHT } else { 0. };
+        let body_height = height - tabs_height;
+        let padding = if body_height < 155. { 8. } else { 13. };
+        let content_height = body_height - 2. * (padding + 1.);
+        let setup_open = editing
+            && match kind {
+                Kind::Performance => self
+                    .home
+                    .sensor_editor
+                    .is_some_and(|(id, _)| id == tile.widget.id),
+                Kind::Viewer => self
+                    .viewers
+                    .get(&tile.widget.id)
+                    .is_some_and(|viewer| viewer.read(cx).is_editing()),
+                _ => false,
+            };
+        let overlay_color = theme.color(BACK).opacity(0.92);
 
         theme
             .panel()
@@ -662,27 +670,49 @@ impl Dashboard {
                 col()
                     .flex_1()
                     .p(r(padding))
-                    .gap(r(gap))
-                    .when(editing, |it| {
-                        it.child(self.widget_edit_header(tile.widget, index, count, cx))
+                    .when(setup_open, |it| {
+                        it.py(r(WIDGET_CONTROL_HEIGHT + 2. * WIDGET_CONTROL_INSET))
                     })
                     .child(col().flex_1().overflow_hidden().child(self.widget_content(
                         tile,
                         width - 2. * (padding + 1.),
                         content_height,
                         cx,
-                    )))
-                    .when(editing, |it| {
-                        it.child(
-                            row()
-                                .justify_between()
-                                .gap(r(6.))
-                                .flex_none()
-                                .child(self.widget_size_controls(tile, grid.columns, cx))
-                                .child(self.resize_handle(tile.widget, grid, scale, cx)),
-                        )
-                    }),
+                    ))),
             )
+            .when(editing, |it| {
+                it.child(
+                    self.widget_edit_header(tile.widget, index, count, cx)
+                        .absolute()
+                        .top(r(tabs_height + WIDGET_CONTROL_INSET))
+                        .left(r(WIDGET_CONTROL_INSET))
+                        .right(r(WIDGET_CONTROL_INSET))
+                        .px(r(WIDGET_CONTROL_INSET))
+                        .rounded(r(8.))
+                        .bg(overlay_color)
+                        .block_mouse_except_scroll(),
+                )
+                .child(
+                    row()
+                        .absolute()
+                        .bottom(r(WIDGET_CONTROL_INSET))
+                        .left(r(WIDGET_CONTROL_INSET))
+                        .right(r(WIDGET_CONTROL_INSET))
+                        .justify_between()
+                        .gap(r(6.))
+                        .child(
+                            self.widget_size_controls(tile, grid.columns, cx)
+                                .p(r(2.))
+                                .rounded(r(8.))
+                                .bg(overlay_color)
+                                .block_mouse_except_scroll(),
+                        )
+                        .child(
+                            self.resize_handle(tile.widget, grid, scale, cx)
+                                .block_mouse_except_scroll(),
+                        ),
+                )
+            })
     }
 
     fn widget_control(&self, widget: Widget, cx: &Context<Self>) -> Option<AnyElement> {
@@ -730,7 +760,7 @@ impl Dashboard {
         index: usize,
         count: usize,
         cx: &Context<Self>,
-    ) -> impl IntoElement {
+    ) -> gpui::Div {
         let theme = Theme::current(cx);
         let id = widget.id;
         let name = widget.kind.name();
@@ -829,7 +859,7 @@ impl Dashboard {
         grid: Grid,
         scale: f32,
         cx: &Context<Self>,
-    ) -> impl IntoElement {
+    ) -> gpui::Stateful<gpui::Div> {
         let theme = Theme::current(cx);
         let pointer = cx.entity();
         let keyboard = pointer.clone();
@@ -870,12 +900,7 @@ impl Dashboard {
         })
     }
 
-    fn widget_size_controls(
-        &self,
-        tile: Placement,
-        columns: u8,
-        cx: &Context<Self>,
-    ) -> impl IntoElement {
+    fn widget_size_controls(&self, tile: Placement, columns: u8, cx: &Context<Self>) -> gpui::Div {
         let theme = Theme::current(cx);
         let widget = tile.widget;
         let step = |description: &'static str, symbol, horizontal, vertical| {

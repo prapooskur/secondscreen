@@ -119,6 +119,10 @@ impl Viewer {
         }
     }
 
+    pub(super) fn is_editing(&self) -> bool {
+        self.editing
+    }
+
     fn start(&mut self, source: Source, cx: &mut Context<Self>) -> anyhow::Result<()> {
         let size = self.viewport();
         let web = WebTile::new(&source, if size == (1, 1) { (320, 160) } else { size })?;
