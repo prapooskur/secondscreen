@@ -7,7 +7,7 @@ use std::{
 use gpui::{Context, Entity, IntoElement, SharedString, Styled, Window, div, prelude::*};
 
 use crate::{
-    config::{DISCORD_REDIRECT_URI, DiscordCredentials, Preferences, ThemePreference},
+    config::{DISCORD_REDIRECT_URI, DiscordCredentials, Preferences, ThemePreference, WidgetStyle},
     model::{AudioChannel, AudioKind, DiscordAction},
     platform::{autostart, in_flatpak, launch_display},
 };
@@ -17,10 +17,13 @@ use super::{
     icons::{Icon, icon},
     monitor::capacity,
     overlay::Overlay,
+    slider::{drag_value, slider},
     text_input::{TextInput, field},
     theme::*,
     utilities::FPS_LAUNCH_OPTIONS,
 };
+
+const GLASS_TRANSPARENCY_SLIDER: &str = "glass-transparency";
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum Section {
@@ -151,6 +154,9 @@ impl Dashboard {
             }
         }
         self.home_assistant.dismiss_picker();
+        if self.settings.section != section {
+            self.gesture.borrow_mut().take();
+        }
         self.settings.section = section;
         self.settings.quick_controls_setup = false;
         self.show_overlay(Overlay::Settings, window, cx);
@@ -161,11 +167,13 @@ impl Dashboard {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.gesture.borrow_mut().take();
         self.settings.quick_controls_setup = true;
         self.show_overlay(Overlay::Settings, window, cx);
     }
 
     pub(super) fn reset_settings(&mut self) {
+        self.gesture.borrow_mut().take();
         self.settings.quick_controls_setup = false;
         self.home_assistant.close_settings();
         self.settings.widget_fields = None;
@@ -474,6 +482,8 @@ impl Dashboard {
                 "System follows your desktop appearance.",
                 themes,
             ))
+            .child(self.background_settings(theme, cx))
+            .child(self.widget_style_settings(theme, cx))
             .child(preference_row(
                 theme,
                 "start-at-login-row",
@@ -521,6 +531,144 @@ impl Dashboard {
                 ),
             ))
             .child(self.launch_display_settings(theme, cx))
+    }
+
+    fn background_settings(&self, theme: Theme, cx: &Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        let choose = theme
+            .button("choose-background", None)
+            .h(r(30.))
+            .child("Choose image…");
+        let reset = theme
+            .button("reset-background", None)
+            .h(r(30.))
+            .child("Reset");
+        let choose = if self.background.pending {
+            disabled(choose)
+        } else {
+            let view = view.clone();
+            theme.bind(choose, move |_, cx| {
+                view.update(cx, |this, cx| this.choose_background(cx))
+            })
+        };
+        let reset = if !self.background.pending
+            && (self.background.has_image() || self.background.unavailable)
+        {
+            theme.bind(reset, move |window, cx| {
+                view.update(cx, |this, cx| this.reset_background(window, cx))
+            })
+        } else {
+            disabled(reset)
+        };
+        let detail = if self.background.pending {
+            "Opening image…"
+        } else if self.background.unavailable {
+            "Saved image unavailable"
+        } else if self.background.has_image() {
+            "Custom image"
+        } else {
+            "PNG, JPEG, WebP, or GIF"
+        };
+        preference_row(
+            theme,
+            "background-row",
+            "Background image",
+            detail,
+            row().gap(r(5.)).child(choose).child(reset),
+        )
+    }
+
+    fn widget_style_settings(&self, theme: Theme, cx: &Context<Self>) -> impl IntoElement {
+        let styles = [(WidgetStyle::Glass, "Glass"), (WidgetStyle::Solid, "Solid")];
+        let buttons = row().gap(r(5.)).children(styles.map(|(style, label)| {
+            let active = self.preferences.widget_style == style;
+            let view = cx.entity();
+            theme.bind(
+                theme
+                    .button(label, active.then_some(TEAL))
+                    .h(r(30.))
+                    .px(r(9.))
+                    .child(label),
+                move |_, cx| {
+                    view.update(cx, |this, cx| {
+                        if this.preferences.widget_style != style {
+                            this.gesture.borrow_mut().take();
+                            let mut preferences = this.preferences.clone();
+                            preferences.widget_style = style;
+                            this.save_preferences(preferences, cx);
+                        }
+                    });
+                },
+            )
+        }));
+        let glass = self.preferences.widget_style == WidgetStyle::Glass;
+        col()
+            .id("widget-style-row")
+            .flex_none()
+            .gap(r(5.))
+            .p(r(8.))
+            .rounded(r(8.))
+            .border_1()
+            .border_color(theme.color(STROKE))
+            .bg(theme.color(BACK).opacity(0.44))
+            .child(
+                row()
+                    .justify_between()
+                    .child(theme.label("Widget style").text_color(theme.color(INK)))
+                    .child(buttons),
+            )
+            .when(glass, |card| {
+                card.child(self.glass_transparency_setting(theme, cx))
+            })
+    }
+
+    fn glass_transparency_setting(&self, theme: Theme, cx: &Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        let saved = f32::from(self.saved_glass_transparency(theme)) / 100.;
+        let shown = self.glass_transparency(theme);
+        row()
+            .gap(r(8.))
+            .child(theme.quiet("Transparency").flex_none())
+            .child(slider(
+                theme,
+                GLASS_TRANSPARENCY_SLIDER.into(),
+                saved,
+                TEAL,
+                true,
+                self.gesture.clone(),
+                0.01,
+                move |fraction, cx| {
+                    let transparency = transparency_percent(fraction);
+                    view.update(cx, |this, cx| {
+                        if this.preferences.glass_transparency != Some(transparency) {
+                            let mut preferences = this.preferences.clone();
+                            preferences.glass_transparency = Some(transparency);
+                            this.save_preferences(preferences, cx);
+                        }
+                    });
+                },
+            ))
+            .child(
+                mono(format!("{shown}%"))
+                    .flex_none()
+                    .w(r(34.))
+                    .text_right()
+                    .text_size(r(12.))
+                    .text_color(theme.color(TEXT)),
+            )
+    }
+
+    pub(super) fn glass_transparency(&self, theme: Theme) -> u8 {
+        drag_value(&self.gesture, GLASS_TRANSPARENCY_SLIDER)
+            .map(transparency_percent)
+            .unwrap_or_else(|| self.saved_glass_transparency(theme))
+    }
+
+    fn saved_glass_transparency(&self, theme: Theme) -> u8 {
+        self.preferences
+            .glass_transparency
+            .unwrap_or_else(|| theme.default_glass_transparency())
+            .min(100)
     }
 
     fn toggle_start_at_login(&mut self, cx: &mut Context<Self>) {
@@ -962,6 +1110,10 @@ impl Dashboard {
             }
         }
     }
+}
+
+fn transparency_percent(fraction: f32) -> u8 {
+    (fraction * 100.).round() as u8
 }
 
 fn preference_row(

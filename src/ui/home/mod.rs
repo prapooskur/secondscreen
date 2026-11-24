@@ -655,7 +655,10 @@ impl Dashboard {
         let overlay_color = theme.color(BACK).opacity(0.92);
 
         theme
-            .panel()
+            .widget_panel(
+                self.preferences.widget_style,
+                self.glass_transparency(theme),
+            )
             .absolute()
             .top(r(tile.y as f32 * (grid.height + GAP)))
             .left(r(tile.x as f32 * (grid.width + GAP)))

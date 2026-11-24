@@ -1,4 +1,5 @@
 mod audio;
+mod background;
 mod discord;
 mod display;
 mod home;
@@ -83,6 +84,7 @@ pub struct Dashboard {
     home: home::Home,
     utilities: utilities::Utilities,
     preferences: Preferences,
+    background: background::Background,
     display: display::DisplayWatch,
     overlay: overlay::OverlayView,
     profile_editor: profile_editor::ProfileEditor,
@@ -177,6 +179,7 @@ impl Dashboard {
             home: home::Home::load(),
             utilities: utilities::Utilities::new(),
             preferences,
+            background: background::Background::load(cx),
             display: display::DisplayWatch::new(fullscreen, placing_at_startup),
             overlay: overlay::OverlayView::new(cx.focus_handle()),
             profile_editor: profile_editor::ProfileEditor::default(),
@@ -550,6 +553,7 @@ impl Render for Dashboard {
             .size_full()
             .bg(theme.color(BACK))
             .overflow_hidden()
+            .children(self.background.element(theme))
             .child(home)
             .children(
                 self.overlay

@@ -9,6 +9,14 @@ use super::theme::*;
 
 pub type Gesture = Rc<RefCell<Option<(String, f32)>>>;
 
+pub fn drag_value(gesture: &Gesture, id: &str) -> Option<f32> {
+    gesture
+        .borrow()
+        .as_ref()
+        .filter(|(track, _)| track == id)
+        .map(|(_, value)| *value)
+}
+
 pub fn slider(
     theme: Theme,
     id: String,
@@ -29,11 +37,8 @@ pub fn slider(
             let left = bounds.left() + radius;
             let width = (bounds.size.width - radius * 2.).max(px(1.));
             let center = bounds.center().y;
-            let current = gesture
-                .borrow()
-                .as_ref()
-                .filter(|(id, _)| id == &track_id)
-                .map_or(value, |(_, value)| *value)
+            let current = drag_value(&gesture, &track_id)
+                .unwrap_or(value)
                 .clamp(0., 1.);
             let line = |length: Pixels, color| {
                 fill(

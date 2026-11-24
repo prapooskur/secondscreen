@@ -1,9 +1,9 @@
 use gpui::{
     App, Div, ElementId, FontWeight, Global, Hsla, IntoElement, Rems, Stateful, Window,
-    WindowAppearance, div, prelude::*, rems, rgb,
+    WindowAppearance, div, linear_color_stop, linear_gradient, prelude::*, rems, rgb, white,
 };
 
-use crate::config::ThemePreference;
+use crate::config::{ThemePreference, WidgetStyle};
 
 use super::icons::{Icon, icon};
 
@@ -105,6 +105,41 @@ impl Theme {
             .border_1()
             .border_color(self.color(STROKE))
             .rounded(r(14.))
+    }
+
+    pub fn default_glass_transparency(self) -> u8 {
+        match self {
+            Self::Dark => 28,
+            Self::Light => 13,
+        }
+    }
+
+    pub fn widget_panel(self, style: WidgetStyle, transparency: u8) -> Div {
+        let panel = self.panel();
+        if style == WidgetStyle::Solid {
+            return panel;
+        }
+
+        let (highlight, border) = match self {
+            Self::Dark => (0.11, white().opacity(0.20)),
+            Self::Light => (0.13, self.color(STROKE).opacity(0.80)),
+        };
+        let transparency = f32::from(transparency) / 100.;
+        let default = f32::from(self.default_glass_transparency()) / 100.;
+        let surface = 1. - transparency;
+        // Keep the original highlight at the default and fade it out at both endpoints.
+        let highlight_strength = (transparency / default).min(surface / (1. - default));
+        panel
+            .bg(linear_gradient(
+                145.,
+                linear_color_stop(
+                    self.color(PANEL)
+                        .opacity(surface - highlight * highlight_strength),
+                    0.,
+                ),
+                linear_color_stop(self.color(PANEL).opacity(surface), 1.),
+            ))
+            .border_color(border)
     }
 
     pub fn title(self, text: impl IntoElement) -> Div {
