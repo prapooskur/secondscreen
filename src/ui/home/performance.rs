@@ -1,9 +1,9 @@
-use gpui::{AnyElement, Context, IntoElement, Styled, prelude::*};
+use gpui::{Context, IntoElement, SharedString, Styled, prelude::*};
 
 use super::{
     super::{
-        Dashboard,
-        monitor::{graph, uptime},
+        Dashboard, Tooltip,
+        monitor::{gauge, monitor_graph, monitoring_bar},
         theme::*,
     },
     options::{SensorMode, SensorOptions},
@@ -45,125 +45,120 @@ impl Dashboard {
         )
     }
 
-    pub(super) fn performance_widget(
+    pub(super) fn performance_readings(
         &self,
         id: u32,
-        height: f32,
-        cx: &Context<Self>,
-    ) -> AnyElement {
-        let theme = Theme::current(cx);
-        let options = self
-            .home
-            .layout()
-            .sensors
-            .get(&id)
-            .cloned()
-            .unwrap_or_default();
-        if let Some((active, slot)) = self.home.sensor_editor
-            && active == id
-        {
-            return self
-                .sensor_editor(id, slot, &options, cx)
-                .into_any_element();
-        }
+        theme: Theme,
+        options: &SensorOptions,
+    ) -> impl IntoElement {
+        let list = options.mode == SensorMode::List;
         let keys: &[String] = match options.mode {
             SensorMode::Chart => std::slice::from_ref(&options.chart),
             SensorMode::Pair => &options.pair,
             SensorMode::List => &options.list,
         };
-        let list = options.mode == SensorMode::List;
         let mut readings = if list {
             col()
                 .id(("sensor-list", id as usize))
+                .flex_1()
                 .overflow_y_scroll()
-                .gap(r(7.))
+                .gap(r(5.))
         } else {
             split()
                 .id(("sensor-readings", id as usize))
                 .flex_1()
-                .gap(r(12.))
+                .min_h_0()
+                .gap(r(10.))
         };
         for (index, key) in keys.iter().enumerate() {
             let sensor = self.sensor(key);
-            let name = sensor.map(|s| s.name.as_str()).unwrap_or(if key == "gpu" {
+            let name = SharedString::from(if let Some(sensor) = sensor {
+                sensor.name.as_str()
+            } else if key == "gpu" {
                 "GPU load"
             } else {
                 key
             });
+            let title = theme
+                .quiet(name.clone())
+                .id(("sensor-label", index))
+                .text_size(r(11.))
+                .min_w_0()
+                .truncate()
+                .tooltip(move |_, cx| cx.new(|_| Tooltip(name.clone())).into());
+            let unit = sensor.map_or(if key == "gpu" { "%" } else { "" }, |sensor| sensor.unit);
             let value = sensor
-                .and_then(|s| s.value)
-                .map(|n| {
-                    let unit = sensor.unwrap().unit;
-                    match unit {
-                        "V" | "A" => format!("{n:.2} {unit}"),
-                        "GiB" | "W" | "°C" => format!("{n:.1} {unit}"),
-                        "%" => format!("{n:.0}%"),
-                        _ => format!("{n:.0} {unit}"),
-                    }
-                })
-                .unwrap_or_else(|| "—".into());
-            let color = if index == 1 { BLUE } else { TEAL };
+                .and_then(|sensor| sensor.value)
+                .filter(|n| n.is_finite());
+            let formatted = value.map_or_else(
+                || "—".into(),
+                |n| match unit {
+                    "V" | "A" => format!("{n:.2} {unit}"),
+                    "GiB" | "W" | "°C" => format!("{n:.1} {unit}"),
+                    "%" => format!("{n:.0}%"),
+                    _ => format!("{n:.0} {unit}"),
+                },
+            );
+            let accent = if index == 1 { BLUE } else { TEAL };
             if list {
                 readings = readings.child(
-                    row()
-                        .justify_between()
-                        .gap(r(8.))
-                        .child(theme.label(name.to_owned()).truncate())
-                        .child(mono(value).text_color(theme.color(color)).flex_none()),
+                    col()
+                        .flex_none()
+                        .gap(r(3.))
+                        .child(
+                            row()
+                                .justify_between()
+                                .gap(r(5.))
+                                .child(title.flex_1())
+                                .child(
+                                    mono(formatted)
+                                        .text_size(r(11.))
+                                        .text_color(theme.color(accent))
+                                        .flex_none(),
+                                ),
+                        )
+                        .children(
+                            value
+                                .filter(|_| unit == "%")
+                                .map(|load| monitoring_bar(theme, load, accent)),
+                        ),
                 );
+                continue;
+            }
+            let samples = sensor.and_then(|s| self.history.sensors.get(&s.id));
+            let samples = samples.into_iter().flatten().copied();
+            let (low, high) = chart_range(samples.clone(), unit);
+            let reading = if unit == "%" {
+                gauge(theme, value, accent, 51.).into_any_element()
             } else {
-                let mut card = col()
+                mono(formatted)
+                    .text_size(r(19.))
+                    .text_color(theme.color(accent))
+                    .truncate()
+                    .into_any_element()
+            };
+            readings = readings.child(
+                col()
                     .flex_1()
-                    .h_full()
-                    .gap(r(3.))
-                    .child(theme.quiet(name.to_owned()).truncate())
-                    .child(
-                        mono(value)
-                            .text_size(r(if height > 85. { 26. } else { 17. }))
-                            .text_color(theme.color(color))
-                            .truncate(),
-                    );
-                if height >= 65.
-                    && let Some(sensor) = sensor
-                    && let Some(samples) = self.history.sensors.get(&sensor.id)
-                {
-                    let (low, high) = chart_range(samples.iter().copied(), sensor.unit);
-                    card = card.child(graph(
+                    .gap(r(2.))
+                    .child(title)
+                    .child(row().h(r(51.)).flex_none().justify_center().child(reading))
+                    .child(monitor_graph(
                         (id, index),
                         theme,
-                        samples.iter().map(|n| n - low).collect(),
+                        samples.map(|n| n - low).collect(),
                         None,
                         high - low,
-                        color,
-                    ));
-                }
-                readings = readings.child(card);
-            }
+                        accent,
+                    )),
+            );
         }
-        col()
-            .flex_1()
-            .gap(r(4.))
-            .child(readings)
-            .when(keys.is_empty(), |it| {
-                it.child(theme.quiet("Choose sensors to display."))
-            })
-            .when(!list && height >= 145., |it| {
-                it.child(
-                    row()
-                        .justify_between()
-                        .gap(r(6.))
-                        .child(theme.quiet(self.metrics.cpu_name.clone()).truncate())
-                        .children(self.metrics.uptime.map(|secs| {
-                            theme
-                                .quiet(format!("{} · {}", self.metrics.host, uptime(secs)))
-                                .truncate()
-                        })),
-                )
-            })
-            .into_any_element()
+        readings.when(keys.is_empty(), |it| {
+            it.child(theme.quiet("Choose sensors to display."))
+        })
     }
 
-    fn sensor_editor(
+    pub(super) fn sensor_editor(
         &self,
         id: u32,
         slot: usize,

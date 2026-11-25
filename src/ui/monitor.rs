@@ -1,22 +1,25 @@
-use gpui::{IntoElement, SharedString, Styled, div, prelude::*};
+use gpui::{ElementId, IntoElement, SharedString, Styled, prelude::*};
 
 use crate::model::DiskUsage;
 
 use super::{Tooltip, percent, theme::*};
 
 mod chart;
+mod meter;
+pub(super) use chart::monitor_graph;
 pub(super) use chart::{discard_charts, graph};
+pub(super) use meter::{gauge, monitoring_bar};
 
 pub(super) fn storage_list(
     theme: Theme,
-    id: &'static str,
+    id: impl Into<ElementId>,
     disks: Vec<&DiskUsage>,
 ) -> impl IntoElement {
     col()
         .id(id)
         .flex_1()
         .overflow_y_scroll()
-        .gap(r(11.))
+        .gap(r(9.))
         .when(disks.is_empty(), |it| {
             it.child(theme.quiet("No drives shown."))
         })
@@ -38,7 +41,7 @@ pub(super) fn storage_list(
             });
             col()
                 .flex_none()
-                .gap(r(4.))
+                .gap(r(3.))
                 .child(
                     row()
                         .gap(r(6.))
@@ -49,6 +52,7 @@ pub(super) fn storage_list(
                                 .id(SharedString::from(disk.id.clone()))
                                 .flex_1()
                                 .text_color(theme.color(INK))
+                                .line_height(r(17.))
                                 .truncate()
                                 .tooltip(move |_, cx| cx.new(|_| Tooltip(tooltip.clone())).into()),
                         )
@@ -57,22 +61,19 @@ pub(super) fn storage_list(
                                 mono(format!("{load:.0}%"))
                                     .flex_none()
                                     .text_size(r(11.))
+                                    .line_height(r(17.))
                                     .text_color(theme.color(BLUE)),
                             )
                         }),
                 )
-                .child(theme.quiet(detail))
-                .when_some(load, |it, load| {
-                    it.child(
-                        div().h(r(4.)).rounded_full().bg(theme.color(STROKE)).child(
-                            div()
-                                .w(gpui::relative(load / 100.))
-                                .h_full()
-                                .rounded_full()
-                                .bg(theme.color(BLUE)),
-                        ),
-                    )
-                })
+                .child(
+                    theme
+                        .quiet(detail)
+                        .text_size(r(10.))
+                        .line_height(r(13.))
+                        .truncate(),
+                )
+                .children(load.map(|load| monitoring_bar(theme, load, BLUE)))
         }))
 }
 

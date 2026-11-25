@@ -4,8 +4,7 @@ Second Screen is a Rust and GPUI dashboard for ultrawide secondary monitors. It 
 
 The app opens to a single resizable widget grid. Use **Edit layout** in the right-hand rail to choose the widgets on your display. **Settings** opens over the grid. Click outside it or press **Esc** to return to the dashboard.
 
-- **Performance** shows selected sensors as a chart, a pair, or a list. **Memory** shows RAM usage and history. **Storage** shows each drive's capacity and the space used by mounted filesystems that can be attributed to that drive.
-- **Network** shows live download and upload speeds across active network interfaces, with a one-minute history chart. It appears on the default dashboard. Add it to a saved layout from **Edit layout → Add widget → Network**.
+- **System monitor** brings hardware sensors, RAM, storage, and network traffic together with AIDA64-style gauges, segmented usage bars, and live charts. It shows drive capacity and attributed filesystem usage, plus download and upload rates across active network interfaces with a one-minute history. Find it on the default dashboard or under **Edit layout → Add widget → System monitor**.
 - **Now playing** shows track details, album art, and playback controls. When multiple players are available, use the tabs at the top of the widget to switch between them. Make the widget at least three rows tall to see the seek bar.
 - **Audio** adjusts device volume and mute and lets you set the default output or microphone. Add **App mixer** to adjust playback and recording streams using app icons, mute buttons, and volume sliders. Hover over an icon to see the app and stream names.
 - **Quick controls** puts playback, audio, Discord voice, and dashboard shortcuts in a customizable grid. The icons reflow as you resize the tile. Scroll inside it when space is tight.
@@ -23,7 +22,7 @@ Open the **Linux packages** run for your commit under **Actions** on GitHub. Eve
 | RPM | Fedora 44 | `sudo dnf install ./*.rpm` |
 | Flatpak | GNOME 51 runtime from Flathub | `flatpak install --user ./*.flatpak` |
 
-Launch **Second Screen** from your app menu in a Wayland session. Flatpak keeps its settings separately under `~/.var/app/io.github.secondscreen`. Host notification monitoring and compositor-specific display placement require a native package. The Storage tile reports usage for filesystems visible inside the sandbox, including drives mounted under `/media`, `/mnt`, and `/run/media`.
+Launch **Second Screen** from your app menu in a Wayland session. Flatpak keeps its settings separately under `~/.var/app/io.github.secondscreen`. Host notification monitoring and compositor-specific display placement require a native package. System monitor reports usage for filesystems visible inside the sandbox, including drives mounted under `/media`, `/mnt`, and `/run/media`.
 
 ### Build packages locally
 
@@ -74,11 +73,13 @@ Home fits four grid rows and up to five columns in the visible area. Widgets can
 
 On the **Quick controls** tile, choose **Setup** in **Edit layout**. Use **+** to add an action, the up and down arrows to set its position, or **×** to remove it. Buttons fill each row from left to right. Each profile saves its own selection and order.
 
-## Configure Performance
+## Configure System monitor
 
-In **Edit layout**, choose **Sensors** on a Performance tile. **Chart** plots one sensor over the last 60 samples. **2 sensors** shows two readings, each with its own units and graph scale. Select a slot, then choose its sensor. **List** lets you toggle individual readings. Choose **Done** on the tile to return to the live view.
+System monitor arranges its sections in two columns on wide tiles and stacks them on narrow tiles. Scroll inside the tile to reach sections below its edge.
 
-The picker includes CPU and per-core load, memory, GPU load and VRAM where the graphics driver reports them, and Linux hardware-monitor channels such as temperatures, fan speeds, voltages, and power. Add Performance again to keep a chart and a sensor list visible together. Each tile saves its selections and size independently.
+In **Edit layout**, choose **Sensors** on a System monitor tile. **Chart** plots one sensor over the last 60 samples. **2 sensors** shows two readings, each with its own units and graph scale. Select a slot, then choose its sensor. **List** lets you toggle individual readings. Choose **Done** on the tile to return to the live view.
+
+The picker includes CPU and per-core load, memory, GPU load and VRAM where the graphics driver reports them, and Linux hardware-monitor channels such as temperatures, fan speeds, voltages, and power. Add another System monitor to keep a chart and a sensor list visible together. Each tile saves its selections and size independently. Older layouts combine the separate monitor tiles automatically and retain each Performance tile’s sensor selections.
 
 ## Control Home Assistant devices
 

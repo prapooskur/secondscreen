@@ -2,7 +2,7 @@ use super::options::SensorOptions;
 use super::quick_controls::QuickAction;
 use crate::ui::home_assistant::Binding;
 use crate::viewer::ViewerOptions;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, HashSet};
 
 pub(super) const MAX_COLUMNS: u8 = 5;
@@ -13,13 +13,11 @@ pub(super) const VISIBLE_ROWS: u8 = 4;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(in crate::ui) enum Kind {
-    Performance,
+    #[serde(alias = "performance")]
+    SystemMonitor,
     Media,
     Audio,
     Discord,
-    Memory,
-    Network,
-    Storage,
     Mixer,
     Viewer,
     WorldClock,
@@ -32,14 +30,11 @@ pub(in crate::ui) enum Kind {
 }
 
 impl Kind {
-    pub(super) const ALL: [Self; 16] = [
-        Self::Performance,
+    pub(super) const ALL: [Self; 13] = [
+        Self::SystemMonitor,
         Self::Media,
         Self::Audio,
         Self::Discord,
-        Self::Memory,
-        Self::Network,
-        Self::Storage,
         Self::Mixer,
         Self::Viewer,
         Self::WorldClock,
@@ -52,14 +47,17 @@ impl Kind {
     ];
 
     pub(super) fn repeatable(self) -> bool {
-        matches!(self, Self::Performance | Self::Viewer | Self::HomeAssistant)
+        matches!(
+            self,
+            Self::SystemMonitor | Self::Viewer | Self::HomeAssistant
+        )
     }
 
     pub(super) fn widget(self) -> Widget {
         Widget {
             id: self as u32 + 1,
             kind: self,
-            columns: 1,
+            columns: if self == Self::SystemMonitor { 2 } else { 1 },
             rows: if matches!(self, Self::HomeAssistant | Self::QuickControls) {
                 MIN_ROWS
             } else {
@@ -69,9 +67,8 @@ impl Kind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub(super) struct Widget {
-    #[serde(default)]
     pub id: u32,
     pub kind: Kind,
     pub columns: u8,
@@ -80,6 +77,7 @@ pub(super) struct Widget {
 
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 pub(super) struct Layout {
+    #[serde(deserialize_with = "read_widgets")]
     pub widgets: Vec<Widget>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sensors: BTreeMap<u32, SensorOptions>,
@@ -94,15 +92,9 @@ pub(super) struct Layout {
 impl Default for Layout {
     fn default() -> Self {
         Self {
-            widgets: [
-                Kind::Performance,
-                Kind::Network,
-                Kind::Media,
-                Kind::Audio,
-                Kind::Discord,
-            ]
-            .map(Kind::widget)
-            .into(),
+            widgets: [Kind::SystemMonitor, Kind::Media, Kind::Audio, Kind::Discord]
+                .map(Kind::widget)
+                .into(),
             ..Self::empty()
         }
     }
@@ -140,7 +132,7 @@ impl Layout {
         self.sensors.retain(|id, _| {
             self.widgets
                 .iter()
-                .any(|w| w.id == *id && w.kind == Kind::Performance)
+                .any(|w| w.id == *id && w.kind == Kind::SystemMonitor)
         });
         self.viewers.retain(|id, _| {
             self.widgets
@@ -177,6 +169,50 @@ impl Layout {
             });
         }
     }
+}
+
+fn read_widgets<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Widget>, D::Error> {
+    #[derive(Deserialize)]
+    enum SavedKind {
+        #[serde(rename = "memory", alias = "storage", alias = "network")]
+        LegacyMonitor,
+        #[serde(untagged)]
+        Current(Kind),
+    }
+
+    #[derive(Deserialize)]
+    struct SavedWidget {
+        #[serde(default)]
+        id: u32,
+        kind: SavedKind,
+        columns: u8,
+        rows: u8,
+    }
+
+    let saved = Vec::<SavedWidget>::deserialize(deserializer)?;
+    // Performance tiles own sensor settings. A layout with only the other metrics needs one monitor.
+    let mut has_monitor = saved
+        .iter()
+        .any(|widget| matches!(widget.kind, SavedKind::Current(Kind::SystemMonitor)));
+    Ok(saved
+        .into_iter()
+        .filter_map(|widget| {
+            let kind = match widget.kind {
+                SavedKind::Current(kind) => kind,
+                SavedKind::LegacyMonitor if has_monitor => return None,
+                SavedKind::LegacyMonitor => {
+                    has_monitor = true;
+                    Kind::SystemMonitor
+                }
+            };
+            Some(Widget {
+                id: widget.id,
+                kind,
+                columns: widget.columns,
+                rows: widget.rows,
+            })
+        })
+        .collect())
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -271,10 +307,10 @@ mod tests {
         std::fs::write(&path,r#"{"widgets":[{"kind":"viewer","columns":2,"rows":3},{"kind":"performance","columns":1,"rows":4}]}"#).unwrap();
         let mut layout: Layout = crate::config::read_json(&path).unwrap();
         layout.normalize();
-        layout.add(Kind::Performance);
+        layout.add(Kind::SystemMonitor);
         layout.add(Kind::Viewer);
-        layout.add(Kind::Storage);
-        layout.add(Kind::Storage);
+        layout.add(Kind::Calendar);
+        layout.add(Kind::Calendar);
         assert_eq!(layout.widgets.len(), 5);
         assert_eq!(layout.widgets[0].rows, 3);
         assert!(layout.widgets[2..].iter().all(|w| w.rows == VISIBLE_ROWS));
@@ -315,6 +351,61 @@ mod tests {
     }
 
     #[test]
+    fn combines_legacy_monitor_tiles_and_preserves_sensor_instances() {
+        let mut layout: Layout = serde_json::from_str(
+            r#"{
+                "widgets": [
+                    {"kind":"network","id":1,"columns":1,"rows":3},
+                    {"kind":"performance","id":6,"columns":2,"rows":4},
+                    {"kind":"storage","id":2,"columns":1,"rows":4},
+                    {"kind":"media","id":3,"columns":1,"rows":4},
+                    {"kind":"memory","id":4,"columns":1,"rows":2},
+                    {"kind":"performance","id":7,"columns":1,"rows":3}
+                ],
+                "sensors": {
+                    "6":{"mode":"chart","chart":"cpu:0"},
+                    "7":{"mode":"list","list":["memory","gpu"]}
+                }
+            }"#,
+        )
+        .unwrap();
+        layout.normalize();
+        let tiles: Vec<_> = layout.widgets.iter().map(|w| (w.kind, w.id)).collect();
+        assert_eq!(
+            tiles,
+            [
+                (Kind::SystemMonitor, 6),
+                (Kind::Media, 3),
+                (Kind::SystemMonitor, 7)
+            ]
+        );
+        assert_eq!(layout.sensors[&6].chart, "cpu:0");
+        assert_eq!(layout.sensors[&7].list, ["memory", "gpu"]);
+        let saved = serde_json::to_string(&layout).unwrap();
+        assert_eq!(saved.matches("system_monitor").count(), 2);
+        assert_eq!(serde_json::from_str::<Layout>(&saved).unwrap(), layout);
+    }
+
+    #[test]
+    fn legacy_memory_storage_and_network_can_upgrade_without_performance() {
+        for kind in ["memory", "storage", "network"] {
+            let saved =
+                format!(r#"{{"widgets":[{{"kind":"{kind}","id":8,"columns":1,"rows":2}}]}}"#);
+            let mut layout: Layout = serde_json::from_str(&saved).unwrap();
+            layout.normalize();
+            assert_eq!(
+                layout.widgets,
+                [Widget {
+                    id: 8,
+                    kind: Kind::SystemMonitor,
+                    columns: 1,
+                    rows: 2,
+                }]
+            );
+        }
+    }
+
+    #[test]
     fn mixed_sizes_reflow_without_overlaps_or_losing_saved_widths() {
         let mut layout = Layout::default();
         layout.widgets[0].columns = MAX_COLUMNS;
@@ -341,8 +432,9 @@ mod tests {
     #[test]
     fn overflow_extends_to_the_right_and_keeps_stacked_widgets_together() {
         let tile = Widget {
+            columns: 1,
             rows: 2,
-            ..Kind::Performance.widget()
+            ..Kind::SystemMonitor.widget()
         };
         let placements = place([tile; 14], MAX_COLUMNS);
         for (index, placement) in placements.iter().enumerate() {

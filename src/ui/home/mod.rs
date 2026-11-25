@@ -3,6 +3,7 @@ mod options;
 mod performance;
 mod profiles;
 mod quick_controls;
+mod system_monitor;
 mod widgets;
 
 use std::path::PathBuf;
@@ -309,9 +310,7 @@ impl Dashboard {
                     .child(content),
             )
             .child(self.control_rail(fullscreen, scrolling, cx))
-            .when(self.home.editing, |it| {
-                it.child(self.track_resize(cx))
-            })
+            .when(self.home.editing, |it| it.child(self.track_resize(cx)))
     }
 
     fn keep_offscreen(&self, widget: Widget) -> bool {
@@ -320,18 +319,6 @@ impl Dashboard {
             return true;
         }
         match widget.kind {
-            Kind::Memory | Kind::Network => false,
-            Kind::Performance => {
-                self.home
-                    .sensor_editor
-                    .is_some_and(|(id, _)| id == widget.id)
-                    || self
-                        .home
-                        .layout()
-                        .sensors
-                        .get(&widget.id)
-                        .is_some_and(|options| options.mode == options::SensorMode::List)
-            }
             Kind::Viewer => self.viewers.contains_key(&widget.id),
             _ => true,
         }
@@ -642,7 +629,7 @@ impl Dashboard {
         let content_height = body_height - 2. * (padding + 1.);
         let setup_open = editing
             && match kind {
-                Kind::Performance => self
+                Kind::SystemMonitor => self
                     .home
                     .sensor_editor
                     .is_some_and(|(id, _)| id == tile.widget.id),
@@ -721,7 +708,9 @@ impl Dashboard {
     fn widget_control(&self, widget: Widget, cx: &Context<Self>) -> Option<AnyElement> {
         let theme = Theme::current(cx);
         let name = match widget.kind {
-            Kind::Performance => return Some(self.sensor_button(widget.id, cx).into_any_element()),
+            Kind::SystemMonitor => {
+                return Some(self.sensor_button(widget.id, cx).into_any_element());
+            }
             Kind::Notifications => return Some(self.clear_notifications(cx).into_any_element()),
             Kind::HomeAssistant => {
                 return Some(
@@ -1143,7 +1132,13 @@ mod tests {
             width: 100.,
             height: 50.,
         };
-        let tiles = layout::place([Kind::Performance.widget(); 3], grid.columns);
+        let tiles = layout::place(
+            [Widget {
+                columns: 1,
+                ..Kind::SystemMonitor.widget()
+            }; 3],
+            grid.columns,
+        );
         let width = grid.span_width(2);
         assert!(grid.intersects(tiles[0], 0., width));
         assert!(!grid.intersects(tiles[2], 0., width));

@@ -217,9 +217,7 @@ impl Dashboard {
     fn apply(&mut self, update: Update, cx: &mut Context<Self>) -> Refresh {
         match update {
             Update::Metrics(metrics) => {
-                let redraw = [Kind::Performance, Kind::Memory, Kind::Network]
-                    .into_iter()
-                    .any(|kind| self.home.shows(kind));
+                let redraw = self.home.shows(Kind::SystemMonitor);
                 let mut previous = std::mem::take(&mut self.history.sensors);
                 for sensor in &metrics.sensors {
                     let mut samples = previous.remove(&sensor.id).unwrap_or_default();
@@ -521,7 +519,7 @@ impl Render for Dashboard {
         );
         self.sync_home_assistant(cx);
         let storage_active =
-            self.home.shows(Kind::Storage) || self.showing_settings(Section::Storage);
+            self.home.shows(Kind::SystemMonitor) || self.showing_settings(Section::Storage);
         if storage_active != self.storage_active {
             self.storage_active = storage_active;
             let _ = self.controls.storage.send(storage_active);

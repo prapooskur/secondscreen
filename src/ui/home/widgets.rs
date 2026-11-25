@@ -2,27 +2,17 @@ use gpui::{AnyElement, Context, Div, FontWeight, IntoElement, Styled, div, prelu
 
 use crate::model::AudioKind;
 
-use super::super::{
-    Dashboard, HISTORY,
-    icons::Icon,
-    media::album_art,
-    monitor::{gib, graph, rate, storage_list},
-    percent,
-    theme::*,
-};
+use super::super::{Dashboard, icons::Icon, media::album_art, theme::*};
 use super::layout::{Kind, Placement};
 
 impl Kind {
     pub(super) fn name(self) -> &'static str {
         match self {
-            Self::Performance => "Performance",
+            Self::SystemMonitor => "System monitor",
             Self::Media => "Now playing",
             Self::Audio => "Audio",
             Self::Mixer => "App mixer",
             Self::Discord => "Discord",
-            Self::Memory => "Memory",
-            Self::Network => "Network",
-            Self::Storage => "Storage",
             Self::Viewer => "Viewer",
             Self::WorldClock => "World clock",
             Self::Calendar => "Calendar",
@@ -36,14 +26,11 @@ impl Kind {
 
     pub(super) fn description(self) -> &'static str {
         match self {
-            Self::Performance => "Sensor chart, two sensors, or sensor list",
+            Self::SystemMonitor => "Hardware sensors, RAM, drives, and network",
             Self::Media => "Track details and playback",
             Self::Audio => "Audio devices and volume",
             Self::Mixer => "App volume and mute",
             Self::Discord => "Voice channel and controls",
-            Self::Memory => "RAM usage over time",
-            Self::Network => "Live download and upload speeds",
-            Self::Storage => "Drive capacity and usage",
             Self::Viewer => "Web, video, Twitch, and slideshows",
             Self::WorldClock => "Time and date across time zones",
             Self::Calendar => "Month view and events from your system calendar",
@@ -57,14 +44,11 @@ impl Kind {
 
     pub(super) fn icon(self) -> Icon {
         match self {
-            Self::Performance => Icon::Activity,
+            Self::SystemMonitor => Icon::Activity,
             Self::Media => Icon::Music,
             Self::Audio => Icon::Speaker,
             Self::Mixer => Icon::Audio,
             Self::Discord => Icon::Discord,
-            Self::Memory => Icon::Memory,
-            Self::Network => Icon::Network,
-            Self::Storage => Icon::Disk,
             Self::Viewer => Icon::Play,
             Self::WorldClock => Icon::Clock,
             Self::Calendar => Icon::Calendar,
@@ -78,11 +62,11 @@ impl Kind {
 
     pub(super) fn accent(self) -> Color {
         match self {
-            Self::Performance => TEAL,
+            Self::SystemMonitor => TEAL,
             Self::Media => PINK,
-            Self::Mixer | Self::Audio | Self::Network => AMBER,
-            Self::Discord | Self::Memory => VIOLET,
-            Self::Storage | Self::Viewer => BLUE,
+            Self::Mixer | Self::Audio => AMBER,
+            Self::Discord => VIOLET,
+            Self::Viewer => BLUE,
             Self::WorldClock => TEAL,
             Self::Calendar => VIOLET,
             Self::Weather => AMBER,
@@ -105,20 +89,11 @@ impl Dashboard {
         let theme = Theme::current(cx);
         let wide = tile.columns >= 2;
         match tile.widget.kind {
-            Kind::Performance => self.performance_widget(tile.widget.id, height, cx),
+            Kind::SystemMonitor => self.system_monitor_widget(tile.widget.id, width, height, cx),
             Kind::Media => self.media_widget(wide, tile.rows >= 3, height, cx),
             Kind::Audio => self.audio_widget(cx).into_any_element(),
             Kind::Mixer => self.mixer_widget(cx).into_any_element(),
             Kind::Discord => self.discord_widget(cx).into_any_element(),
-            Kind::Memory => self
-                .memory_widget(tile.widget.id, theme, height)
-                .into_any_element(),
-            Kind::Network => self
-                .network_widget(tile.widget.id, theme, width, height)
-                .into_any_element(),
-            Kind::Storage => {
-                storage_list(theme, "home-storage", self.visible_disks()).into_any_element()
-            }
             Kind::WorldClock => self.world_clock(theme, height).into_any_element(),
             Kind::Calendar => self.calendar(theme, width, height, cx).into_any_element(),
             Kind::Weather => self.weather_widget(theme, width, height).into_any_element(),
@@ -139,116 +114,6 @@ impl Dashboard {
                 .children(self.viewers.get(&tile.widget.id).cloned())
                 .into_any_element(),
         }
-    }
-
-    fn memory_widget(&self, id: u32, theme: Theme, height: f32) -> impl IntoElement {
-        let memory = percent(self.metrics.memory_used, self.metrics.memory_total);
-        col()
-            .flex_1()
-            .gap(r(8.))
-            .child(metric(
-                theme,
-                "RAM in use",
-                percent_text(memory),
-                VIOLET,
-                height,
-            ))
-            .when(height >= 60., |it| {
-                it.child(graph(
-                    (id, 0),
-                    theme,
-                    self.history.memory.clone(),
-                    None,
-                    100.,
-                    VIOLET,
-                ))
-            })
-            .when(height >= 105. && memory.is_some(), |it| {
-                it.child(
-                    theme
-                        .quiet(format!(
-                            "{:.1} of {:.1} GiB used",
-                            gib(self.metrics.memory_used),
-                            gib(self.metrics.memory_total)
-                        ))
-                        .truncate()
-                        .flex_none(),
-                )
-            })
-    }
-
-    fn network_widget(&self, id: u32, theme: Theme, width: f32, height: f32) -> impl IntoElement {
-        let network = self.metrics.network;
-        let text_size = if height < 60. {
-            14.
-        } else if width < 250. {
-            17.
-        } else {
-            22.
-        };
-        let network_rate = |label, amount: Option<f32>, color| {
-            let (number, unit) = amount.map_or_else(|| ("—".into(), ""), rate);
-            col()
-                .flex_1()
-                .gap(r(2.))
-                .child(theme.quiet(label).truncate())
-                .child(
-                    row()
-                        .items_baseline()
-                        .gap(r(4.))
-                        .child(
-                            mono(number)
-                                .text_size(r(text_size))
-                                .text_color(theme.color(color))
-                                .truncate(),
-                        )
-                        .when(amount.is_some(), |it| {
-                            it.child(theme.quiet(unit).flex_none().whitespace_nowrap())
-                        }),
-                )
-        };
-        col()
-            .flex_1()
-            .gap(r(8.))
-            .child(
-                split()
-                    .gap(r(8.))
-                    .flex_none()
-                    .child(network_rate(
-                        "Download",
-                        network.map(|rate| rate.download),
-                        AMBER,
-                    ))
-                    .child(network_rate(
-                        "Upload",
-                        network.map(|rate| rate.upload),
-                        BLUE,
-                    )),
-            )
-            .when(height >= 75. && network.is_some(), |it| {
-                let top = self
-                    .history
-                    .download
-                    .iter()
-                    .chain(&self.history.upload)
-                    .copied()
-                    .fold(1024.0, f32::max)
-                    * 1.08;
-                it.child(graph(
-                    (id, 0),
-                    theme,
-                    self.history.download.clone(),
-                    Some(self.history.upload.clone()),
-                    top,
-                    AMBER,
-                ))
-            })
-            .when(height >= 105. && network.is_some(), |it| {
-                it.child(theme.quiet(format!("Last {HISTORY} seconds")))
-            })
-            .when(height >= 60. && network.is_none(), |it| {
-                it.child(theme.quiet("Waiting for network data"))
-            })
     }
 
     fn media_widget(
@@ -377,24 +242,6 @@ impl Dashboard {
             .children(devices.into_iter().map(|device| self.channel(device, cx)))
             .into_any_element()
     }
-}
-
-fn percent_text(value: Option<f32>) -> String {
-    value.map_or_else(|| "—".into(), |value| format!("{value:.0}%"))
-}
-
-fn metric(theme: Theme, name: &'static str, value: String, color: Color, height: f32) -> Div {
-    let presentation = if height >= 105. { col() } else { row() };
-    presentation
-        .flex_1()
-        .gap(r(5.))
-        .child(theme.quiet(name).truncate())
-        .child(
-            mono(value)
-                .text_size(r(if height >= 170. { 33. } else { 21. }))
-                .text_color(theme.color(color))
-                .truncate(),
-        )
 }
 
 fn message(theme: Theme, heading: &'static str, detail: &str) -> Div {

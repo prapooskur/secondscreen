@@ -18,6 +18,7 @@ struct Graph {
     secondary: Option<VecDeque<f32>>,
     maximum: f32,
     grid: Hsla,
+    grid_columns: u8,
     accent: Hsla,
     blue: Hsla,
 }
@@ -53,11 +54,35 @@ pub(in crate::ui) fn graph(
     maximum: f32,
     accent: Color,
 ) -> impl IntoElement {
+    render_graph(id, theme, primary, secondary, maximum, accent, 0)
+}
+
+pub(in crate::ui) fn monitor_graph(
+    id: (u32, usize),
+    theme: Theme,
+    primary: VecDeque<f32>,
+    secondary: Option<VecDeque<f32>>,
+    maximum: f32,
+    accent: Color,
+) -> impl IntoElement {
+    render_graph(id, theme, primary, secondary, maximum, accent, 6)
+}
+
+fn render_graph(
+    id: (u32, usize),
+    theme: Theme,
+    primary: VecDeque<f32>,
+    secondary: Option<VecDeque<f32>>,
+    maximum: f32,
+    accent: Color,
+    grid_columns: u8,
+) -> impl IntoElement {
     let graph = Graph {
         primary,
         secondary,
         maximum,
         grid: theme.color(STROKE),
+        grid_columns,
         accent: theme.color(accent),
         blue: theme.color(BLUE),
     };
@@ -113,10 +138,22 @@ fn rasterize(graph: &Graph, (width, height): (u32, u32), scale: f32) -> Option<A
     let width = (width as f32 - 4. * scale).max(0.);
     let height = bottom - top;
     let transform = Transform::identity();
-    let grid = solid(graph.grid);
+    // Pixel-aligned grid rules also avoid a tiny-skia AA edge case on the first column.
+    let grid = Paint {
+        anti_alias: false,
+        ..solid(graph.grid)
+    };
     for y in [top, top + height * 0.5, bottom] {
         if let Some(rect) = Rect::from_xywh(0., y, width, scale) {
             pixmap.fill_rect(rect, &grid, transform, None);
+        }
+    }
+    if graph.grid_columns > 0 {
+        for column in 0..=graph.grid_columns {
+            let x = width * f32::from(column) / f32::from(graph.grid_columns);
+            if let Some(rect) = Rect::from_xywh(x, top, scale, height) {
+                pixmap.fill_rect(rect, &grid, transform, None);
+            }
         }
     }
     let mut draw = |values: &VecDeque<f32>, color: Hsla, fill: bool| {
@@ -203,4 +240,25 @@ fn solid(color: Hsla) -> Paint<'static> {
     let mut paint = Paint::default();
     paint.set_color(paint_color(color));
     paint
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn monitor_grid_renders_at_the_left_edge_before_samples_arrive() {
+        let theme = Theme::Dark;
+        let graph = Graph {
+            primary: VecDeque::new(),
+            secondary: None,
+            maximum: 100.,
+            grid: theme.color(STROKE),
+            grid_columns: 6,
+            accent: theme.color(TEAL),
+            blue: theme.color(BLUE),
+        };
+        assert!(rasterize(&graph, (150, 24), 1.).is_some());
+        assert!(rasterize(&graph, (188, 30), 1.25).is_some());
+    }
 }
