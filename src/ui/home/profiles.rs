@@ -317,7 +317,7 @@ mod tests {
     fn migrates_a_legacy_layout_and_saves_independent_profiles() {
         let path =
             std::env::temp_dir().join(format!("secondscreen-profiles-{}.json", std::process::id()));
-        fs::write(&path, r#"{"widgets":[{"kind":"performance","id":9,"columns":2,"rows":5}],"sensors":{"9":{"chart":"memory"}}}"#).unwrap();
+        fs::write(&path, r#"{"widgets":[{"kind":"performance","id":9,"columns":2,"rows":5}],"sensors":{"9":{"mode":"chart","chart":"memory"}}}"#).unwrap();
         let mut profiles = Profiles::read(&path).unwrap();
         assert_eq!(profiles.active, 0);
         assert_eq!(profiles.items.len(), 1);
@@ -334,7 +334,10 @@ mod tests {
         let saved = Profiles::read(&path).unwrap();
         assert_eq!(saved.active, 1);
         assert_eq!(saved.items[0].layout, profiles.items[0].layout);
-        assert_eq!(saved.items[0].layout.sensors[&9].chart, "memory");
+        assert_eq!(
+            saved.items[0].layout.monitors[&9].readings[0].source,
+            crate::ui::home::options::MonitorSource::Sensor("memory".into())
+        );
         assert_eq!(saved.items[1].layout.widgets[0].kind, Kind::Weather);
         assert_eq!(saved.items[1].label(1), "W");
         assert_eq!(saved.items[4].label(4), "5");

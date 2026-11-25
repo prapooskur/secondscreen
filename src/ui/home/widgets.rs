@@ -26,7 +26,7 @@ impl Kind {
 
     pub(super) fn description(self) -> &'static str {
         match self {
-            Self::SystemMonitor => "Hardware sensors, RAM, drives, and network",
+            Self::SystemMonitor => "Custom sensor bars, charts, and gauges",
             Self::Media => "Track details and playback",
             Self::Audio => "Audio devices and volume",
             Self::Mixer => "App volume and mute",

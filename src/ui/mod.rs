@@ -65,7 +65,7 @@ struct ErrorNotice {
 #[derive(Default)]
 struct History {
     sensors: HashMap<String, VecDeque<f32>>,
-    memory: VecDeque<f32>,
+    drives: HashMap<String, VecDeque<f32>>,
     download: VecDeque<f32>,
     upload: VecDeque<f32>,
 }
@@ -224,10 +224,14 @@ impl Dashboard {
                     append(&mut samples, sensor.value);
                     self.history.sensors.insert(sensor.id.clone(), samples);
                 }
-                append(
-                    &mut self.history.memory,
-                    percent(metrics.memory_used, metrics.memory_total),
-                );
+                if self.storage_active {
+                    let mut previous = std::mem::take(&mut self.history.drives);
+                    for disk in &self.storage {
+                        let mut samples = previous.remove(&disk.id).unwrap_or_default();
+                        append(&mut samples, monitor::drive_load(disk));
+                        self.history.drives.insert(disk.id.clone(), samples);
+                    }
+                }
                 append(
                     &mut self.history.download,
                     metrics.network.map(|network| network.download),
@@ -522,6 +526,9 @@ impl Render for Dashboard {
             self.home.shows(Kind::SystemMonitor) || self.showing_settings(Section::Storage);
         if storage_active != self.storage_active {
             self.storage_active = storage_active;
+            if !storage_active {
+                self.history.drives.clear();
+            }
             let _ = self.controls.storage.send(storage_active);
         }
         let artwork = self

@@ -1,6 +1,5 @@
 mod layout;
 mod options;
-mod performance;
 mod profiles;
 mod quick_controls;
 mod system_monitor;
@@ -18,6 +17,7 @@ pub(super) use self::layout::Kind;
 use self::layout::{Layout, MAX_COLUMNS, MIN_ROWS, Placement, VISIBLE_ROWS, Widget, shifted_span};
 pub(super) use self::profiles::{Badge, import_profile_image};
 use self::profiles::{Profile, Profiles};
+use self::system_monitor::MonitorSetup;
 use super::{
     Dashboard, Tooltip,
     icons::{Icon, icon},
@@ -37,7 +37,7 @@ const WIDGET_CONTROL_INSET: f32 = 4.;
 
 pub(super) struct Home {
     profiles: Profiles,
-    sensor_editor: Option<(u32, usize)>,
+    monitor_setup: Option<MonitorSetup>,
     path: Option<PathBuf>,
     editing: bool,
     catalog: bool,
@@ -116,7 +116,7 @@ impl Home {
             .unwrap_or_default();
         Self {
             profiles,
-            sensor_editor: None,
+            monitor_setup: None,
             path,
             editing: false,
             catalog: false,
@@ -163,14 +163,19 @@ impl Home {
     }
 
     pub(super) fn leave(&mut self) {
-        self.sensor_editor = None;
+        self.monitor_setup = None;
         self.editing = false;
         self.catalog = false;
         self.resizing = None;
     }
 
     pub(super) fn escape(&mut self) -> bool {
-        if self.sensor_editor.take().is_some() || self.resizing.take().is_some() {
+        if let Some(setup) = &mut self.monitor_setup
+            && setup.back()
+        {
+            return true;
+        }
+        if self.monitor_setup.take().is_some() || self.resizing.take().is_some() {
             return true;
         }
         if self.catalog {
@@ -626,19 +631,19 @@ impl Dashboard {
         let tabs_height = if tabs.is_some() { MEDIA_TAB_HEIGHT } else { 0. };
         let body_height = height - tabs_height;
         let padding = if body_height < 155. { 8. } else { 13. };
-        let content_height = body_height - 2. * (padding + 1.);
-        let setup_open = editing
-            && match kind {
-                Kind::SystemMonitor => self
-                    .home
-                    .sensor_editor
-                    .is_some_and(|(id, _)| id == tile.widget.id),
-                Kind::Viewer => self
-                    .viewers
-                    .get(&tile.widget.id)
-                    .is_some_and(|viewer| viewer.read(cx).is_editing()),
-                _ => false,
-            };
+        let reserve_controls = editing
+            && (kind == Kind::SystemMonitor
+                || (kind == Kind::Viewer
+                    && self
+                        .viewers
+                        .get(&tile.widget.id)
+                        .is_some_and(|viewer| viewer.read(cx).is_editing())));
+        let vertical_padding = if reserve_controls {
+            WIDGET_CONTROL_HEIGHT + 2. * WIDGET_CONTROL_INSET
+        } else {
+            padding
+        };
+        let content_height = body_height - 2. * (vertical_padding + 1.);
         let overlay_color = theme.color(BACK).opacity(0.92);
 
         theme
@@ -656,20 +661,14 @@ impl Dashboard {
                 it.border_color(theme.color(kind.accent()).opacity(0.42))
             })
             .children(tabs)
-            .child(
-                col()
-                    .flex_1()
-                    .p(r(padding))
-                    .when(setup_open, |it| {
-                        it.py(r(WIDGET_CONTROL_HEIGHT + 2. * WIDGET_CONTROL_INSET))
-                    })
-                    .child(col().flex_1().overflow_hidden().child(self.widget_content(
-                        tile,
-                        width - 2. * (padding + 1.),
-                        content_height,
-                        cx,
-                    ))),
-            )
+            .child(col().flex_1().px(r(padding)).py(r(vertical_padding)).child(
+                col().flex_1().overflow_hidden().child(self.widget_content(
+                    tile,
+                    width - 2. * (padding + 1.),
+                    content_height,
+                    cx,
+                )),
+            ))
             .when(editing, |it| {
                 it.child(
                     self.widget_edit_header(tile.widget, index, count, cx)
@@ -709,7 +708,7 @@ impl Dashboard {
         let theme = Theme::current(cx);
         let name = match widget.kind {
             Kind::SystemMonitor => {
-                return Some(self.sensor_button(widget.id, cx).into_any_element());
+                return Some(self.monitor_setup_button(widget.id, cx).into_any_element());
             }
             Kind::Notifications => return Some(self.clear_notifications(cx).into_any_element()),
             Kind::HomeAssistant => {
@@ -795,7 +794,7 @@ impl Dashboard {
                             this.home.resizing = None;
                             let layout = this.home.layout_mut();
                             layout.widgets.retain(|widget| widget.id != id);
-                            layout.sensors.remove(&id);
+                            layout.monitors.remove(&id);
                             layout.viewers.remove(&id);
                             layout.home_assistant.remove(&id);
                             if widget.kind == Kind::QuickControls {
@@ -803,7 +802,7 @@ impl Dashboard {
                             }
                             this.viewers.remove(&id);
                             super::monitor::discard_charts(Some(id), window, cx);
-                            this.home.sensor_editor = None;
+                            this.home.monitor_setup = None;
                             this.save_home(cx);
                         })
                     },

@@ -1,4 +1,4 @@
-use super::options::SensorOptions;
+use super::options::MonitorOptions;
 use super::quick_controls::QuickAction;
 use crate::ui::home_assistant::Binding;
 use crate::viewer::ViewerOptions;
@@ -79,8 +79,8 @@ pub(super) struct Widget {
 pub(super) struct Layout {
     #[serde(deserialize_with = "read_widgets")]
     pub widgets: Vec<Widget>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub sensors: BTreeMap<u32, SensorOptions>,
+    #[serde(default, alias = "sensors", skip_serializing_if = "BTreeMap::is_empty")]
+    pub monitors: BTreeMap<u32, MonitorOptions>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub viewers: BTreeMap<u32, ViewerOptions>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -104,7 +104,7 @@ impl Layout {
     pub fn empty() -> Self {
         Self {
             widgets: Vec::new(),
-            sensors: BTreeMap::new(),
+            monitors: BTreeMap::new(),
             viewers: BTreeMap::new(),
             home_assistant: BTreeMap::new(),
             quick_controls: None,
@@ -129,7 +129,7 @@ impl Layout {
             widget.rows = widget.rows.clamp(MIN_ROWS, MAX_ROWS);
             true
         });
-        self.sensors.retain(|id, _| {
+        self.monitors.retain(|id, _| {
             self.widgets
                 .iter()
                 .any(|w| w.id == *id && w.kind == Kind::SystemMonitor)
@@ -276,6 +276,7 @@ pub(super) fn shifted_span(saved: u8, delta: i32, min: u8, max: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::home::options::{ChartLayout, MonitorDisplay, MonitorReading, MonitorSource};
     use std::collections::HashSet;
 
     #[test]
@@ -337,11 +338,22 @@ mod tests {
                 },
             );
         }
-        layout
-            .sensors
-            .entry(layout.widgets[2].id)
-            .or_default()
-            .chart = "memory".into();
+        let options = layout.monitors.entry(layout.widgets[2].id).or_default();
+        options.show_top_bar = false;
+        let mut chart = MonitorReading::new(MonitorSource::Upload, MonitorDisplay::Chart);
+        chart.chart.layout = ChartLayout::Overlay;
+        chart.chart.additional.push(MonitorSource::Download);
+        options.readings = vec![
+            chart,
+            MonitorReading::new(MonitorSource::Sensor("memory".into()), MonitorDisplay::Bar),
+        ];
+        layout.monitors.insert(
+            layout.widgets[1].id,
+            MonitorOptions {
+                show_top_bar: true,
+                readings: Vec::new(),
+            },
+        );
         layout.widgets.swap(0, 3);
         crate::config::write_json(&path, &layout).unwrap();
         let mut saved: Layout = crate::config::read_json(&path).unwrap();
@@ -379,8 +391,20 @@ mod tests {
                 (Kind::SystemMonitor, 7)
             ]
         );
-        assert_eq!(layout.sensors[&6].chart, "cpu:0");
-        assert_eq!(layout.sensors[&7].list, ["memory", "gpu"]);
+        assert_eq!(
+            layout.monitors[&6].readings,
+            [MonitorReading::new(
+                MonitorSource::Sensor("cpu:0".into()),
+                MonitorDisplay::Chart
+            )]
+        );
+        assert_eq!(
+            layout.monitors[&7].readings,
+            [
+                MonitorReading::new(MonitorSource::Sensor("memory".into()), MonitorDisplay::Bar),
+                MonitorReading::new(MonitorSource::Sensor("gpu".into()), MonitorDisplay::Bar),
+            ]
+        );
         let saved = serde_json::to_string(&layout).unwrap();
         assert_eq!(saved.matches("system_monitor").count(), 2);
         assert_eq!(serde_json::from_str::<Layout>(&saved).unwrap(), layout);

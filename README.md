@@ -75,11 +75,13 @@ On the **Quick controls** tile, choose **Setup** in **Edit layout**. Use **+** t
 
 ## Configure System monitor
 
-System monitor arranges its sections in two columns on wide tiles and stacks them on narrow tiles. Scroll inside the tile to reach sections below its edge.
+In **Edit layout**, choose **Setup** on a System monitor tile. New monitors start empty. Use **Add sensor** to search for readings, choose **Bar**, **Chart**, or **Gauge** for each card, and use the arrows to set their order. The **Top bar** toggle controls the widget title, CPU model, and host uptime.
 
-In **Edit layout**, choose **Sensors** on a System monitor tile. **Chart** plots one sensor over the last 60 samples. **2 sensors** shows two readings, each with its own units and graph scale. Select a slot, then choose its sensor. **List** lets you toggle individual readings. Choose **Done** on the tile to return to the live view.
+Choose **Edit plots** on a chart, then **Add metric** to select up to four readings. **Separate plots** puts them side by side when space allows. **Shared graph** overlays them with color-coded values. Readings with the same units share a scale, and mixed units use independent scales. Hover over a reading for its full label and scale.
 
-The picker includes CPU and per-core load, memory, GPU load and VRAM where the graphics driver reports them, and Linux hardware-monitor channels such as temperatures, fan speeds, voltages, and power. Add another System monitor to keep a chart and a sensor list visible together. Each tile saves its selections and size independently. Older layouts combine the separate monitor tiles automatically and retain each Performance tile’s sensor selections.
+Bars and gauges use compact cards. Charts get more room, and cards wrap left to right as the tile narrows. Scroll inside the tile to reach additional readings. Charts show the last 60 samples.
+
+The picker includes CPU and per-core load, memory, GPU load and VRAM where available, Linux hardware-monitor channels, download and upload speeds, and individual drives. **All visible drives** follows your Storage visibility settings and fills in drives that have no individual entry on that tile. Pick an individual drive to include it in a multi-metric chart. Each System monitor saves its own readings, display styles, order, and top-bar setting. Older layouts carry their active sensor selections into the new setup.
 
 ## Control Home Assistant devices
 

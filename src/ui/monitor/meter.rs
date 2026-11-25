@@ -36,46 +36,44 @@ pub(in crate::ui) fn gauge(
     diameter: f32,
 ) -> gpui::Div {
     const TICKS: usize = 25;
-    let reading = value.map_or_else(|| "—".into(), |value| format!("{value:.0}%"));
 
-    col()
-        .relative()
-        .size(r(diameter))
-        .flex_none()
-        .child(
-            canvas(
-                |_, _, _| (),
-                move |bounds, _, window, _| {
-                    let center = bounds.center();
-                    let radius = bounds.size.width * 0.46;
-                    let level = value.unwrap_or_default().clamp(0., 100.) / 100.;
-                    let lit = (level * TICKS as f32).round() as usize;
-                    let thickness = radius * 0.078;
-                    let mut track = PathBuilder::stroke(thickness);
-                    let mut active = PathBuilder::stroke(thickness);
-                    for index in 0..TICKS {
-                        let angle = PI * (0.75 + 1.5 * index as f32 / (TICKS - 1) as f32);
-                        let direction = point(radius * angle.cos(), radius * angle.sin());
-                        let ticks = if index < lit { &mut active } else { &mut track };
-                        ticks.move_to(center + direction * 0.76);
-                        ticks.line_to(center + direction);
-                    }
-                    if let Ok(path) = track.build() {
-                        window.paint_path(path, theme.color(STROKE));
-                    }
-                    if let Ok(path) = active.build() {
+    col().relative().size(r(diameter)).flex_none().child(
+        canvas(
+            |_, _, _| (),
+            move |bounds, _, window, _| {
+                let center = bounds.center();
+                let radius = bounds.size.width * 0.46;
+                let level = value.unwrap_or_default().clamp(0., 100.) / 100.;
+                let lit = (level * TICKS as f32).round() as usize;
+                let thickness = radius * 0.078;
+                let mut track = PathBuilder::stroke(thickness);
+                let mut active = PathBuilder::stroke(thickness);
+                for index in 0..TICKS {
+                    let angle = PI * (0.75 + 1.5 * index as f32 / (TICKS - 1) as f32);
+                    let direction = point(radius * angle.cos(), radius * angle.sin());
+                    let ticks = if index < lit { &mut active } else { &mut track };
+                    ticks.move_to(center + direction * 0.76);
+                    ticks.line_to(center + direction);
+                }
+                if let Ok(path) = track.build() {
+                    window.paint_path(path, theme.color(STROKE));
+                }
+                if let Ok(path) = active.build() {
+                    window.paint_path(path, theme.color(accent));
+                }
+                if value.is_some() {
+                    let angle = PI * (0.75 + 1.5 * level);
+                    let tip = center + point(radius * angle.cos(), radius * angle.sin()) * 0.59;
+                    let mut needle = PathBuilder::stroke(thickness);
+                    needle.move_to(center);
+                    needle.line_to(tip);
+                    if let Ok(path) = needle.build() {
                         window.paint_path(path, theme.color(accent));
                     }
-                },
-            )
-            .absolute()
-            .inset_0(),
+                }
+            },
         )
-        .child(
-            row().absolute().inset_0().justify_center().child(
-                mono(reading)
-                    .text_size(r(diameter * 0.23))
-                    .text_color(theme.color(if value.is_some() { accent } else { MUTED })),
-            ),
-        )
+        .absolute()
+        .inset_0(),
+    )
 }

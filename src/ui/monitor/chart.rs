@@ -13,14 +13,17 @@ use resvg::tiny_skia::{
 use crate::ui::{HISTORY, theme::*};
 
 #[derive(PartialEq)]
+struct Trace {
+    values: VecDeque<f32>,
+    color: Hsla,
+}
+
+#[derive(PartialEq)]
 struct Graph {
-    primary: VecDeque<f32>,
-    secondary: Option<VecDeque<f32>>,
+    traces: Vec<Trace>,
     maximum: f32,
     grid: Hsla,
     grid_columns: u8,
-    accent: Hsla,
-    blue: Hsla,
 }
 
 #[derive(Default)]
@@ -54,37 +57,38 @@ pub(in crate::ui) fn graph(
     maximum: f32,
     accent: Color,
 ) -> impl IntoElement {
-    render_graph(id, theme, primary, secondary, maximum, accent, 0)
+    let traces = [(primary, accent)]
+        .into_iter()
+        .chain(secondary.map(|values| (values, BLUE)));
+    render_graph(id, theme, traces.collect(), maximum, 0)
 }
 
 pub(in crate::ui) fn monitor_graph(
     id: (u32, usize),
     theme: Theme,
-    primary: VecDeque<f32>,
-    secondary: Option<VecDeque<f32>>,
-    maximum: f32,
-    accent: Color,
+    traces: Vec<(VecDeque<f32>, Color)>,
 ) -> impl IntoElement {
-    render_graph(id, theme, primary, secondary, maximum, accent, 6)
+    render_graph(id, theme, traces, 1., 6)
 }
 
 fn render_graph(
     id: (u32, usize),
     theme: Theme,
-    primary: VecDeque<f32>,
-    secondary: Option<VecDeque<f32>>,
+    traces: Vec<(VecDeque<f32>, Color)>,
     maximum: f32,
-    accent: Color,
     grid_columns: u8,
 ) -> impl IntoElement {
     let graph = Graph {
-        primary,
-        secondary,
+        traces: traces
+            .into_iter()
+            .map(|(values, color)| Trace {
+                values,
+                color: theme.color(color),
+            })
+            .collect(),
         maximum,
         grid: theme.color(STROKE),
         grid_columns,
-        accent: theme.color(accent),
-        blue: theme.color(BLUE),
     };
     canvas(
         |_, _, _| (),
@@ -210,10 +214,13 @@ fn rasterize(graph: &Graph, (width, height): (u32, u32), scale: f32) -> Option<A
             pixmap.fill_path(&dot, &solid(color), FillRule::Winding, transform, None);
         }
     };
-    if let Some(secondary) = &graph.secondary {
-        draw(secondary, graph.blue, false);
+    for (index, trace) in graph.traces.iter().enumerate().rev() {
+        draw(
+            &trace.values,
+            trace.color,
+            index == 0 && graph.grid_columns == 0 || graph.traces.len() == 1,
+        );
     }
-    draw(&graph.primary, graph.accent, true);
 
     let dimensions = (pixmap.width(), pixmap.height());
     let mut pixels = pixmap.take();
@@ -250,13 +257,13 @@ mod tests {
     fn monitor_grid_renders_at_the_left_edge_before_samples_arrive() {
         let theme = Theme::Dark;
         let graph = Graph {
-            primary: VecDeque::new(),
-            secondary: None,
+            traces: vec![Trace {
+                values: VecDeque::new(),
+                color: theme.color(TEAL),
+            }],
             maximum: 100.,
             grid: theme.color(STROKE),
             grid_columns: 6,
-            accent: theme.color(TEAL),
-            blue: theme.color(BLUE),
         };
         assert!(rasterize(&graph, (150, 24), 1.).is_some());
         assert!(rasterize(&graph, (188, 30), 1.25).is_some());

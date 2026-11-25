@@ -1,8 +1,6 @@
-use gpui::{ElementId, IntoElement, SharedString, Styled, prelude::*};
-
 use crate::model::DiskUsage;
 
-use super::{Tooltip, percent, theme::*};
+use super::percent;
 
 mod chart;
 mod meter;
@@ -10,71 +8,10 @@ pub(super) use chart::monitor_graph;
 pub(super) use chart::{discard_charts, graph};
 pub(super) use meter::{gauge, monitoring_bar};
 
-pub(super) fn storage_list(
-    theme: Theme,
-    id: impl Into<ElementId>,
-    disks: Vec<&DiskUsage>,
-) -> impl IntoElement {
-    col()
-        .id(id)
-        .flex_1()
-        .overflow_y_scroll()
-        .gap(r(9.))
-        .when(disks.is_empty(), |it| {
-            it.child(theme.quiet("No drives shown."))
-        })
-        .children(disks.into_iter().map(|disk| {
-            let load = disk
-                .used
-                .filter(|&used| used <= disk.total)
-                .and_then(|used| percent(used, disk.total));
-            let total = capacity(disk.total);
-            let detail = disk.used.map_or_else(
-                || format!("{total} total · Usage unavailable"),
-                |used| format!("{} used · {total} total", capacity(used)),
-            );
-            let name = SharedString::from(disk.label.clone());
-            let tooltip = SharedString::from(if disk.label == disk.device {
-                disk.device.clone()
-            } else {
-                format!("{} · {}", disk.label, disk.device)
-            });
-            col()
-                .flex_none()
-                .gap(r(3.))
-                .child(
-                    row()
-                        .gap(r(6.))
-                        .justify_between()
-                        .child(
-                            theme
-                                .label(name)
-                                .id(SharedString::from(disk.id.clone()))
-                                .flex_1()
-                                .text_color(theme.color(INK))
-                                .line_height(r(17.))
-                                .truncate()
-                                .tooltip(move |_, cx| cx.new(|_| Tooltip(tooltip.clone())).into()),
-                        )
-                        .when_some(load, |it, load| {
-                            it.child(
-                                mono(format!("{load:.0}%"))
-                                    .flex_none()
-                                    .text_size(r(11.))
-                                    .line_height(r(17.))
-                                    .text_color(theme.color(BLUE)),
-                            )
-                        }),
-                )
-                .child(
-                    theme
-                        .quiet(detail)
-                        .text_size(r(10.))
-                        .line_height(r(13.))
-                        .truncate(),
-                )
-                .children(load.map(|load| monitoring_bar(theme, load, BLUE)))
-        }))
+pub(super) fn drive_load(disk: &DiskUsage) -> Option<f32> {
+    disk.used
+        .filter(|&used| used <= disk.total)
+        .and_then(|used| percent(used, disk.total))
 }
 
 pub(super) fn gib(bytes: u64) -> f64 {
