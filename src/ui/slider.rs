@@ -9,6 +9,12 @@ use super::{theme::*, touch};
 
 pub type Gesture = Rc<RefCell<Option<(String, f32)>>>;
 
+#[derive(Clone, Copy)]
+pub enum SliderStyle {
+    Standard(Color),
+    Scrubber { accent: Color, height: f32 },
+}
+
 pub fn drag_value(gesture: &Gesture, id: &str) -> Option<f32> {
     gesture
         .borrow()
@@ -21,31 +27,42 @@ pub fn slider(
     theme: Theme,
     id: String,
     value: f32,
-    accent: Color,
+    style: SliderStyle,
     enabled: bool,
     gesture: Gesture,
     step: f32,
     change: impl Fn(f32, &mut App) + 'static,
 ) -> impl IntoElement {
+    let (accent, height) = match style {
+        SliderStyle::Standard(accent) => (accent, 25.),
+        SliderStyle::Scrubber { accent, height } => (accent, height - 2.),
+    };
     let change = Rc::new(change);
     let keyboard = change.clone();
     let track_id = id.clone();
     let track = canvas(
         move |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
         move |bounds, hitbox, window, _| {
-            let radius = px(5.);
+            let scale = f32::from(window.rem_size()) / 16.;
+            let (radius, thickness, offset) = match style {
+                SliderStyle::Standard(_) => (px(5.), px(4.), px(0.)),
+                SliderStyle::Scrubber { .. } => (px(9. * scale), px(6. * scale), px(10. * scale)),
+            };
             let left = bounds.left() + radius;
             let width = (bounds.size.width - radius * 2.).max(px(1.));
-            let center = bounds.center().y;
+            let center = bounds.center().y + offset;
             let current = drag_value(&gesture, &track_id)
                 .unwrap_or(value)
                 .clamp(0., 1.);
             let line = |length: Pixels, color| {
                 fill(
-                    Bounds::new(point(left, center - px(2.)), size(length, px(4.))),
+                    Bounds::new(
+                        point(left, center - thickness / 2.),
+                        size(length, thickness),
+                    ),
                     color,
                 )
-                .corner_radii(px(2.))
+                .corner_radii(thickness / 2.)
             };
             window.paint_quad(line(width, theme.color(STROKE)));
             if current > 0. {
@@ -87,7 +104,8 @@ pub fn slider(
                         touch::offer_drag(touch::DragTarget::Horizontal);
                     }
                     let mut progress = progress.borrow_mut();
-                    if let Some((_, value)) = progress.as_mut().filter(|(id, _)| id == &progress_id) {
+                    if let Some((_, value)) = progress.as_mut().filter(|(id, _)| id == &progress_id)
+                    {
                         if event.pressed_button == Some(MouseButton::Left) {
                             *value = fraction(event.position.x);
                         } else {
@@ -113,13 +131,17 @@ pub fn slider(
         },
     )
     .w_full()
-    .h(r(25.));
+    .h(r(height));
 
     row()
         .id(gpui::SharedString::from(id))
         .flex_1()
         .border_1()
         .border_color(theme.color(PANEL))
+        .when(matches!(style, SliderStyle::Scrubber { .. }), |it| {
+            it.border(r(1.))
+                .border_color(theme.color(PANEL).opacity(0.))
+        })
         .rounded(r(5.))
         .when(enabled, |it| {
             it.tab_index(0)

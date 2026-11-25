@@ -15,6 +15,7 @@ const HISTORY_NS: u64 = HISTORY as u64 * SECOND_NS;
 const STALE_AFTER: Duration = Duration::from_secs(5);
 const MAX_READ_BYTES: u64 = 16 * 1024 * 1024;
 
+#[derive(Default)]
 pub(super) struct Feed {
     directory: PathBuf,
     log: Option<Log>,
@@ -22,16 +23,12 @@ pub(super) struct Feed {
 }
 
 impl Feed {
-    pub fn new(directory: PathBuf) -> Self {
-        Self {
-            directory,
-            log: None,
-            generation: 0,
+    pub fn sample(&mut self, directory: &Path) -> io::Result<Option<Reading>> {
+        if self.directory != directory {
+            directory.clone_into(&mut self.directory);
+            self.log = None;
         }
-    }
-
-    pub fn sample(&mut self) -> io::Result<Option<Reading>> {
-        let Some((path, metadata)) = latest_log(&self.directory)? else {
+        let Some((path, metadata)) = latest_log(directory)? else {
             self.log = None;
             return Ok(None);
         };
@@ -163,22 +160,23 @@ impl Log {
     }
 
     fn reading(&self, source: Source) -> Option<Reading> {
-        let latest = self.frames.back()?.elapsed_ns;
-        let current = frame_rate(
-            self.frames
-                .iter()
-                .rev()
-                .take_while(|f| latest - f.elapsed_ns < SECOND_NS)
-                .map(|f| f.milliseconds),
-        );
+        let latest = self.frames.back()?;
+        let recent_times = self
+            .frames
+            .iter()
+            .rev()
+            .take_while(|f| latest.elapsed_ns - f.elapsed_ns < SECOND_NS)
+            .map(|f| f.milliseconds);
         let mut times: Vec<_> = self.frames.iter().map(|f| f.milliseconds).collect();
         times.sort_unstable_by(|a, b| b.total_cmp(a));
         let low = |divisor| frame_rate(times[..times.len().div_ceil(divisor)].iter().copied());
         Some(Reading {
             source,
-            current,
+            current: frame_rate(recent_times.clone()),
             low_1: Some(low(100)),
             low_01: Some(low(1000)),
+            frame_time_ms: Some(latest.milliseconds),
+            peak_frame_time_ms: recent_times.reduce(f32::max),
         })
     }
 }
@@ -199,7 +197,7 @@ mod tests {
     fn reads_live_logs_and_calculates_lows_from_slowest_frames() {
         let dir = std::env::temp_dir().join(format!("ss-mangohud-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        let mut feed = Feed::new(dir.clone());
+        let mut feed = Feed::default();
         let path = dir.join("game.csv");
         let mut writer = File::create(&path).unwrap();
         writeln!(
@@ -214,27 +212,35 @@ mod tests {
         }
         writeln!(writer, "5,inf,0,{}", elapsed + 1).unwrap();
         write!(writer, "5,200,0,").unwrap();
-        let sample = feed.sample().unwrap().unwrap();
+        let sample = feed.sample(&dir).unwrap().unwrap();
         assert_eq!(sample.current, 100.);
+        assert_eq!(sample.frame_time_ms, Some(10.));
+        assert_eq!(sample.peak_frame_time_ms, Some(10.));
         assert!((sample.low_1.unwrap() - 35.714).abs() < 0.001);
         assert_eq!(sample.low_01, Some(10.));
 
         // A split row completes on the following poll and frames outside the window expire.
         writeln!(writer, "{}", elapsed + HISTORY_NS).unwrap();
-        let next = feed.sample().unwrap().unwrap();
+        let next = feed.sample(&dir).unwrap().unwrap();
         assert_eq!(next.source, sample.source);
         assert_eq!(next.current, 5.);
+        assert_eq!(next.frame_time_ms, Some(200.));
         assert_eq!(next.low_01, Some(5.));
 
         writeln!(writer, "50,20,0,20000000").unwrap();
-        let restarted = feed.sample().unwrap().unwrap();
+        let restarted = feed.sample(&dir).unwrap().unwrap();
         assert_ne!(restarted.source, sample.source);
         assert_eq!(restarted.low_01, Some(50.));
+
+        writeln!(writer, "25,40,0,60000000\n50,20,0,80000000").unwrap();
+        let sample = feed.sample(&dir).unwrap().unwrap();
+        assert_eq!(sample.frame_time_ms, Some(20.));
+        assert_eq!(sample.peak_frame_time_ms, Some(40.));
 
         writer
             .set_modified(SystemTime::now() - STALE_AFTER * 2)
             .unwrap();
-        assert!(feed.sample().unwrap().is_none());
+        assert!(feed.sample(&dir).unwrap().is_none());
         fs::remove_dir_all(dir).unwrap();
     }
 }

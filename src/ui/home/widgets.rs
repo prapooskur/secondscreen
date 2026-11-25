@@ -1,8 +1,8 @@
 use gpui::{AnyElement, Context, Div, FontWeight, IntoElement, Styled, div, prelude::*};
 
-use crate::model::AudioKind;
+use crate::{config::FpsFeature, model::AudioKind};
 
-use super::super::{Dashboard, icons::Icon, media::album_art, theme::*};
+use super::super::{Dashboard, icons::Icon, theme::*};
 use super::layout::{Kind, Placement};
 
 impl Kind {
@@ -36,7 +36,7 @@ impl Kind {
             Self::Calendar => "Month view and events from your system calendar",
             Self::Weather => "Today’s temperature, 10-day forecast, and air quality",
             Self::Notifications => "Recent desktop notifications",
-            Self::Fps => "Current FPS, 1% low, and 0.1% low",
+            Self::Fps => "FPS, 1% and 0.1% lows, and frame time",
             Self::HomeAssistant => "Smart home controls",
             Self::QuickControls => "Customizable controls and shortcuts",
         }
@@ -87,10 +87,9 @@ impl Dashboard {
         cx: &Context<Self>,
     ) -> AnyElement {
         let theme = Theme::current(cx);
-        let wide = tile.columns >= 2;
         match tile.widget.kind {
             Kind::SystemMonitor => self.system_monitor_widget(tile.widget.id, width, height, cx),
-            Kind::Media => self.media_widget(wide, tile.rows >= 3, height, cx),
+            Kind::Media => self.media_widget(width, height, cx),
             Kind::Audio => self.audio_widget(cx).into_any_element(),
             Kind::Mixer => self.mixer_widget(cx).into_any_element(),
             Kind::Discord => self.discord_widget(cx).into_any_element(),
@@ -98,6 +97,9 @@ impl Dashboard {
             Kind::Calendar => self.calendar(theme, width, height, cx).into_any_element(),
             Kind::Weather => self.weather_widget(theme, width, height).into_any_element(),
             Kind::Notifications => self.notification_widget(theme).into_any_element(),
+            Kind::Fps if self.home.fps_setup == Some(tile.widget.id) => self
+                .fps_setup_menu(tile.widget.id, theme, cx)
+                .into_any_element(),
             Kind::Fps => self
                 .fps_widget(tile.widget.id, theme, width, height)
                 .into_any_element(),
@@ -116,13 +118,67 @@ impl Dashboard {
         }
     }
 
-    fn media_widget(
-        &self,
-        wide: bool,
-        show_progress: bool,
-        height: f32,
-        cx: &Context<Self>,
-    ) -> AnyElement {
+    pub(super) fn fps_setup_button(&self, id: u32, cx: &Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
+        let open = self.home.fps_setup == Some(id);
+        let view = cx.entity();
+        theme.bind(
+            theme
+                .button(("fps-setup", id as usize), open.then_some(TEAL))
+                .h(r(26.))
+                .px(r(8.))
+                .child(if open { "Done" } else { "Setup" }),
+            move |window, cx| {
+                view.update(cx, |this, cx| {
+                    this.home.monitor_setup = None;
+                    this.home.fps_setup = (!open).then_some(id);
+                    this.focus_dashboard(window, cx);
+                    cx.notify();
+                });
+            },
+        )
+    }
+
+    fn fps_setup_menu(&self, id: u32, theme: Theme, cx: &Context<Self>) -> impl IntoElement {
+        col()
+            .id(("fps-setup-menu", id as usize))
+            .flex_1()
+            .overflow_y_scroll()
+            .gap(r(4.))
+            .children(FpsFeature::ALL.map(|feature| {
+                let name = match feature {
+                    FpsFeature::CurrentFps => "Current FPS",
+                    FpsFeature::OnePercentLow => "1% low",
+                    FpsFeature::PointOnePercentLow => "0.1% low",
+                    FpsFeature::FrameTime => "Frame time",
+                    FpsFeature::FpsGraph => "FPS graph",
+                    FpsFeature::FrameTimeGraph => "Peak frame time graph",
+                };
+                let enabled = !self.preferences.hidden_fps_features.contains(&feature);
+                let view = cx.entity();
+                theme.bind(
+                    theme
+                        .button(("fps-feature", feature as usize), enabled.then_some(TEAL))
+                        .h(r(26.))
+                        .px(r(8.))
+                        .gap(r(6.))
+                        .justify_between()
+                        .child(div().flex_1().min_w_0().truncate().child(name))
+                        .child(if enabled { "On" } else { "Off" }),
+                    move |_, cx| {
+                        view.update(cx, |this, cx| {
+                            let mut preferences = this.preferences.clone();
+                            if !preferences.hidden_fps_features.remove(&feature) {
+                                preferences.hidden_fps_features.insert(feature);
+                            }
+                            this.save_preferences(preferences, cx);
+                        });
+                    },
+                )
+            }))
+    }
+
+    fn media_widget(&self, width: f32, height: f32, cx: &Context<Self>) -> AnyElement {
         let theme = Theme::current(cx);
         let Some(player) = self.current_player() else {
             return message(
@@ -142,74 +198,7 @@ impl Dashboard {
             )
             .into_any_element();
         };
-        let track = player.track.as_ref();
-        let art = track.and_then(|track| track.artwork.clone());
-        let spacious = height >= 170.;
-        let show_progress = show_progress && height >= 78.;
-        let inline_transport = height < if show_progress { 112. } else { 82. };
-        let cover = if wide && spacious {
-            96.
-        } else if spacious {
-            65.
-        } else {
-            38.
-        };
-
-        col()
-            .flex_1()
-            .gap(r(if spacious { 11. } else { 5. }))
-            .child(
-                row()
-                    .min_h_0()
-                    .flex_1()
-                    .gap(r(10.))
-                    .when(height >= cover, |it| it.child(album_art(theme, art, cover)))
-                    .child(
-                        col()
-                            .flex_1()
-                            .gap(r(3.))
-                            .child(
-                                div()
-                                    .text_size(r(if wide { 23. } else { 16. }))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .truncate()
-                                    .child(
-                                        track
-                                            .map(|track| track.title.clone())
-                                            .unwrap_or_else(|| player.name.clone()),
-                                    ),
-                            )
-                            .when(height >= 45., |it| {
-                                it.child(
-                                    theme
-                                        .quiet(
-                                            track
-                                                .filter(|track| !track.artist.is_empty())
-                                                .map(|track| track.artist.clone())
-                                                .unwrap_or_else(|| player.name.clone()),
-                                        )
-                                        .truncate(),
-                                )
-                            })
-                            .when(spacious && wide, |it| {
-                                it.when_some(
-                                    track.filter(|track| !track.album.is_empty()),
-                                    |it, track| {
-                                        it.child(theme.quiet(track.album.clone()).truncate())
-                                    },
-                                )
-                            }),
-                    )
-                    .when(inline_transport && height >= 30., |it| {
-                        it.child(self.media_transport(player, true, cx))
-                    }),
-            )
-            .when(show_progress, |it| {
-                it.child(self.media_progress(player, cx))
-            })
-            .when(!inline_transport, |it| {
-                it.child(self.media_transport(player, !spacious, cx))
-            })
+        self.media_player_widget(player, width, height, cx)
             .into_any_element()
     }
 

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env, fs,
     io::{ErrorKind, Write},
     os::unix::fs::OpenOptionsExt,
@@ -24,6 +24,10 @@ pub struct Preferences {
     pub fahrenheit: bool,
     pub weather_mph: bool,
     pub weather_12_hour: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mangohud_directory: Option<String>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub hidden_fps_features: BTreeSet<FpsFeature>,
     pub hidden_media: BTreeMap<String, String>,
     pub hidden_audio: BTreeMap<String, String>,
     pub hidden_drives: BTreeMap<String, String>,
@@ -32,6 +36,28 @@ pub struct Preferences {
     pub discord: Option<DiscordCredentials>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub home_assistant: Option<HomeAssistantCredentials>,
+}
+
+#[derive(Clone, Copy, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FpsFeature {
+    CurrentFps,
+    OnePercentLow,
+    PointOnePercentLow,
+    FrameTime,
+    FpsGraph,
+    FrameTimeGraph,
+}
+
+impl FpsFeature {
+    pub const ALL: [Self; 6] = [
+        Self::CurrentFps,
+        Self::OnePercentLow,
+        Self::PointOnePercentLow,
+        Self::FrameTime,
+        Self::FpsGraph,
+        Self::FrameTimeGraph,
+    ];
 }
 
 #[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq, Serialize)]
@@ -230,4 +256,26 @@ pub fn write_file(path: &Path, write: impl FnOnce(&mut fs::File) -> Result<()>) 
         let _ = fs::remove_file(staging);
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fps_features_default_to_visible_and_persist_independently() {
+        let preferences: Preferences =
+            serde_json::from_str(r#"{ "mangohud_directory": "/logs" }"#).unwrap();
+        assert!(preferences.hidden_fps_features.is_empty());
+
+        for feature in FpsFeature::ALL {
+            let mut preferences = preferences.clone();
+            preferences.hidden_fps_features.insert(feature);
+            let saved = serde_json::to_value(preferences).unwrap();
+            let restored: Preferences = serde_json::from_value(saved).unwrap();
+            assert_eq!(restored.hidden_fps_features.len(), 1);
+            assert!(restored.hidden_fps_features.contains(&feature));
+            assert_eq!(restored.mangohud_directory.as_deref(), Some("/logs"));
+        }
+    }
 }

@@ -5166,6 +5166,7 @@ dependencies = [
  "sha2",
  "sysinfo",
  "tempfile",
+ "unicode-segmentation",
  "url",
  "wayland-client",
  "zbus 5.19.0",

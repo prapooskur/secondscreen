@@ -3,7 +3,7 @@ use gpui::{Context, ElementId, IntoElement, ObjectFit, Styled, img, prelude::*};
 use super::{
     Dashboard, Tooltip,
     icons::{Icon, icon},
-    slider::slider,
+    slider::{SliderStyle, slider},
     theme::*,
 };
 use crate::model::{AudioAction, AudioChannel, AudioKind};
@@ -124,7 +124,7 @@ impl Dashboard {
             theme,
             slider_id,
             channel.volume.map_or(0., |value| f32::from(value) / LIMIT),
-            if channel.muted { MUTED } else { accent },
+            SliderStyle::Standard(if channel.muted { MUTED } else { accent }),
             channel.volume.is_some(),
             self.gesture.clone(),
             5. / LIMIT,

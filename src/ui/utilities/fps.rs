@@ -13,7 +13,29 @@ use std::{
 use crate::platform::in_flatpak;
 
 const MANGOHUD_DIR: &str = "secondscreen-mangohud";
-pub(in crate::ui) const LAUNCH_OPTIONS: &str = r#"MANGOHUD_CONFIG="autostart_log=1,output_folder=$XDG_RUNTIME_DIR/secondscreen-mangohud" mangohud %command%"#;
+
+pub(in crate::ui) fn launch_options(directory: Option<&str>) -> String {
+    let config = match directory {
+        Some(directory) => {
+            let mut config = String::from("'autostart_log=1,output_folder=");
+            for ch in directory.chars() {
+                match ch {
+                    // Escape MangoHud's config delimiters inside the shell-quoted value.
+                    ',' | ':' | ';' | '=' => {
+                        config.push('\\');
+                        config.push(ch);
+                    }
+                    '\'' => config.push_str("'\\''"),
+                    _ => config.push(ch),
+                }
+            }
+            config.push('\'');
+            config
+        }
+        None => format!(r#""autostart_log=1,output_folder=$XDG_RUNTIME_DIR/{MANGOHUD_DIR}""#),
+    };
+    format!("MANGOHUD_CONFIG={config} mangohud %command%")
+}
 
 fn runtime_dir() -> Result<PathBuf> {
     std::env::var_os("XDG_RUNTIME_DIR")
@@ -22,7 +44,20 @@ fn runtime_dir() -> Result<PathBuf> {
         .context("XDG_RUNTIME_DIR is unavailable.")
 }
 
-pub(super) fn prepare_mangohud() -> Result<()> {
+pub(in crate::ui) fn prepare_mangohud(directory: Option<&str>) -> Result<()> {
+    if let Some(directory) = directory {
+        ensure!(
+            Path::new(directory).is_absolute(),
+            "Enter an absolute folder path."
+        );
+        // MangoHud parses each value into a 256-byte buffer including the terminator.
+        ensure!(
+            directory.len() <= 255 && !directory.chars().any(char::is_control),
+            "MangoHud folder paths must be at most 255 bytes and contain no control characters."
+        );
+        fs::read_dir(directory).with_context(|| format!("Could not open {directory}"))?;
+        return Ok(());
+    }
     let path = runtime_dir()?.join(MANGOHUD_DIR);
     match fs::create_dir(&path) {
         Ok(()) => Ok(()),
@@ -38,7 +73,7 @@ pub(super) struct Setup {
 }
 
 impl Setup {
-    pub fn check() -> Self {
+    pub fn check(directory: Option<&str>) -> Self {
         let path = std::env::var_os("PATH").unwrap_or_default();
         let available = |name| {
             std::env::split_paths(&path).any(|dir| {
@@ -50,7 +85,9 @@ impl Setup {
         Self {
             mangohud: available("mangohud"),
             gamescope: available("gamescope"),
-            logging_error: prepare_mangohud().err().map(|error| format!("{error:#}")),
+            logging_error: prepare_mangohud(directory)
+                .err()
+                .map(|error| format!("{error:#}")),
         }
     }
 }
@@ -66,10 +103,13 @@ pub(super) struct Reading {
     pub current: f32,
     pub low_1: Option<f32>,
     pub low_01: Option<f32>,
+    pub frame_time_ms: Option<f32>,
+    pub peak_frame_time_ms: Option<f32>,
 }
 
 pub(super) struct Feed {
     mango: mangohud::Feed,
+    default_mango_directory: PathBuf,
     gamescope: Option<Gamescope>,
     gamescope_path: PathBuf,
 }
@@ -84,14 +124,16 @@ impl Feed {
             "secondscreen-fps"
         };
         Ok(Self {
-            mango: mangohud::Feed::new(dir.join(MANGOHUD_DIR)),
+            mango: mangohud::Feed::default(),
+            default_mango_directory: dir.join(MANGOHUD_DIR),
             gamescope: None,
             gamescope_path: dir.join(gamescope_pipe),
         })
     }
 
-    pub fn sample(&mut self) -> Result<Option<Reading>> {
-        let mango = self.mango.sample();
+    pub fn sample(&mut self, directory: Option<&str>) -> Result<Option<Reading>> {
+        let directory = directory.map_or(self.default_mango_directory.as_path(), Path::new);
+        let mango = self.mango.sample(directory);
         // Drain the FIFO even when MangoHud is active so a Gamescope writer can keep running.
         let gamescope = self.sample_gamescope();
         match (mango, gamescope) {
@@ -101,6 +143,8 @@ impl Feed {
                 current,
                 low_1: None,
                 low_01: None,
+                frame_time_ms: None,
+                peak_frame_time_ms: None,
             })),
             (mango, gamescope) => {
                 mango.context("MangoHud")?;
@@ -194,7 +238,52 @@ impl Gamescope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::{io::Write, process::Command};
+
+    #[test]
+    fn preserves_default_launch_options_and_quotes_custom_paths() {
+        assert_eq!(
+            launch_options(None),
+            r#"MANGOHUD_CONFIG="autostart_log=1,output_folder=$XDG_RUNTIME_DIR/secondscreen-mangohud" mangohud %command%"#,
+        );
+
+        let command = launch_options(Some("/home/player/FPS logs/$HOME's,x:y;z=q"));
+        let script =
+            format!("mangohud() {{ printf '%s\\n%s\\n' \"$MANGOHUD_CONFIG\" \"$1\"; }}\n{command}");
+        let output = Command::new("sh").arg("-c").arg(script).output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "autostart_log=1,output_folder=/home/player/FPS logs/$HOME's\\,x\\:y\\;z\\=q\n%command%\n",
+        );
+    }
+
+    #[test]
+    fn switches_mangohud_log_directories_and_restores_default() {
+        let root = tempfile::tempdir().unwrap();
+        let default = root.path().join(MANGOHUD_DIR);
+        let custom = root.path().join("FPS logs");
+        fs::create_dir(&default).unwrap();
+        fs::create_dir(&custom).unwrap();
+        fs::write(default.join("game.csv"), "100,10,10000000\n").unwrap();
+        fs::write(custom.join("game.csv"), "50,20,20000000\n").unwrap();
+        let mut feed = Feed {
+            mango: mangohud::Feed::default(),
+            default_mango_directory: default,
+            gamescope: None,
+            gamescope_path: root.path().join("secondscreen-fps"),
+        };
+
+        let original = feed.sample(None).unwrap().unwrap();
+        assert_eq!(original.current, 100.);
+        let selected = feed.sample(custom.to_str()).unwrap().unwrap();
+        assert_eq!(selected.current, 50.);
+        assert_ne!(selected.source, original.source);
+        let restored = feed.sample(None).unwrap().unwrap();
+        assert_eq!(restored.current, 100.);
+        assert_ne!(restored.source, selected.source);
+    }
+
     #[test]
     fn reads_fragmented_gamescope_records_and_detects_disconnect() {
         let path = std::env::temp_dir().join(format!("ss-fps-test-{}", std::process::id()));

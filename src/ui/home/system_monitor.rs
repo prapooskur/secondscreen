@@ -1,6 +1,8 @@
-use std::{collections::VecDeque, ops::Range};
+use std::collections::VecDeque;
 
-use gpui::{AnyElement, Context, Div, FontWeight, IntoElement, SharedString, Styled, prelude::*};
+use gpui::{
+    AnyElement, Context, Div, FontWeight, IntoElement, SharedString, Styled, div, prelude::*,
+};
 
 use crate::model::{DiskUsage, Sensor};
 
@@ -14,6 +16,7 @@ use super::{
     options::{ChartLayout, MAX_PLOTS, MonitorDisplay, MonitorOptions, MonitorSource},
 };
 
+mod layout;
 mod plots;
 mod setup;
 pub(super) use setup::MonitorSetup;
@@ -40,27 +43,19 @@ impl Card<'_> {
             MonitorDisplay::Chart => 168.,
         }
     }
-}
 
-fn card_rows(width: f32, sizes: impl IntoIterator<Item = f32>) -> Vec<Range<usize>> {
-    let mut rows = Vec::new();
-    let mut start = 0;
-    let mut end = 0;
-    let mut used = 0.;
-    for size in sizes {
-        let size = size.min(width);
-        if end > start && used + GAP + size > width {
-            rows.push(start..end);
-            start = end;
-            used = 0.;
+    fn height(&self, width: f32) -> f32 {
+        let detail = if self.readings[0].detail.is_some() {
+            17.
+        } else {
+            0.
+        };
+        match self.display {
+            MonitorDisplay::Bar => 42. + detail,
+            MonitorDisplay::Gauge => 60. + detail,
+            MonitorDisplay::Chart => plots::chart_height(self, width),
         }
-        used += if end > start { GAP + size } else { size };
-        end += 1;
     }
-    if end > start {
-        rows.push(start..end);
-    }
-    rows
 }
 
 struct Reading<'a> {
@@ -69,6 +64,7 @@ struct Reading<'a> {
     unit: &'static str,
     samples: Option<&'a VecDeque<f32>>,
     detail: Option<String>,
+    tooltip_detail: Option<String>,
     maximum: Option<f32>,
 }
 
@@ -92,13 +88,10 @@ impl Dashboard {
             && setup.id == id
         {
             return self
-                .monitor_setup_menu(setup, options, width, cx)
+                .monitor_setup_menu(setup, options, cx)
                 .into_any_element();
         }
 
-        let wide = width >= 408.;
-        let header_height = if wide { 32. } else { 44. };
-        let width = width.max(1.);
         let mut cards = Vec::new();
         for selected in &options.readings {
             if selected.source == MonitorSource::VisibleDrives {
@@ -139,81 +132,130 @@ impl Dashboard {
                 }
             }
         }
-        let rows = card_rows(width, cards.iter().map(Card::width));
+        let single = cards.len() == 1;
+        let padding = if single {
+            0.
+        } else {
+            super::widget_padding(height + 2.)
+        };
+        let width = (width - 2. * padding).max(1.);
+        let height = height - 2. * padding;
+        let wide = width >= 408.;
+        let header_height = if wide { 32. } else { 44. };
+        let widget = col()
+            .flex_1()
+            .p(r(padding))
+            .gap(r(GAP))
+            .when(options.show_top_bar, |it| {
+                it.child(
+                    self.monitor_top_bar(theme, width, header_height, wide)
+                        .when(single, |header| header.mx(r(GAP)).mt(r(GAP))),
+                )
+            });
+        let readings = col()
+            .id(("monitor-readings", id as usize))
+            .flex_1()
+            .overflow_y_scroll();
         let header = if options.show_top_bar {
-            header_height + GAP
+            header_height + GAP + if single { GAP } else { 0. }
         } else {
             0.
         };
-        let (minimum_height, chart_rows) = rows.iter().fold((0., 0), |(height, charts), row| {
-            let row_cards = &cards[row.clone()];
-            if row_cards
-                .iter()
-                .any(|card| card.display == MonitorDisplay::Chart)
-            {
-                (height + 130., charts + 1)
-            } else if row_cards
-                .iter()
-                .any(|card| card.display == MonitorDisplay::Gauge)
-            {
-                (height + 76., charts)
-            } else {
-                (height + 54., charts)
-            }
-        });
-        let free_height =
-            height - header - minimum_height - GAP * rows.len().saturating_sub(1) as f32;
-        let extra_plot_height = (free_height / chart_rows.max(1) as f32).clamp(0., 64.);
-        let mut contents = Vec::with_capacity(rows.len());
-        let mut card_index = 0;
-        for indices in rows {
-            let row_cards = &cards[indices];
-            let size: f32 = row_cards.iter().map(|card| card.width().min(width)).sum();
-            let charts = row_cards
-                .iter()
-                .filter(|card| card.display == MonitorDisplay::Chart)
-                .count();
-            let extra = (width - size - GAP * row_cards.len().saturating_sub(1) as f32).max(0.)
-                / charts.max(1) as f32;
-            contents.push(split().items_start().flex_none().gap(r(GAP)).children(
-                row_cards.iter().map(|card| {
-                    let id = (id, card_index);
-                    card_index += 1;
-                    match card.display {
-                        MonitorDisplay::Chart => plots::chart_card(
-                            id,
-                            theme,
-                            card,
-                            card.width().min(width) + extra,
-                            extra_plot_height,
-                        ),
-                        display => compact_card(id.1, theme, &card.readings[0], display)
-                            .w(r(card.width().min(width))),
-                    }
-                }),
-            ));
+        if let [card] = cards.as_slice() {
+            let content = match card.display {
+                MonitorDisplay::Chart => plots::chart_card((id, 0), theme, card, width, 0., true),
+                display => meter_card(
+                    0,
+                    theme,
+                    &card.readings[0],
+                    display,
+                    Some((width, height - header)),
+                ),
+            };
+            return widget.child(readings.child(content)).into_any_element();
         }
-        col()
-            .flex_1()
-            .gap(r(GAP))
-            .when(options.show_top_bar, |it| {
-                it.child(self.monitor_top_bar(theme, width, header_height, wide))
+        let mut positions = layout::place_cards(
+            width,
+            cards.iter().map(|card| {
+                let width = card.width().min(width);
+                (width, card.height(width))
+            }),
+        );
+        // Charts can grow into free space after the smaller cards have found their positions.
+        for (index, card) in cards.iter().enumerate() {
+            if card.display != MonitorDisplay::Chart {
+                continue;
+            }
+            let position = positions[index];
+            let right = positions
+                .iter()
+                .copied()
+                .filter(|other| {
+                    other.x >= position.right() && other.with_gap().shares_rows(position.with_gap())
+                })
+                .map(|other| other.x - GAP)
+                .fold(width, f32::min);
+            positions[index].width = right - position.x;
+        }
+        for (index, card) in cards.iter().enumerate() {
+            if card.display != MonitorDisplay::Chart {
+                continue;
+            }
+            let position = positions[index];
+            let bottom = positions
+                .iter()
+                .copied()
+                .filter(|other| {
+                    other.y >= position.bottom()
+                        && other.with_gap().shares_columns(position.with_gap())
+                })
+                .map(|other| other.y - GAP)
+                .fold(height - header, f32::min);
+            positions[index].height += (bottom - position.bottom()).clamp(0., 64.);
+        }
+        let content_height = positions
+            .iter()
+            .map(|position| position.bottom())
+            .fold(0., f32::max);
+        widget
+            .child(if cards.is_empty() {
+                readings.child(theme.quiet(if options.readings.is_empty() {
+                    "Add cards in Edit layout → Setup."
+                } else {
+                    "No visible drives."
+                }))
+            } else {
+                readings.child(
+                    div()
+                        .relative()
+                        .w_full()
+                        .h(r(content_height))
+                        .flex_none()
+                        .children(cards.iter().zip(positions).enumerate().map(
+                            |(index, (card, position))| {
+                                let element = match card.display {
+                                    MonitorDisplay::Chart => plots::chart_card(
+                                        (id, index),
+                                        theme,
+                                        card,
+                                        position.width,
+                                        (position.height - card.height(position.width)).max(0.),
+                                        false,
+                                    ),
+                                    display => {
+                                        meter_card(index, theme, &card.readings[0], display, None)
+                                    }
+                                };
+                                element
+                                    .absolute()
+                                    .left(r(position.x))
+                                    .top(r(position.y))
+                                    .w(r(position.width))
+                                    .h(r(position.height))
+                            },
+                        )),
+                )
             })
-            .child(
-                col()
-                    .id(("monitor-readings", id as usize))
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .gap(r(GAP))
-                    .when(contents.is_empty(), |it| {
-                        it.child(theme.quiet(if options.readings.is_empty() {
-                            "Choose readings in Edit layout → Setup."
-                        } else {
-                            "No visible drives."
-                        }))
-                    })
-                    .children(contents),
-            )
             .into_any_element()
     }
 
@@ -254,11 +296,11 @@ impl Dashboard {
 
     fn monitor_reading<'a>(&'a self, source: &'a MonitorSource) -> Option<Reading<'a>> {
         let name = self.monitor_source_name(source);
-        let (value, unit, samples, detail, maximum) = match source {
+        let (value, unit, samples, detail, tooltip_detail, maximum) = match source {
             MonitorSource::Sensor(key) => {
                 let sensor = self.sensor(key);
                 let ram = matches!(key.as_str(), "memory" | "ram-used");
-                let detail = (ram && self.metrics.memory_total > 0).then(|| {
+                let tooltip_detail = (ram && self.metrics.memory_total > 0).then(|| {
                     format!(
                         "{:.1} of {:.1} GiB used",
                         gib(self.metrics.memory_used),
@@ -271,7 +313,8 @@ impl Dashboard {
                     sensor.and_then(|value| value.value),
                     sensor.map_or(if key == "gpu" { "%" } else { "" }, |sensor| sensor.unit),
                     sensor.and_then(|sensor| self.history.sensors.get(&sensor.id)),
-                    detail,
+                    None,
+                    tooltip_detail,
                     maximum,
                 )
             }
@@ -281,11 +324,13 @@ impl Dashboard {
                 Some(&self.history.download),
                 None,
                 None,
+                None,
             ),
             MonitorSource::Upload => (
                 self.metrics.network.map(|rate| rate.upload),
                 "B/s",
                 Some(&self.history.upload),
+                None,
                 None,
                 None,
             ),
@@ -296,7 +341,14 @@ impl Dashboard {
                 if let Some(disk) = self.storage.iter().find(|disk| &disk.id == key) {
                     return Some(self.drive_reading(disk));
                 }
-                (None, "%", None, Some("Drive unavailable".into()), None)
+                (
+                    None,
+                    "%",
+                    None,
+                    Some("Drive unavailable".into()),
+                    None,
+                    None,
+                )
             }
             MonitorSource::VisibleDrives => return None,
         };
@@ -306,6 +358,7 @@ impl Dashboard {
             unit,
             samples,
             detail,
+            tooltip_detail,
             maximum,
         })
     }
@@ -322,6 +375,7 @@ impl Dashboard {
                 Some(used) => format!("{} used · {total} total", capacity(used)),
                 None => format!("{total} total · Usage unavailable"),
             }),
+            tooltip_detail: None,
             maximum: None,
         }
     }
@@ -367,19 +421,6 @@ impl Dashboard {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn wrapping_respects_order_and_leaves_room_for_compact_cards() {
-        let widths = [128., 136., 176., 232., 128.];
-        assert_eq!(card_rows(456., widths), [0..3, 3..5]);
-        assert_eq!(card_rows(405., widths), [0..2, 2..3, 3..5]);
-        assert_eq!(card_rows(205., widths), [0..1, 1..2, 2..3, 3..4, 4..5]);
-    }
-}
-
 impl Reading<'_> {
     fn range(&self) -> (f32, f32) {
         if self.unit == "%" {
@@ -400,17 +441,22 @@ impl Reading<'_> {
     }
 }
 
-fn card_frame(index: usize, theme: Theme, accent: Color) -> gpui::Stateful<Div> {
-    col()
+fn card_frame(index: usize, theme: Theme, accent: Color, full: bool) -> gpui::Stateful<Div> {
+    let frame = col()
         .id(("monitor-reading", index))
-        .flex_none()
         .overflow_hidden()
-        .gap(r(4.))
-        .p(r(7.))
-        .rounded(r(6.))
-        .border_1()
-        .border_color(theme.color(accent).opacity(0.24))
-        .bg(theme.color(BACK).opacity(0.48))
+        .gap(r(4.));
+    if full {
+        frame.flex_1()
+    } else {
+        frame
+            .flex_none()
+            .p(r(7.))
+            .rounded(r(6.))
+            .border_1()
+            .border_color(theme.color(accent).opacity(0.24))
+            .bg(theme.color(BACK).opacity(0.48))
+    }
 }
 
 impl Reading<'_> {
@@ -421,7 +467,7 @@ impl Reading<'_> {
 
     fn tooltip(&self, (low, high): (f32, f32)) -> SharedString {
         let mut label = format!("{} · {}", self.name, self.value_text());
-        if let Some(detail) = &self.detail {
+        if let Some(detail) = self.detail.as_ref().or(self.tooltip_detail.as_ref()) {
             label.push_str(&format!("\n{detail}"));
         }
         if self.value.is_some() || self.samples.is_some_and(|samples| !samples.is_empty()) {
@@ -435,12 +481,14 @@ impl Reading<'_> {
     }
 }
 
-fn compact_card(
+fn meter_card(
     index: usize,
     theme: Theme,
     reading: &Reading<'_>,
     display: MonitorDisplay,
+    size: Option<(f32, f32)>,
 ) -> gpui::Stateful<Div> {
+    let full = size.is_some();
     let accent = if display == MonitorDisplay::Gauge {
         VIOLET
     } else {
@@ -463,21 +511,25 @@ fn compact_card(
     };
     let name = theme
         .label(reading.name.to_owned())
-        .text_size(r(11.))
-        .line_height(r(15.))
+        .text_size(r(if full { 15. } else { 11. }))
+        .line_height(r(if full { 20. } else { 15. }))
         .truncate();
     let value = mono(number.to_owned())
-        .text_size(r(13.))
-        .line_height(r(17.))
+        .text_size(r(if full { 26. } else { 13. }))
+        .line_height(r(if full { 34. } else { 17. }))
         .text_color(theme.color(accent))
         .truncate();
-    let card = card_frame(index, theme, accent)
+    let card = card_frame(index, theme, accent, full)
         .tooltip(move |_, cx| cx.new(|_| Tooltip(tooltip.clone())).into());
     let card = if display == MonitorDisplay::Gauge {
+        let diameter = size.map_or(43., |(width, height)| {
+            (width * 0.53).min(height - 32.).max(32.)
+        });
         card.child(
             row()
                 .gap(r(5.))
-                .child(gauge(theme, normalized, accent, 43.))
+                .when(full, |row| row.flex_1().gap(r(12.)).px(r(GAP)))
+                .child(gauge(theme, normalized, accent, diameter))
                 .child(
                     col()
                         .flex_1()
@@ -493,25 +545,25 @@ fn compact_card(
                 ),
         )
     } else {
-        card.child(
-            row()
-                .justify_between()
-                .gap(r(3.))
-                .child(name.flex_1())
-                .child(value.flex_none()),
-        )
-        .child(monitoring_bar(
-            theme,
-            normalized.unwrap_or_default(),
-            accent,
-        ))
+        card.when(full, |card| card.justify_center().gap(r(GAP)))
+            .child(
+                row()
+                    .justify_between()
+                    .gap(r(3.))
+                    .when(full, |row| row.px(r(GAP)))
+                    .child(name.flex_1())
+                    .child(value.flex_none()),
+            )
+            .child(monitoring_bar(
+                theme,
+                normalized.unwrap_or_default(),
+                accent,
+                size.map_or(5., |(_, height)| (height * 0.1).clamp(6., 24.)),
+            ))
     };
-    card.children(
-        reading
-            .detail
-            .as_ref()
-            .map(|detail| reading_detail(theme, detail)),
-    )
+    card.children(reading.detail.as_ref().map(|detail| {
+        reading_detail(theme, detail).when(full, |detail| detail.px(r(GAP)).pb(r(4.)))
+    }))
 }
 
 fn reading_detail(theme: Theme, detail: &str) -> Div {

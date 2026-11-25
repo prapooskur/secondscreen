@@ -1,8 +1,119 @@
 use std::{borrow::Cow, collections::HashMap, fmt::Write, sync::LazyLock};
 
 use gpui::{AssetSource, Hsla, IntoElement, SharedString, Styled, svg};
+use serde::{Deserialize, Serialize};
 
-use super::theme::r;
+use super::theme::{AMBER, BLUE, Color, PINK, TEAL, Theme, VIOLET, r};
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ProfileIcon {
+    Orbit,
+    Code,
+    Gaming,
+    Music,
+    Pulse,
+    Sun,
+    Home,
+    Peaks,
+    Briefcase,
+    Book,
+    Camera,
+    Coffee,
+    Moon,
+    Leaf,
+    Globe,
+    Bolt,
+    Rocket,
+    Palette,
+    Headphones,
+    Film,
+    Chat,
+    Compass,
+    Heart,
+    Sparkles,
+}
+
+impl ProfileIcon {
+    pub const ALL: [Self; 24] = [
+        Self::Orbit,
+        Self::Code,
+        Self::Gaming,
+        Self::Music,
+        Self::Pulse,
+        Self::Sun,
+        Self::Home,
+        Self::Peaks,
+        Self::Briefcase,
+        Self::Book,
+        Self::Camera,
+        Self::Coffee,
+        Self::Moon,
+        Self::Leaf,
+        Self::Globe,
+        Self::Bolt,
+        Self::Rocket,
+        Self::Palette,
+        Self::Headphones,
+        Self::Film,
+        Self::Chat,
+        Self::Compass,
+        Self::Heart,
+        Self::Sparkles,
+    ];
+
+    pub fn name(self) -> &'static str {
+        self.asset().0
+    }
+
+    pub fn element(self, theme: Theme, side: f32) -> impl IntoElement {
+        let (_, path, _, color) = self.asset();
+        svg()
+            .path(path)
+            .size(r(side))
+            .flex_none()
+            .text_color(theme.color(color))
+    }
+
+    fn asset(self) -> (&'static str, &'static str, &'static [u8], Color) {
+        macro_rules! asset {
+            ($label:literal, $filename:literal, $color:ident) => {
+                (
+                    $label,
+                    concat!("profile-icons/", $filename, ".svg"),
+                    include_bytes!(concat!("../../assets/profile-icons/", $filename, ".svg")),
+                    $color,
+                )
+            };
+        }
+        match self {
+            Self::Orbit => asset!("Orbit", "orbit", VIOLET),
+            Self::Code => asset!("Code", "code", BLUE),
+            Self::Gaming => asset!("Gaming", "gaming", PINK),
+            Self::Music => asset!("Music", "music", VIOLET),
+            Self::Pulse => asset!("Pulse", "pulse", TEAL),
+            Self::Sun => asset!("Sun", "sun", AMBER),
+            Self::Home => asset!("Home", "home", BLUE),
+            Self::Peaks => asset!("Peaks", "peaks", TEAL),
+            Self::Briefcase => asset!("Briefcase", "briefcase", BLUE),
+            Self::Book => asset!("Book", "book", VIOLET),
+            Self::Camera => asset!("Camera", "camera", PINK),
+            Self::Coffee => asset!("Coffee", "coffee", AMBER),
+            Self::Moon => asset!("Moon", "moon", VIOLET),
+            Self::Leaf => asset!("Leaf", "leaf", TEAL),
+            Self::Globe => asset!("Globe", "globe", BLUE),
+            Self::Bolt => asset!("Bolt", "bolt", AMBER),
+            Self::Rocket => asset!("Rocket", "rocket", VIOLET),
+            Self::Palette => asset!("Palette", "palette", PINK),
+            Self::Headphones => asset!("Headphones", "headphones", TEAL),
+            Self::Film => asset!("Film", "film", BLUE),
+            Self::Chat => asset!("Chat", "chat", VIOLET),
+            Self::Compass => asset!("Compass", "compass", TEAL),
+            Self::Heart => asset!("Heart", "heart", PINK),
+            Self::Sparkles => asset!("Sparkles", "sparkles", AMBER),
+        }
+    }
+}
 
 const CLOUD: &[(f32, f32)] = &[
     (6., 18.),
@@ -627,6 +738,13 @@ pub(crate) struct IconAssets;
 
 impl AssetSource for IconAssets {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        if path.starts_with("profile-icons/") {
+            return Ok(ProfileIcon::ALL
+                .iter()
+                .map(|icon| icon.asset())
+                .find(|(_, asset, _, _)| *asset == path)
+                .map(|(_, _, svg, _)| Cow::Borrowed(svg)));
+        }
         Ok(ICON_ASSETS
             .get(path)
             .map(|svg| Cow::Borrowed(svg.as_bytes())))
@@ -636,6 +754,7 @@ impl AssetSource for IconAssets {
         Ok(ICONS
             .iter()
             .map(|icon| icon.asset_path())
+            .chain(ProfileIcon::ALL.iter().map(|icon| icon.asset().1))
             .filter(|asset| asset.starts_with(path))
             .map(SharedString::from)
             .collect())

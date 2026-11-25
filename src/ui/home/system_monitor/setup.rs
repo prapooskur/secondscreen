@@ -1,4 +1,6 @@
-use gpui::{Context, Div, Entity, SharedString, Stateful, Styled, Window, prelude::*};
+use gpui::{
+    AnyElement, Context, Div, Entity, SharedString, Stateful, Styled, Window, div, prelude::*,
+};
 
 use crate::ui::{
     Dashboard, Tooltip,
@@ -17,19 +19,31 @@ use super::super::{
 
 pub(in crate::ui::home) struct MonitorSetup {
     pub id: u32,
-    chart: Option<usize>,
-    picker: Option<(Pick, Entity<TextInput>)>,
+    page: Page,
+}
+
+enum Page {
+    Cards,
+    AddCard,
+    Edit(usize),
+    Pick(Pick, Entity<TextInput>),
 }
 
 impl MonitorSetup {
     pub(in crate::ui::home) fn back(&mut self) -> bool {
-        self.picker.take().is_some() || self.chart.take().is_some()
+        self.page = match self.page {
+            Page::Cards => return false,
+            Page::AddCard | Page::Edit(_) => Page::Cards,
+            Page::Pick(Pick::New(_), _) => Page::AddCard,
+            Page::Pick(Pick::Primary(index) | Pick::Comparison(index), _) => Page::Edit(index),
+        };
+        true
     }
 }
 
 #[derive(Clone, Copy)]
 enum Pick {
-    Card,
+    New(MonitorDisplay),
     Primary(usize),
     Comparison(usize),
 }
@@ -37,14 +51,15 @@ enum Pick {
 #[derive(Clone, Copy)]
 enum Navigate {
     Back,
-    Chart(usize),
+    AddCard,
+    Edit(usize),
     Pick(Pick),
 }
 
 #[derive(Clone)]
 enum Change {
     TopBar,
-    Select(Pick, MonitorReading),
+    Select(Pick, MonitorSource),
     Display(usize, MonitorDisplay),
     Layout(usize, ChartLayout),
     RemovePlot(usize, usize),
@@ -73,10 +88,10 @@ impl Dashboard {
                 .child(if open { "Done" } else { "Setup" }),
             move |window, cx| {
                 view.update(cx, |this, cx| {
+                    this.home.fps_setup = None;
                     this.home.monitor_setup = (!open).then_some(MonitorSetup {
                         id,
-                        chart: None,
-                        picker: None,
+                        page: Page::Cards,
                     });
                     this.focus_dashboard(window, cx);
                     cx.notify();
@@ -89,70 +104,84 @@ impl Dashboard {
         &self,
         setup: &MonitorSetup,
         options: &MonitorOptions,
-        width: f32,
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let theme = Theme::current(cx);
         let id = setup.id;
-        let (controls, body) = if let Some((pick, search)) = &setup.picker {
-            (
-                row().child(navigation_button(theme, id, "Back", Navigate::Back, cx)),
-                col()
-                    .flex_1()
-                    .gap(r(5.))
-                    .child(search.clone())
-                    .child(self.monitor_sensor_catalog(
-                        id,
-                        *pick,
-                        &search.read(cx).value,
-                        options,
-                        cx,
-                    ))
-                    .into_any_element(),
-            )
-        } else if let Some(index) = setup.chart
-            && let Some(reading) = options.readings.get(index)
-        {
-            (
+        let back = || navigation_button(theme, id, "Back", Navigate::Back, cx);
+        let (controls, body) = match &setup.page {
+            Page::AddCard => (
+                row()
+                    .child(back())
+                    .child(theme.label("Choose a display type")),
+                self.monitor_card_types(id, theme, cx).into_any_element(),
+            ),
+            Page::Pick(pick, search) => {
+                let display = match *pick {
+                    Pick::New(display) => Some(display),
+                    Pick::Primary(index) | Pick::Comparison(index) => {
+                        options.readings.get(index).map(|card| card.display)
+                    }
+                };
+                (
+                    row().child(back()).children(display.map(|display| {
+                        theme.label(format!("{} metric", display.name())).truncate()
+                    })),
+                    col()
+                        .flex_1()
+                        .gap(r(5.))
+                        .child(search.clone())
+                        .child(self.monitor_sensor_catalog(
+                            id,
+                            *pick,
+                            &search.read(cx).value,
+                            options,
+                            cx,
+                        ))
+                        .into_any_element(),
+                )
+            }
+            Page::Edit(index) if let Some(card) = options.readings.get(*index) => (
                 row()
                     .justify_between()
-                    .child(navigation_button(theme, id, "Back", Navigate::Back, cx))
-                    .when(reading.chart.additional.len() + 1 < MAX_PLOTS, |it| {
+                    .child(back())
+                    .when(can_add_plot(card), |it| {
                         it.child(navigation_button(
                             theme,
                             id,
                             "Add metric",
-                            Navigate::Pick(Pick::Comparison(index)),
+                            Navigate::Pick(Pick::Comparison(*index)),
                             cx,
                         ))
                     }),
-                self.monitor_chart_setup(id, index, reading, cx)
+                self.monitor_edit_card(id, *index, card, cx)
                     .into_any_element(),
-            )
-        } else {
-            let top_bar = theme
-                .button("monitor-top-bar", options.show_top_bar.then_some(TEAL))
-                .h(r(26.))
-                .px(r(8.))
-                .child(if options.show_top_bar {
-                    "Top bar on"
-                } else {
-                    "Top bar off"
-                });
-            (
-                row()
-                    .justify_between()
-                    .child(navigation_button(
-                        theme,
-                        id,
-                        "Add sensor",
-                        Navigate::Pick(Pick::Card),
-                        cx,
-                    ))
-                    .child(edit_button(theme, top_bar, id, Change::TopBar, cx)),
-                self.monitor_selected_sensors(id, options, width >= 380., cx)
-                    .into_any_element(),
-            )
+            ),
+            Page::Cards | Page::Edit(_) => {
+                let top_bar = theme
+                    .button("monitor-top-bar", options.show_top_bar.then_some(TEAL))
+                    .h(r(26.))
+                    .px(r(8.))
+                    .child(if options.show_top_bar {
+                        "Top bar on"
+                    } else {
+                        "Top bar off"
+                    });
+                (
+                    row()
+                        .justify_between()
+                        .child(navigation_button(
+                            theme,
+                            id,
+                            "Add card",
+                            Navigate::AddCard,
+                            cx,
+                        ))
+                        .child(edit_button(theme, top_bar, id, Change::TopBar, cx)),
+                    self.monitor_selected_cards(id, options, cx)
+                        .into_any_element(),
+                )
+            }
         };
         col()
             .id(("monitor-setup-menu", id as usize))
@@ -162,14 +191,35 @@ impl Dashboard {
             .child(body)
     }
 
-    fn monitor_chart_setup(
+    fn monitor_card_types(&self, id: u32, theme: Theme, cx: &Context<Self>) -> Div {
+        row()
+            .flex_none()
+            .gap(r(5.))
+            .children(MonitorDisplay::ALL.map(|display| {
+                let button = theme
+                    .button(display.name(), Some(display_accent(display)))
+                    .flex_1()
+                    .min_w_0()
+                    .h(r(57.))
+                    .px(r(3.))
+                    .flex_col()
+                    .gap(r(5.))
+                    .child(display_icon(display, theme, 18.))
+                    .child(display.name());
+                bind_navigation(theme, button, id, Navigate::Pick(Pick::New(display)), cx)
+            }))
+    }
+
+    fn monitor_edit_card(
         &self,
         id: u32,
         index: usize,
-        reading: &MonitorReading,
+        card: &MonitorReading,
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let theme = Theme::current(cx);
+        let multi_plot =
+            card.display == MonitorDisplay::Chart && card.source != MonitorSource::VisibleDrives;
         let layouts = [
             (ChartLayout::Separate, "Separate plots"),
             (ChartLayout::Overlay, "Shared graph"),
@@ -181,19 +231,38 @@ impl Dashboard {
                 row()
                     .flex_none()
                     .gap(r(4.))
-                    .children(layouts.map(|(layout, name)| {
+                    .children(MonitorDisplay::ALL.map(|display| {
                         let button = theme
-                            .button(name, (layout == reading.chart.layout).then_some(TEAL))
-                            .h(r(23.))
-                            .px(r(5.))
+                            .button(
+                                display.name(),
+                                (display == card.display).then_some(display_accent(display)),
+                            )
+                            .h(r(24.))
+                            .px(r(7.))
                             .text_size(r(11.))
-                            .child(name);
-                        edit_button(theme, button, id, Change::Layout(index, layout), cx)
+                            .child(display.name());
+                        edit_button(theme, button, id, Change::Display(index, display), cx)
                     })),
             )
+            .when(multi_plot, |it| {
+                it.child(
+                    row()
+                        .flex_none()
+                        .gap(r(4.))
+                        .children(layouts.map(|(layout, name)| {
+                            let button = theme
+                                .button(name, (layout == card.chart.layout).then_some(TEAL))
+                                .h(r(23.))
+                                .px(r(5.))
+                                .text_size(r(11.))
+                                .child(name);
+                            edit_button(theme, button, id, Change::Layout(index, layout), cx)
+                        })),
+                )
+            })
             .child(
                 col()
-                    .id("monitor-plot-list")
+                    .id("monitor-card-metrics")
                     .flex_1()
                     .overflow_y_scroll()
                     .gap(r(4.))
@@ -203,7 +272,7 @@ impl Dashboard {
                             .gap(r(5.))
                             .child(
                                 theme
-                                    .label(self.monitor_source_name(&reading.source).to_owned())
+                                    .label(self.monitor_source_name(&card.source).to_owned())
                                     .flex_1()
                                     .truncate(),
                             )
@@ -216,10 +285,10 @@ impl Dashboard {
                             )),
                     )
                     .children(
-                        reading
-                            .chart
+                        card.chart
                             .additional
                             .iter()
+                            .filter(|_| multi_plot)
                             .enumerate()
                             .map(|(slot, source)| {
                                 let remove = theme
@@ -251,109 +320,100 @@ impl Dashboard {
             )
     }
 
-    fn monitor_selected_sensors(
+    fn monitor_selected_cards(
         &self,
         id: u32,
         options: &MonitorOptions,
-        wide: bool,
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let theme = Theme::current(cx);
         col()
-            .id(("monitor-sensors", id as usize))
+            .id(("monitor-cards", id as usize))
             .flex_1()
             .overflow_y_scroll()
-            .gap(r(4.))
+            .gap(r(5.))
             .when(options.readings.is_empty(), |list| {
-                list.child(theme.quiet("No sensors selected."))
+                list.child(theme.quiet("No cards yet."))
             })
-            .children(options.readings.iter().enumerate().map(|(index, reading)| {
-                let mut title = self.monitor_source_name(&reading.source).to_owned();
-                if reading.display == MonitorDisplay::Chart {
-                    for source in &reading.chart.additional {
-                        title.push_str(" · ");
-                        title.push_str(self.monitor_source_name(source));
+            .children(options.readings.iter().enumerate().map(|(index, card)| {
+                let metrics = std::iter::once(&card.source)
+                    .chain(
+                        card.chart
+                            .additional
+                            .iter()
+                            .filter(|_| card.display == MonitorDisplay::Chart),
+                    )
+                    .map(|source| self.monitor_source_name(source))
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                let name = SharedString::from(metrics);
+                let accent = display_accent(card.display);
+                let controls = [
+                    (
+                        "Move earlier",
+                        Icon::Up,
+                        Change::Move(index, -1),
+                        index > 0,
+                        TEXT,
+                    ),
+                    (
+                        "Move later",
+                        Icon::Down,
+                        Change::Move(index, 1),
+                        index + 1 < options.readings.len(),
+                        TEXT,
+                    ),
+                    ("Remove card", Icon::Close, Change::Remove(index), true, RED),
+                ]
+                .map(|(label, symbol, change, enabled, color)| {
+                    let button = theme
+                        .button(label, None)
+                        .size(r(23.))
+                        .px_0()
+                        .child(icon(symbol, theme.color(color), 12.))
+                        .tooltip(move |_, cx| cx.new(|_| Tooltip(label.into())).into());
+                    if enabled {
+                        edit_button(theme, button, id, change, cx)
+                    } else {
+                        disabled(button)
                     }
-                }
-                let name = SharedString::from(title);
-                let label = theme
-                    .label(name.clone())
-                    .id("reading-name")
-                    .flex_1()
-                    .text_size(r(12.))
-                    .truncate()
-                    .tooltip(move |_, cx| cx.new(|_| Tooltip(name.clone())).into());
-                let displays = row()
-                    .flex_none()
-                    .gap(r(3.))
-                    .children(MonitorDisplay::ALL.map(|display| {
-                        let button = theme
-                            .button(display.name(), (display == reading.display).then_some(TEAL))
-                            .h(r(23.))
-                            .px(r(5.))
-                            .text_size(r(11.))
-                            .child(display.name());
-                        edit_button(theme, button, id, Change::Display(index, display), cx)
-                    }));
-                let moves = row().flex_none().gap(r(3.)).children(
-                    [
-                        (
-                            "Move earlier",
-                            Icon::Up,
-                            Change::Move(index, -1),
-                            index > 0,
-                            TEXT,
-                        ),
-                        (
-                            "Move later",
-                            Icon::Down,
-                            Change::Move(index, 1),
-                            index + 1 < options.readings.len(),
-                            TEXT,
-                        ),
-                        (
-                            "Remove sensor",
-                            Icon::Close,
-                            Change::Remove(index),
-                            true,
-                            RED,
-                        ),
-                    ]
-                    .map(|(label, symbol, change, enabled, accent)| {
-                        let button = theme
-                            .button(label, None)
-                            .size(r(23.))
-                            .px_0()
-                            .child(icon(symbol, theme.color(accent), 12.))
-                            .tooltip(move |_, cx| cx.new(|_| Tooltip(label.into())).into());
-                        if enabled {
-                            edit_button(theme, button, id, change, cx)
-                        } else {
-                            disabled(button)
-                        }
-                    }),
-                );
-                let item = col()
-                    .id(("monitor-selected", index))
+                });
+                col()
+                    .id(("monitor-card", index))
                     .flex_none()
                     .gap(r(4.))
-                    .p(r(4.))
+                    .p(r(5.))
                     .rounded(r(6.))
-                    .bg(theme.color(HEADER));
-                let item = if wide {
-                    item.child(row().gap(r(5.)).child(label).child(displays).child(moves))
-                } else {
-                    item.child(row().gap(r(5.)).child(label).child(moves))
-                        .child(displays)
-                };
-                let (label, page) = if reading.display == MonitorDisplay::Chart
-                    && reading.source != MonitorSource::VisibleDrives
-                {
-                    ("Edit plots", Navigate::Chart(index))
-                } else {
-                    ("Change metric", Navigate::Pick(Pick::Primary(index)))
-                };
-                item.child(row().child(navigation_button(theme, id, label, page, cx)))
+                    .bg(theme.color(HEADER))
+                    .child(
+                        row()
+                            .gap(r(4.))
+                            .child(display_icon(card.display, theme, 15.))
+                            .child(
+                                theme
+                                    .label(card.display.name())
+                                    .flex_1()
+                                    .text_color(theme.color(accent))
+                                    .truncate(),
+                            )
+                            .child(navigation_button(
+                                theme,
+                                id,
+                                "Edit",
+                                Navigate::Edit(index),
+                                cx,
+                            ))
+                            .children(controls),
+                    )
+                    .child(
+                        theme
+                            .quiet(name.clone())
+                            .id("card-metrics")
+                            .text_size(r(11.))
+                            .line_height(r(15.))
+                            .truncate()
+                            .tooltip(move |_, cx| cx.new(|_| Tooltip(name.clone())).into()),
+                    )
             }))
     }
 
@@ -365,37 +425,32 @@ impl Dashboard {
         options: &MonitorOptions,
         cx: &Context<Self>,
     ) -> impl IntoElement {
-        use MonitorDisplay::{Bar, Chart, Gauge};
         use MonitorSource::{Download, Drive, Sensor, Upload, VisibleDrives};
 
         let theme = Theme::current(cx);
         let query = search.trim().to_lowercase();
         let common = [
-            (Sensor("gpu".into()), "GPU load (automatic)", Gauge),
-            (Download, "Download", Chart),
-            (Upload, "Upload", Chart),
-            (VisibleDrives, "All visible drives", Bar),
+            (Sensor("gpu".into()), "GPU load (automatic)"),
+            (Download, "Download"),
+            (Upload, "Upload"),
+            (VisibleDrives, "All visible drives"),
         ];
-        let sensors = self.metrics.sensors.iter().map(|sensor| {
-            (
-                Sensor(sensor.id.clone()),
-                sensor.name.as_str(),
-                if sensor.unit == "%" { Gauge } else { Chart },
-            )
-        });
+        let sensors = self
+            .metrics
+            .sensors
+            .iter()
+            .map(|sensor| (Sensor(sensor.id.clone()), sensor.name.as_str()));
         let drives = self
             .visible_disks()
             .into_iter()
-            .map(|disk| (Drive(disk.id.clone()), disk.label.as_str(), Bar));
+            .map(|disk| (Drive(disk.id.clone()), disk.label.as_str()));
         let mut list = col()
             .id(("monitor-sensor-catalog", id as usize))
             .flex_1()
             .overflow_y_scroll()
             .gap(r(3.));
         let mut found = false;
-        for (index, (source, name, display)) in
-            common.into_iter().chain(drives).chain(sensors).enumerate()
-        {
+        for (index, (source, name)) in common.into_iter().chain(drives).chain(sensors).enumerate() {
             if (!query.is_empty() && !name.to_lowercase().contains(&query))
                 || !can_pick(options, pick, &source)
             {
@@ -421,13 +476,11 @@ impl Dashboard {
                 theme,
                 button,
                 id,
-                Change::Select(pick, MonitorReading::new(source, display)),
+                Change::Select(pick, source),
                 cx,
             ));
         }
-        list.when(!found, |it| {
-            it.child(theme.quiet("No matching sensors to add."))
-        })
+        list.when(!found, |it| it.child(theme.quiet("No matching metrics.")))
     }
 
     fn edit_monitor(
@@ -454,24 +507,32 @@ impl Dashboard {
             return;
         }
         let mut options = layout.monitors.get(&id).cloned().unwrap_or_default();
-        let close_picker = matches!(
-            change,
-            Change::Select(Pick::Primary(_) | Pick::Comparison(_), _)
-        );
+        let mut next_page = None;
         match change {
             Change::TopBar => options.show_top_bar = !options.show_top_bar,
-            Change::Select(pick, reading) => {
-                if !can_pick(&options, pick, &reading.source) {
+            Change::Select(pick, source) => {
+                if !can_pick(&options, pick, &source) {
                     return;
                 }
-                match pick {
-                    Pick::Card => options.readings.push(reading),
-                    Pick::Primary(index) => options.readings[index].source = reading.source,
-                    Pick::Comparison(index) => options.readings[index]
-                        .chart
-                        .additional
-                        .push(reading.source),
-                }
+                next_page = Some(match pick {
+                    Pick::New(display) => {
+                        let index = options.readings.len();
+                        options.readings.push(MonitorReading::new(source, display));
+                        if display == MonitorDisplay::Chart {
+                            Page::Edit(index)
+                        } else {
+                            Page::Cards
+                        }
+                    }
+                    Pick::Primary(index) => {
+                        options.readings[index].source = source;
+                        Page::Edit(index)
+                    }
+                    Pick::Comparison(index) => {
+                        options.readings[index].chart.additional.push(source);
+                        Page::Edit(index)
+                    }
+                });
             }
             Change::Layout(index, chart_layout) => {
                 let Some(reading) = options.readings.get_mut(index) else {
@@ -522,8 +583,10 @@ impl Dashboard {
         let previous = layout.monitors.insert(id, options);
         if self.save_home(cx) {
             discard_charts(Some(id), window, cx);
-            if close_picker && let Some(setup) = &mut self.home.monitor_setup {
-                setup.picker = None;
+            if let Some(page) = next_page
+                && let Some(setup) = &mut self.home.monitor_setup
+            {
+                setup.page = page;
                 self.focus_dashboard(window, cx);
             }
         } else if let Some(previous) = previous {
@@ -551,20 +614,52 @@ fn edit_button(
 
 fn can_pick(options: &MonitorOptions, pick: Pick, source: &MonitorSource) -> bool {
     match pick {
-        Pick::Card => true,
+        Pick::New(_) => true,
         Pick::Primary(index) => options.readings.get(index).is_some_and(|reading| {
             reading.source != *source
                 && !reading.chart.additional.contains(source)
                 && (reading.chart.additional.is_empty() || *source != MonitorSource::VisibleDrives)
         }),
         Pick::Comparison(index) => options.readings.get(index).is_some_and(|reading| {
-            reading.display == MonitorDisplay::Chart
-                && reading.source != MonitorSource::VisibleDrives
+            can_add_plot(reading)
                 && *source != MonitorSource::VisibleDrives
                 && reading.source != *source
                 && !reading.chart.additional.contains(source)
-                && reading.chart.additional.len() + 1 < MAX_PLOTS
         }),
+    }
+}
+
+fn can_add_plot(card: &MonitorReading) -> bool {
+    card.display == MonitorDisplay::Chart
+        && card.source != MonitorSource::VisibleDrives
+        && card.chart.additional.len() + 1 < MAX_PLOTS
+}
+
+fn display_accent(display: MonitorDisplay) -> Color {
+    match display {
+        MonitorDisplay::Bar => BLUE,
+        MonitorDisplay::Chart => TEAL,
+        MonitorDisplay::Gauge => VIOLET,
+    }
+}
+
+fn display_icon(display: MonitorDisplay, theme: Theme, size: f32) -> AnyElement {
+    let accent = theme.color(display_accent(display));
+    match display {
+        MonitorDisplay::Bar => row()
+            .size(r(size))
+            .gap(r(2.))
+            .flex_none()
+            .children((0..3).map(|index| {
+                div()
+                    .flex_1()
+                    .h(r(4.))
+                    .rounded(r(1.))
+                    .bg(accent.opacity(if index < 2 { 1. } else { 0.27 }))
+            }))
+            .into_any_element(),
+        MonitorDisplay::Chart => icon(Icon::Activity, accent, size).into_any_element(),
+        MonitorDisplay::Gauge => icon(Icon::Gauge, accent, size).into_any_element(),
     }
 }
 
@@ -575,39 +670,47 @@ fn navigation_button(
     navigate: Navigate,
     cx: &Context<Dashboard>,
 ) -> Stateful<Div> {
+    let primary = matches!(
+        navigate,
+        Navigate::AddCard | Navigate::Pick(Pick::Comparison(_))
+    );
+    let button = theme
+        .button(label, primary.then_some(TEAL))
+        .h(r(24.))
+        .px(r(7.))
+        .text_size(r(11.))
+        .child(label);
+    bind_navigation(theme, button, id, navigate, cx)
+}
+
+fn bind_navigation(
+    theme: Theme,
+    button: Stateful<Div>,
+    id: u32,
+    navigate: Navigate,
+    cx: &Context<Dashboard>,
+) -> Stateful<Div> {
     let view = cx.entity();
-    theme.bind(
-        theme
-            .button(
-                label,
-                matches!(navigate, Navigate::Pick(Pick::Card | Pick::Comparison(_)))
-                    .then_some(TEAL),
-            )
-            .h(r(24.))
-            .px(r(7.))
-            .text_size(r(11.))
-            .child(label),
-        move |window, cx| {
-            view.update(cx, |this, cx| {
-                if let Some(setup) = &mut this.home.monitor_setup
-                    && setup.id == id
-                {
-                    match navigate {
-                        Navigate::Back => {
-                            setup.back();
-                        }
-                        Navigate::Chart(index) => setup.chart = Some(index),
-                        Navigate::Pick(target) => {
-                            let search =
-                                cx.new(|cx| TextInput::with_placeholder("Search sensors", cx));
-                            cx.observe(&search, |_, _, cx| cx.notify()).detach();
-                            setup.picker = Some((target, search));
-                        }
+    theme.bind(button, move |window, cx| {
+        view.update(cx, |this, cx| {
+            if let Some(setup) = &mut this.home.monitor_setup
+                && setup.id == id
+            {
+                match navigate {
+                    Navigate::Back => {
+                        setup.back();
                     }
-                    this.focus_dashboard(window, cx);
-                    cx.notify();
+                    Navigate::AddCard => setup.page = Page::AddCard,
+                    Navigate::Edit(index) => setup.page = Page::Edit(index),
+                    Navigate::Pick(target) => {
+                        let search = cx.new(|cx| TextInput::with_placeholder("Search sensors", cx));
+                        cx.observe(&search, |_, _, cx| cx.notify()).detach();
+                        setup.page = Page::Pick(target, search);
+                    }
                 }
-            })
-        },
-    )
+                this.focus_dashboard(window, cx);
+                cx.notify();
+            }
+        })
+    })
 }

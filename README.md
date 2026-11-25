@@ -5,7 +5,7 @@ Second Screen is a Rust and GPUI dashboard for ultrawide secondary monitors. It 
 The app opens to a single resizable widget grid. Use **Edit layout** in the right-hand rail to choose the widgets on your display. **Settings** opens over the grid. Click outside it or press **Esc** to return to the dashboard.
 
 - **System monitor** brings hardware sensors, RAM, storage, and network traffic together with AIDA64-style gauges, segmented usage bars, and live charts. It shows drive capacity and attributed filesystem usage, plus download and upload rates across active network interfaces with a one-minute history. Find it on the default dashboard or under **Edit layout → Add widget → System monitor**.
-- **Now playing** shows track details, album art, and playback controls. When multiple players are available, use the tabs at the top of the widget to switch between them. Make the widget at least three rows tall to see the seek bar.
+- **Now playing** shows track details, album art, and playback controls. Tap a player tab to switch apps, and swipe across the tabs if more apps are offscreen. Tap or drag the seek bar to jump within a track. Make the widget wider or taller if the seek bar is hidden.
 - **Audio** adjusts device volume and mute and lets you set the default output or microphone. Add **App mixer** to adjust playback and recording streams using app icons, mute buttons, and volume sliders. Hover over an icon to see the app and stream names.
 - **Quick controls** puts playback, audio, Discord voice, and dashboard shortcuts in a customizable grid. The icons reflow as you resize the tile. Scroll inside it when space is tight.
 - **Discord** shows a green ring around each speaker’s avatar and a **LIVE** badge when the desktop client reports a Go Live stream. The widget also provides controls to connect, mute, deafen, and leave a call.
@@ -67,7 +67,9 @@ cargo run --release --locked --no-default-features --features ui-gpui-fast
 
 Choose **Edit layout** to add widgets from the catalog and show widget names and controls at the top. Use **×** to remove a widget or the arrows to change its order. Drag a widget’s bottom-right corner to resize. Use the width and height controls for single steps, or focus the corner and press the arrow keys. Choose **Done** to return to Home.
 
-Use the left rail to switch profiles. **+** creates an empty profile and selects it, up to five total. The existing Home layout becomes profile 1. Each profile saves its own layout and widget options. Select the pencil on the left rail to open the profile editor on the left side of the dashboard. Give the active profile a single letter, a number, or an SVG or PNG image. Secondscreen imports a copy of the image and remembers which profile was selected.
+Use the left rail to switch profiles. **+** creates an empty profile and selects it, up to five total. The existing Home layout becomes profile 1. Each profile saves its own layout and widget options.
+
+Select the pencil on the left rail to open **Profiles**. Select any profile to rename it and preview its icon. Use the first character of the profile name, choose from 24 built-in SVGs, or import an SVG or PNG. Unnamed profiles use their number as the text badge. Select **Save changes** to update the profile. **Set active** switches the dashboard to the selected profile. **Delete profile** removes the selected profile and its layout after confirmation. At least one profile stays on the dashboard.
 
 Home fits four grid rows and up to five columns in the visible area. Widgets can span two to four visible rows. When the grid extends to the right, swipe across it on a touchscreen, scroll horizontally with a trackpad, use **Shift** + mouse wheel, or use the arrows in the right-hand rail. The app keeps each widget’s requested size when space is limited and saves the layout in `${XDG_CONFIG_HOME:-~/.config}/secondscreen/home.json`.
 
@@ -75,11 +77,11 @@ On the **Quick controls** tile, choose **Setup** in **Edit layout**. Use **+** t
 
 ## Configure System monitor
 
-In **Edit layout**, choose **Setup** on a System monitor tile. New monitors start empty. Use **Add sensor** to search for readings, choose **Bar**, **Chart**, or **Gauge** for each card, and use the arrows to set their order. The **Top bar** toggle controls the widget title, CPU model, and host uptime.
+In **Edit layout**, choose **Setup** on a System monitor tile. New monitors start empty. Select **Add card**, pick **Bar**, **Chart**, or **Gauge**, then choose the metric to display. Each card shows its display type above its metrics. Use **Edit** to change a card’s type or metrics, or use the arrows to reorder cards. The **Top bar** toggle controls the widget title, CPU model, and host uptime.
 
-Choose **Edit plots** on a chart, then **Add metric** to select up to four readings. **Separate plots** puts them side by side when space allows. **Shared graph** overlays them with color-coded values. Readings with the same units share a scale, and mixed units use independent scales. Hover over a reading for its full label and scale.
+In the chart editor, use **Add metric** to select up to four readings. **Separate plots** puts them side by side when space allows. **Shared graph** overlays them with color-coded values. Readings with the same units share a scale, and mixed units use independent scales. Hover over a reading for its full label and scale.
 
-Bars and gauges use compact cards. Charts get more room, and cards wrap left to right as the tile narrows. Scroll inside the tile to reach additional readings. Charts show the last 60 samples.
+A single card fills the widget body. The grid places cards in Setup order and uses open gaps, so compact bars and gauges can stack beside taller charts. Scroll inside the widget to reach additional readings. Charts show the last 60 samples.
 
 The picker includes CPU and per-core load, memory, GPU load and VRAM where available, Linux hardware-monitor channels, download and upload speeds, and individual drives. **All visible drives** follows your Storage visibility settings and fills in drives that have no individual entry on that tile. Pick an individual drive to include it in a multi-metric chart. Each System monitor saves its own readings, display styles, order, and top-bar setting. Older layouts carry their active sensor selections into the new setup.
 
@@ -123,13 +125,17 @@ Add these tiles from **Edit layout → Add widget**. Open **Settings → Widgets
 - **Calendar** marks dates with events from the enabled calendars in Evolution Data Server, which GNOME Calendar and Evolution share. Select a date to see its events in local time. Use the arrows to browse months, or click the month name to return to today. The widget refreshes every 30 seconds. Install `evolution-data-server` on the host if your desktop does not already provide it, including when using Flatpak.
 - **Weather / AQI** shows current conditions, today’s hourly temperatures in the location’s time zone, and a ten-day forecast with color-coded low-to-high ranges. Hover over the chart for the temperature at a specific hour. The tile also shows wind, sunrise and sunset, and US AQI. Enter a city name or exact latitude and longitude. City search uses the first matching location. The widget refreshes every 15 minutes and retries after five minutes when data is unavailable. [Open-Meteo weather](https://open-meteo.com/) · [Air quality data from CAMS via Open-Meteo](https://open-meteo.com/en/docs/air-quality-api)
 - **Notifications** shows the latest 30 incoming Freedesktop desktop notifications while the tile is on Home. Use **Settings → Notifications** to hide individual apps or message bodies. Apps appear in Settings as they send notifications. Filters persist across restarts, and the history stays in memory. To clear it, choose **Clear** on the tile in **Edit layout**. The desktop session bus must allow notification monitoring.
-- **FPS** shows current FPS, 1% low, 0.1% low, and a 60-second graph. Install MangoHud and add the tile. In **Edit layout**, choose **Setup** on the FPS tile and copy the launch options into Steam. For a standalone game, replace `%command%` with its executable. Start Secondscreen once per login before launching the game so it can create `$XDG_RUNTIME_DIR/secondscreen-mangohud` for MangoHud's per-frame CSV files. Current FPS uses the latest second of frame times. Each low is the frame rate of the slowest 1% or 0.1% of frames in the latest 60 seconds, rounded up to at least one frame.
+- **FPS** shows current FPS, 1% low, 0.1% low, and the latest frame time in milliseconds. The 60-second graphs show FPS and peak frame time for each sample. Install MangoHud and add the tile. Copy the MangoHud launch options from **Settings → Widgets** into Steam. For a standalone game, replace `%command%` with its executable. Start Secondscreen once per login before launching the game so it can create `$XDG_RUNTIME_DIR/secondscreen-mangohud` for MangoHud's per-frame CSV files. Current FPS and peak frame time use the latest second of frames. Each low is the frame rate of the slowest 1% or 0.1% of frames in the latest 60 seconds, rounded up to at least one frame.
 
 ```sh
 MANGOHUD_CONFIG="autostart_log=1,output_folder=$XDG_RUNTIME_DIR/secondscreen-mangohud" mangohud %command%
 ```
 
-Gamescope reports an average every 300 frames, so the lows appear as dashes with that feed. Add the FPS tile or open **Settings → Integration status** to start the reader. For native packages, use:
+In **Edit layout**, choose **Setup** on the FPS tile to toggle each readout and graph independently. Changes save immediately. Select **Done** to return to the live tile.
+
+To use an existing folder for MangoHud logs, enter its absolute path under **Settings → Widgets → MangoHud log folder** and select **Save folder**. Copy the updated launch options into Steam. Save a blank field to restore the default.
+
+Gamescope reports an average every 300 frames, so the lows and frame time appear as dashes with that feed. Add the FPS tile or open **Settings → Integration status** to start the reader. For native packages, use:
 
 ```sh
 gamescope --stats-path "$XDG_RUNTIME_DIR/secondscreen-fps" -- %command%

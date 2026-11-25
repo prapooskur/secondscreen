@@ -15,13 +15,13 @@ use gpui::{
 
 pub(super) use self::layout::Kind;
 use self::layout::{Layout, MAX_COLUMNS, MIN_ROWS, Placement, VISIBLE_ROWS, Widget, shifted_span};
-pub(super) use self::profiles::{Badge, import_profile_image};
-use self::profiles::{Profile, Profiles};
+pub(super) use self::profiles::{Badge, MAX_PROFILES, Profile, ProfileDetails, import_profile_image};
+use self::profiles::Profiles;
 use self::system_monitor::MonitorSetup;
 use super::{
     Dashboard, Tooltip,
     icons::{Icon, icon},
-    media::MEDIA_TAB_HEIGHT,
+    media::MediaLayout,
     overlay::Overlay,
     theme::*,
 };
@@ -37,7 +37,9 @@ const WIDGET_CONTROL_INSET: f32 = 4.;
 
 pub(super) struct Home {
     profiles: Profiles,
+    profile_revision: usize,
     monitor_setup: Option<MonitorSetup>,
+    fps_setup: Option<u32>,
     path: Option<PathBuf>,
     editing: bool,
     catalog: bool,
@@ -116,7 +118,9 @@ impl Home {
             .unwrap_or_default();
         Self {
             profiles,
+            profile_revision: 0,
             monitor_setup: None,
+            fps_setup: None,
             path,
             editing: false,
             catalog: false,
@@ -164,6 +168,7 @@ impl Home {
 
     pub(super) fn leave(&mut self) {
         self.monitor_setup = None;
+        self.fps_setup = None;
         self.editing = false;
         self.catalog = false;
         self.resizing = None;
@@ -175,7 +180,10 @@ impl Home {
         {
             return true;
         }
-        if self.monitor_setup.take().is_some() || self.resizing.take().is_some() {
+        if self.monitor_setup.take().is_some()
+            || self.fps_setup.take().is_some()
+            || self.resizing.take().is_some()
+        {
             return true;
         }
         if self.catalog {
@@ -256,7 +264,12 @@ impl Dashboard {
             let kind = tile.widget.kind;
             self.home.visible[kind as usize] = true;
             if kind == Kind::Media {
-                self.home.media_progress_visible = tile.rows >= 3;
+                let width = grid.span_width(usize::from(tile.columns));
+                let body_height =
+                    grid.span_height(usize::from(tile.rows)) - self.media_tabs_height();
+                let inset = 2. * (widget_padding(body_height) + 1.);
+                self.home.media_progress_visible =
+                    MediaLayout::new(width - inset, body_height - inset).show_progress;
             } else if kind == Kind::Viewer {
                 self.ensure_viewer(tile.widget.id, cx);
             }
@@ -310,7 +323,7 @@ impl Dashboard {
             .child(self.profile_rail(cx))
             .child(
                 col()
-                    .id(("profile-home", self.home.profiles.active))
+                    .id(("profile-home", self.home.profile_revision))
                     .flex_1()
                     .child(content),
             )
@@ -628,17 +641,32 @@ impl Dashboard {
         let tabs = (kind == Kind::Media)
             .then(|| self.media_tabs(width - 2., cx))
             .flatten();
-        let tabs_height = if tabs.is_some() { MEDIA_TAB_HEIGHT } else { 0. };
+        let tabs_height = if kind == Kind::Media {
+            self.media_tabs_height()
+        } else {
+            0.
+        };
         let body_height = height - tabs_height;
-        let padding = if body_height < 155. { 8. } else { 13. };
-        let reserve_controls = editing
-            && (kind == Kind::SystemMonitor
-                || (kind == Kind::Viewer
-                    && self
-                        .viewers
-                        .get(&tile.widget.id)
-                        .is_some_and(|viewer| viewer.read(cx).is_editing())));
-        let vertical_padding = if reserve_controls {
+        let setup_open = editing
+            && match kind {
+                Kind::SystemMonitor => self
+                    .home
+                    .monitor_setup
+                    .as_ref()
+                    .is_some_and(|setup| setup.id == tile.widget.id),
+                Kind::Fps => self.home.fps_setup == Some(tile.widget.id),
+                Kind::Viewer => self
+                    .viewers
+                    .get(&tile.widget.id)
+                    .is_some_and(|viewer| viewer.read(cx).is_editing()),
+                _ => false,
+            };
+        let padding = if kind == Kind::SystemMonitor && !setup_open {
+            0.
+        } else {
+            widget_padding(body_height)
+        };
+        let vertical_padding = if setup_open {
             WIDGET_CONTROL_HEIGHT + 2. * WIDGET_CONTROL_INSET
         } else {
             padding
@@ -724,7 +752,7 @@ impl Dashboard {
             }
             Kind::WorldClock => "Zones",
             Kind::Weather => "Location",
-            Kind::Fps => "Setup",
+            Kind::Fps => return Some(self.fps_setup_button(widget.id, cx).into_any_element()),
             Kind::QuickControls => {
                 return Some(self.quick_controls_setup_button(cx).into_any_element());
             }
@@ -803,6 +831,9 @@ impl Dashboard {
                             this.viewers.remove(&id);
                             super::monitor::discard_charts(Some(id), window, cx);
                             this.home.monitor_setup = None;
+                            if this.home.fps_setup == Some(id) {
+                                this.home.fps_setup = None;
+                            }
                             this.save_home(cx);
                         })
                     },
@@ -1062,6 +1093,10 @@ impl Dashboard {
         cx.notify();
         result.is_ok()
     }
+}
+
+fn widget_padding(height: f32) -> f32 {
+    if height < 155. { 8. } else { 13. }
 }
 
 fn adjusted(widget: Widget, columns: u8, (horizontal, vertical): (i32, i32)) -> Widget {

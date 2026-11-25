@@ -15,16 +15,49 @@ use gpui::{
 use super::{
     Dashboard,
     icons::{Icon, icon},
-    slider::slider,
+    slider::{SliderStyle, drag_value, slider},
     theme::*,
 };
 
 const SEEK_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_ALBUM_SIDE: u32 = 768;
 const MAX_ALBUM_BYTES: usize = 8 * 1024 * 1024;
-pub(super) const MEDIA_TAB_HEIGHT: f32 = 30.;
-const MIN_MEDIA_TAB_WIDTH: f32 = 64.;
-const MEDIA_TAB_PADDING: f32 = 10.;
+const TOUCH_TARGET: f32 = 56.; // About 44 logical pixels at the minimum dashboard scale.
+const CONTROL_GAP: f32 = 8.;
+const TRANSPORT_WIDTH: f32 = 3. * TOUCH_TARGET + 2. * CONTROL_GAP;
+const SCRUBBER_HEIGHT: f32 = TOUCH_TARGET + 2.;
+const MIN_SCRUBBER_WIDTH: f32 = 196.;
+const MIN_TRACK_HEIGHT: f32 = 28.;
+const MIN_MEDIA_TAB_WIDTH: f32 = 70.;
+const MEDIA_TAB_PADDING: f32 = 6.;
+
+pub(super) struct MediaLayout {
+    pub(super) show_progress: bool,
+    inline_progress: bool,
+    track_height: f32,
+}
+
+impl MediaLayout {
+    pub(super) fn new(width: f32, height: f32) -> Self {
+        let stacked_controls = TOUCH_TARGET + CONTROL_GAP + SCRUBBER_HEIGHT;
+        let stacked = height >= MIN_TRACK_HEIGHT + CONTROL_GAP + stacked_controls;
+        let inline_progress = !stacked
+            && height >= MIN_TRACK_HEIGHT + CONTROL_GAP + SCRUBBER_HEIGHT
+            && width >= TRANSPORT_WIDTH + CONTROL_GAP + MIN_SCRUBBER_WIDTH;
+        let controls_height = if stacked {
+            stacked_controls
+        } else if inline_progress {
+            SCRUBBER_HEIGHT
+        } else {
+            TOUCH_TARGET
+        };
+        Self {
+            show_progress: stacked || inline_progress,
+            inline_progress,
+            track_height: height - CONTROL_GAP - controls_height,
+        }
+    }
+}
 
 pub(super) struct PendingSeek {
     player_id: String,
@@ -134,10 +167,9 @@ impl Dashboard {
         if let Some((id, _)) = gesture.as_ref()
             && id.starts_with("seek:")
             && !self.current_player().is_some_and(|player| {
-                player
-                    .track
-                    .as_ref()
-                    .is_some_and(|track| *id == seek_id(player, Some(track)))
+                player.track.as_ref().is_some_and(|track| {
+                    seek_duration(player, track).is_some() && *id == seek_id(player, Some(track))
+                })
             })
         {
             *gesture = None;
@@ -183,7 +215,88 @@ impl Dashboard {
         cx.notify();
     }
 
-    pub(super) fn media_progress(&self, player: &Player, cx: &Context<Self>) -> impl IntoElement {
+    pub(super) fn media_player_widget(
+        &self,
+        player: &Player,
+        width: f32,
+        height: f32,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let theme = Theme::current(cx);
+        let layout = MediaLayout::new(width, height);
+        let track = player.track.as_ref();
+        let cover = layout.track_height.min(width * 0.36).min(136.);
+        let progress = layout.show_progress.then(|| {
+            self.media_progress(player, cx)
+                .when(layout.inline_progress, |it| it.flex_1())
+        });
+        let transport = self.media_transport(player, layout.inline_progress, cx);
+        let controls = if layout.inline_progress {
+            row()
+                .gap(r(CONTROL_GAP))
+                .children(progress)
+                .child(transport)
+        } else {
+            col()
+                .items_center()
+                .gap(r(CONTROL_GAP))
+                .children(progress)
+                .child(transport)
+        };
+
+        col()
+            .flex_1()
+            .gap(r(CONTROL_GAP))
+            .child(
+                row()
+                    .min_h_0()
+                    .flex_1()
+                    .gap(r(12.))
+                    .when(cover >= MIN_TRACK_HEIGHT, |it| {
+                        it.child(album_art(
+                            theme,
+                            track.and_then(|track| track.artwork.clone()),
+                            cover,
+                        ))
+                    })
+                    .child(
+                        col()
+                            .flex_1()
+                            .gap(r(3.))
+                            .child(
+                                div()
+                                    .text_size(r(if width >= 340. { 22. } else { 17. }))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .truncate()
+                                    .child(track.map_or_else(
+                                        || player.name.clone(),
+                                        |track| track.title.clone(),
+                                    )),
+                            )
+                            .when_some(
+                                track.filter(|_| layout.track_height >= 48.),
+                                |it, track| {
+                                    it.child(
+                                        theme
+                                            .quiet(if track.artist.is_empty() {
+                                                player.name.clone()
+                                            } else {
+                                                track.artist.clone()
+                                            })
+                                            .truncate(),
+                                    )
+                                    .when(
+                                        layout.track_height >= 84. && !track.album.is_empty(),
+                                        |it| it.child(theme.quiet(track.album.clone()).truncate()),
+                                    )
+                                },
+                            ),
+                    ),
+            )
+            .child(controls.flex_none())
+    }
+
+    fn media_progress(&self, player: &Player, cx: &Context<Self>) -> Div {
         let theme = Theme::current(cx);
         let track = player.track.as_ref();
         let length = track.and_then(|track| track.duration);
@@ -205,15 +318,11 @@ impl Dashboard {
         let progress = current
             .zip(length)
             .map_or(0., |(at, total)| (at as f32 / total as f32).clamp(0., 1.));
-        let can_seek = player.can_seek
-            && length.is_some()
-            && track.is_some_and(|track| track.id.starts_with('/'));
-        let position = self
-            .gesture
-            .borrow()
-            .as_ref()
-            .filter(|(id, _)| id == &slider_id)
-            .and_then(|(_, ratio)| length.map(|length| seek_position(*ratio, length)))
+        let enabled = track
+            .and_then(|track| seek_duration(player, track))
+            .is_some();
+        let position = drag_value(&self.gesture, &slider_id)
+            .and_then(|ratio| length.map(|length| seek_position(ratio, length)))
             .or(current)
             .map(|at| length.map_or(at, |total| at.min(total)));
         let seek = {
@@ -224,109 +333,124 @@ impl Dashboard {
                 theme,
                 slider_id,
                 progress,
-                BLUE,
-                can_seek,
+                SliderStyle::Scrubber {
+                    accent: BLUE,
+                    height: SCRUBBER_HEIGHT,
+                },
+                enabled,
                 self.gesture.clone(),
                 0.02,
                 move |fraction, cx| {
-                    if let Some(length) = length {
-                        view.update(cx, |this, cx| {
+                    view.update(cx, |this, cx| {
+                        if let Some(length) = this
+                            .current_player()
+                            .filter(|player| player.id == id)
+                            .and_then(|player| {
+                                let track =
+                                    player.track.as_ref().filter(|track| track.id == track_id)?;
+                                seek_duration(player, track)
+                            })
+                        {
                             this.seek_media(&id, &track_id, seek_position(fraction, length), cx);
-                        });
-                    }
+                        }
+                    });
                 },
             )
         };
 
-        row()
-            .gap(r(10.))
-            .flex_none()
-            .child(
-                mono(position.map(timecode).unwrap_or_else(|| "—:—".to_owned()))
-                    .text_size(r(11.))
-                    .min_w(r(35.))
-                    .flex_none()
-                    .whitespace_nowrap()
-                    .text_color(theme.color(MUTED)),
-            )
-            .child(seek)
-            .child(
-                mono(length.map(timecode).unwrap_or_else(|| "—:—".to_owned()))
-                    .text_size(r(11.))
-                    .min_w(r(35.))
-                    .flex_none()
-                    .whitespace_nowrap()
-                    .text_right()
-                    .text_color(theme.color(MUTED)),
-            )
+        let timestamp = |micros: Option<i64>| {
+            mono(micros.map(timecode).unwrap_or_else(|| "—:—".to_owned()))
+                .text_size(r(12.))
+                .whitespace_nowrap()
+                .text_color(theme.color(TEXT))
+        };
+        row().relative().w_full().child(seek).child(
+            row()
+                .absolute()
+                .top(r(4.))
+                .left(r(10.))
+                .right(r(10.))
+                .justify_between()
+                .child(timestamp(position))
+                .child(timestamp(length)),
+        )
     }
 
-    pub(super) fn media_transport(
+    fn media_transport(
         &self,
         player: &Player,
-        compact: bool,
+        inline: bool,
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let theme = Theme::current(cx);
         let playing = player.playback == Playback::Playing;
-        let direction = |id, symbol, can, which| {
+        let button = |id, label, symbol, action: MediaAction, enabled, accent| {
+            let label = SharedString::from(label);
             let control = theme
-                .button(id, None)
-                .size(r(if compact { 26. } else { 33. }))
+                .button(id, accent)
+                .flex_1()
+                .min_w(r(TOUCH_TARGET))
+                .h(r(TOUCH_TARGET))
                 .px_0()
+                .rounded(r(12.))
                 .child(icon(
                     symbol,
-                    theme.color(TEXT),
-                    if compact { 13. } else { 16. },
-                ));
-            if can {
+                    theme.color(accent.unwrap_or(TEXT)),
+                    if accent.is_some() { 26. } else { 21. },
+                ))
+                .tooltip(move |_, cx| cx.new(|_| super::Tooltip(label.clone())).into());
+            if enabled {
                 let view = cx.entity();
                 let id = player.id.clone();
-                theme.bind(control, move |_, cx| {
-                    view.read(cx).send_media(
-                        id.clone(),
-                        if which {
-                            MediaAction::Next
-                        } else {
-                            MediaAction::Previous
-                        },
-                    );
+                let pressed = accent.map_or(theme.color(HOVER), |accent| {
+                    theme.color(accent).opacity(0.33)
+                });
+                theme.bind(control.active(move |it| it.bg(pressed)), move |_, cx| {
+                    view.read(cx).send_media(id.clone(), action.clone());
                 })
             } else {
                 disabled(control)
             }
         };
-        let toggle = theme
-            .button("play-pause", Some(TEAL))
-            .size(r(if compact { 30. } else { 37. }))
-            .px_0()
-            .child(icon(
-                if playing { Icon::Pause } else { Icon::Play },
-                theme.color(TEAL),
-                if compact { 16. } else { 20. },
-            ));
-        let toggle = if player.can_toggle_playback() {
-            let view = cx.entity();
-            let id = player.id.clone();
-            theme.bind(toggle, move |_, cx| {
-                view.read(cx).send_media(id.clone(), MediaAction::Toggle)
-            })
-        } else {
-            disabled(toggle)
-        };
 
         row()
-            .justify_center()
-            .gap(r(if compact { 4. } else { 8. }))
+            .w_full()
+            .max_w(r(384.))
+            .when(inline, |it| it.w(r(TRANSPORT_WIDTH)))
+            .gap(r(CONTROL_GAP))
             .flex_none()
-            .child(direction(
+            .child(button(
                 "previous",
+                "Previous track",
                 Icon::Previous,
+                MediaAction::Previous,
                 player.can_previous,
-                false,
+                None,
             ))
-            .child(toggle)
-            .child(direction("next", Icon::Next, player.can_next, true))
+            .child(button(
+                "play-pause",
+                if playing { "Pause" } else { "Play" },
+                if playing { Icon::Pause } else { Icon::Play },
+                MediaAction::Toggle,
+                player.can_toggle_playback(),
+                Some(TEAL),
+            ))
+            .child(button(
+                "next",
+                "Next track",
+                Icon::Next,
+                MediaAction::Next,
+                player.can_next,
+                None,
+            ))
+    }
+
+    pub(super) fn media_tabs_height(&self) -> f32 {
+        if self.visible_players().nth(1).is_some() {
+            TOUCH_TARGET
+        } else {
+            0.
+        }
     }
 
     pub(super) fn media_tabs(&self, width: f32, cx: &Context<Self>) -> Option<Div> {
@@ -351,12 +475,13 @@ impl Dashboard {
                     .max_w(r(144.))
                     .h_full()
                     .justify_center()
-                    .px(r(8.))
+                    .px(r(5.))
                     .border_b(r(2.))
                     .border_color(theme.color(HEADER).opacity(0.))
-                    .text_size(r(12.))
+                    .text_size(r(14.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.color(TEXT))
+                    .active(move |it| it.bg(theme.color(PINK).opacity(0.24)))
                     .hover(move |it| {
                         it.bg(if selected {
                             theme.color(PINK).opacity(0.2)
@@ -376,7 +501,7 @@ impl Dashboard {
         });
         Some(
             row()
-                .h(r(MEDIA_TAB_HEIGHT))
+                .h(r(TOUCH_TARGET))
                 .flex_none()
                 .px(r(MEDIA_TAB_PADDING))
                 .rounded_t(r(13.))
@@ -408,6 +533,12 @@ fn seek_id(player: &Player, track: Option<&Track>) -> String {
     format!("seek:{}:{track_id}", player.id)
 }
 
+fn seek_duration(player: &Player, track: &Track) -> Option<i64> {
+    track
+        .duration
+        .filter(|&length| player.can_seek && length > 0 && track.id.starts_with('/'))
+}
+
 fn seek_position(fraction: f32, duration: i64) -> i64 {
     // An MPRIS SetPosition at or beyond the duration is ignored by the player.
     ((f64::from(fraction) * duration as f64).round() as i64).clamp(0, duration - 1)
@@ -418,7 +549,7 @@ fn timecode(micros: i64) -> String {
     format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
-pub(super) fn album_art(theme: Theme, artwork: Option<Artwork>, side: f32) -> impl IntoElement {
+fn album_art(theme: Theme, artwork: Option<Artwork>, side: f32) -> impl IntoElement {
     let radius = 10.;
     let art = artwork.map(|artwork| {
         img(move |window: &mut Window, cx: &mut App| {
@@ -443,10 +574,8 @@ pub(super) fn album_art(theme: Theme, artwork: Option<Artwork>, side: f32) -> im
         .object_fit(ObjectFit::Fill)
     });
 
-    let mut thumbnail = row()
-        .h_full()
-        .max_h(r(side))
-        .max_w(r(side))
+    row()
+        .size(r(side))
         .flex_none()
         .relative()
         .overflow_hidden()
@@ -454,9 +583,7 @@ pub(super) fn album_art(theme: Theme, artwork: Option<Artwork>, side: f32) -> im
         .rounded(r(radius))
         .border(r(1.))
         .border_color(theme.color(STROKE))
-        .bg(theme.color(ARTWORK_BACK));
-    thumbnail.style().aspect_ratio = Some(1.);
-    thumbnail
+        .bg(theme.color(ARTWORK_BACK))
         .child(
             row()
                 .size(r(side * 0.675))

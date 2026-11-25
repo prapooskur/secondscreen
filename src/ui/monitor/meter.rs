@@ -3,14 +3,19 @@ use std::f32::consts::PI;
 
 use crate::ui::theme::*;
 
-pub(in crate::ui) fn monitoring_bar(theme: Theme, load: f32, accent: Color) -> impl IntoElement {
+pub(in crate::ui) fn monitoring_bar(
+    theme: Theme,
+    load: f32,
+    accent: Color,
+    height: f32,
+) -> impl IntoElement {
     const SEGMENTS: u32 = 20;
 
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
             let step = bounds.size.width / SEGMENTS as f32;
-            let width = (step - bounds.size.height * 0.36).max(px(0.));
+            let width = step - (bounds.size.height * 0.36).min(step * 0.35);
             let filled = load.clamp(0., 100.) * SEGMENTS as f32 / 100.;
             for index in 0..SEGMENTS {
                 let origin = bounds.origin + point(step * index as f32, px(0.));
@@ -25,7 +30,7 @@ pub(in crate::ui) fn monitoring_bar(theme: Theme, load: f32, accent: Color) -> i
         },
     )
     .w_full()
-    .h(r(5.))
+    .h(r(height))
     .flex_none()
 }
 

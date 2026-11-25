@@ -181,7 +181,7 @@ impl Dashboard {
         window.focus(&focus, cx);
         Self {
             home: home::Home::load(),
-            utilities: utilities::Utilities::new(),
+            utilities: utilities::Utilities::new(preferences.mangohud_directory.as_deref()),
             preferences,
             background: background::Background::load(cx),
             display: display::DisplayWatch::new(fullscreen, placing_at_startup),
@@ -428,6 +428,13 @@ impl Dashboard {
         }
         match key.key.as_str() {
             "f11" => self.toggle_fullscreen(window),
+            "escape"
+                if self.overlay.open == Some(Overlay::Profile)
+                    && self.profile_editor.cancel_delete() =>
+            {
+                self.focus_overlay(window, cx);
+                cx.notify();
+            }
             "escape" if self.overlay.open.is_some() => self.close_overlay(window, cx),
             "escape" if self.home.escape() => {
                 self.focus_dashboard(window, cx);

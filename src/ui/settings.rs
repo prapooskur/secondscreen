@@ -17,10 +17,10 @@ use super::{
     icons::{Icon, icon},
     monitor::capacity,
     overlay::Overlay,
-    slider::{drag_value, slider},
+    slider::{SliderStyle, drag_value, slider},
     text_input::{TextInput, field},
     theme::*,
-    utilities::FPS_LAUNCH_OPTIONS,
+    utilities::{fps_launch_options, prepare_mangohud},
 };
 
 const GLASS_TRANSPARENCY_SLIDER: &str = "glass-transparency";
@@ -85,6 +85,7 @@ pub(super) struct SettingsView {
     discord_fields: Option<DiscordFields>,
     discord_saved: bool,
     widget_fields: Option<(Entity<TextInput>, Entity<TextInput>)>,
+    mangohud_directory_field: Option<Entity<TextInput>>,
     launch_options_copy: LaunchOptionsCopy,
 }
 
@@ -98,6 +99,7 @@ impl SettingsView {
             discord_fields: None,
             discord_saved: false,
             widget_fields: None,
+            mangohud_directory_field: None,
             launch_options_copy: LaunchOptionsCopy::Ready,
         }
     }
@@ -177,6 +179,7 @@ impl Dashboard {
         self.settings.quick_controls_setup = false;
         self.home_assistant.close_settings();
         self.settings.widget_fields = None;
+        self.settings.mangohud_directory_field = None;
         if !matches!(
             self.settings.launch_options_copy,
             LaunchOptionsCopy::Copying
@@ -314,11 +317,6 @@ impl Dashboard {
                 })
             })
         };
-        let copy_label = match self.settings.launch_options_copy {
-            LaunchOptionsCopy::Copying => "Copying…",
-            LaunchOptionsCopy::Copied => "Copied",
-            _ => "Copy",
-        };
         col()
             .gap(r(9.))
             .flex_none()
@@ -358,6 +356,53 @@ impl Dashboard {
                         |prefs| prefs.weather_12_hour = !prefs.weather_12_hour,
                     )),
             )
+            .child(self.fps_settings(theme, cx))
+    }
+
+    fn fps_settings(&mut self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let directory = self.preferences.mangohud_directory.as_deref();
+        let input = self
+            .settings
+            .mangohud_directory_field
+            .get_or_insert_with(|| {
+                cx.new(|cx| {
+                    let mut input = TextInput::with_placeholder(
+                        "Absolute path, or leave blank for default",
+                        cx,
+                    );
+                    input.set_value(directory.unwrap_or_default().to_owned(), cx);
+                    input
+                })
+            })
+            .clone();
+        let view = cx.entity();
+        let save = theme.bind(
+            theme
+                .button("save-fps-folder", Some(TEAL))
+                .child("Save folder"),
+            {
+                let input = input.clone();
+                move |_, cx| {
+                    let value = input.read(cx).value.trim();
+                    let directory = (!value.is_empty()).then(|| value.to_owned());
+                    view.update(cx, |this, cx| this.save_fps_directory(directory, cx));
+                }
+            },
+        );
+        let copy_label = match self.settings.launch_options_copy {
+            LaunchOptionsCopy::Copying => "Copying…",
+            LaunchOptionsCopy::Copied => "Copied",
+            _ => "Copy",
+        };
+        col()
+            .gap(r(6.))
+            .child(
+                row()
+                    .items_end()
+                    .gap(r(7.))
+                    .child(field(theme, "MangoHud log folder", input))
+                    .child(save),
+            )
             .child(
                 row()
                     .justify_between()
@@ -380,8 +425,26 @@ impl Dashboard {
                 }
                 _ => None,
             })
-            .child(theme.quiet("Install MangoHud to track current FPS, 1% low, and 0.1% low."))
-            .child(theme.quiet(FPS_LAUNCH_OPTIONS))
+            .child(theme.quiet("Install MangoHud to track FPS, lows, and frame time."))
+            .child(theme.quiet(fps_launch_options(directory)))
+    }
+
+    fn save_fps_directory(&mut self, directory: Option<String>, cx: &mut Context<Self>) {
+        if let Err(error) = prepare_mangohud(directory.as_deref()) {
+            self.set_error(format!("{error:#}"), cx);
+            cx.notify();
+            return;
+        }
+        let mut preferences = self.preferences.clone();
+        preferences.mangohud_directory = directory;
+        if self.save_preferences(preferences, cx)
+            && !matches!(
+                self.settings.launch_options_copy,
+                LaunchOptionsCopy::Copying
+            )
+        {
+            self.settings.launch_options_copy = LaunchOptionsCopy::Ready;
+        }
     }
 
     fn copy_launch_options(
@@ -396,11 +459,13 @@ impl Dashboard {
         ) {
             return;
         }
+        let directory = self.preferences.mangohud_directory.clone();
+        let command = fps_launch_options(directory.as_deref());
         // Synthesized touch clicks reach this handler without a native Wayland input serial.
         if cfg!(feature = "ui-gpui") && matches!(event, gpui::ClickEvent::Mouse(_)) {
             self.settings.launch_options_copy = LaunchOptionsCopy::Copying;
             cx.spawn(async move |this, cx| {
-                let result = blocking::unblock(|| -> std::io::Result<_> {
+                let result = blocking::unblock(move || -> std::io::Result<_> {
                     let mut child = Command::new("wl-copy")
                         .arg("--type=text/plain")
                         .stdin(Stdio::piped())
@@ -410,7 +475,7 @@ impl Dashboard {
                         .stdin
                         .take()
                         .expect("wl-copy stdin was piped")
-                        .write_all(FPS_LAUNCH_OPTIONS.as_bytes());
+                        .write_all(command.as_bytes());
                     let status = child.wait()?;
                     written?;
                     Ok(status)
@@ -429,7 +494,9 @@ impl Dashboard {
                     }
                 };
                 let _ = this.update(cx, |this, cx| {
-                    this.settings.launch_options_copy = if this.overlay.open == Some(Overlay::Settings) {
+                    this.settings.launch_options_copy = if this.overlay.open == Some(Overlay::Settings)
+                        && this.preferences.mangohud_directory == directory
+                    {
                         copy
                     } else {
                         LaunchOptionsCopy::Ready
@@ -439,9 +506,7 @@ impl Dashboard {
             })
             .detach();
         } else {
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                FPS_LAUNCH_OPTIONS.to_owned(),
-            ));
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(command));
             self.settings.launch_options_copy = LaunchOptionsCopy::Copied;
         }
         cx.notify();
@@ -633,7 +698,7 @@ impl Dashboard {
                 theme,
                 GLASS_TRANSPARENCY_SLIDER.into(),
                 saved,
-                TEAL,
+                SliderStyle::Standard(TEAL),
                 true,
                 self.gesture.clone(),
                 0.01,

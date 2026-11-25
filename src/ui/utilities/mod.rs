@@ -15,6 +15,8 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use crate::config::FpsFeature;
+
 pub(super) fn clock_zones(saved: &Option<Vec<String>>) -> Vec<String> {
     saved
         .clone()
@@ -35,7 +37,7 @@ pub(super) fn parse_zones(value: &str) -> anyhow::Result<Vec<String>> {
     Ok(zones)
 }
 
-pub(super) use fps::LAUNCH_OPTIONS as FPS_LAUNCH_OPTIONS;
+pub(super) use fps::{launch_options as fps_launch_options, prepare_mangohud};
 pub(super) use weather::coordinates;
 
 #[derive(Default)]
@@ -47,6 +49,7 @@ pub(super) struct Utilities {
     fps_setup: Option<fps::Setup>,
     fps_reading: Option<fps::Reading>,
     fps_history: VecDeque<f32>,
+    frame_time_history: VecDeque<f32>,
     fps_error: Option<String>,
     weather_query: String,
     weather_task: Option<Task<()>>,
@@ -59,8 +62,8 @@ pub(super) struct Utilities {
 }
 
 impl Utilities {
-    pub(super) fn new() -> Self {
-        if let Err(error) = fps::prepare_mangohud() {
+    pub(super) fn new(directory: Option<&str>) -> Self {
+        if let Err(error) = fps::prepare_mangohud(directory) {
             log::warn!("Could not prepare MangoHud logging: {error:#}");
         }
         Self::default()
@@ -75,8 +78,13 @@ impl Utilities {
         let redraw = self.fps_reading.is_some() || reading.is_some() || self.fps_error != error;
         if reading.as_ref().map(|r| r.source) != self.fps_reading.as_ref().map(|r| r.source) {
             self.fps_history.clear();
+            self.frame_time_history.clear();
         }
         append(&mut self.fps_history, reading.as_ref().map(|r| r.current));
+        append(
+            &mut self.frame_time_history,
+            reading.as_ref().and_then(|r| r.peak_frame_time_ms),
+        );
         self.fps_reading = reading;
         self.fps_error = error;
         redraw
@@ -117,15 +125,27 @@ mod tests {
         assert!(!utilities.record_fps(Ok(None)));
         assert!(utilities.record_fps(Err(anyhow::anyhow!("offline"))));
         assert!(!utilities.record_fps(Err(anyhow::anyhow!("offline"))));
+        assert!(utilities.record_fps(Ok(Some(fps::Reading {
+            source: fps::Source::MangoHud(1),
+            current: 50.,
+            low_1: Some(25.),
+            low_01: Some(25.),
+            frame_time_ms: Some(20.),
+            peak_frame_time_ms: Some(40.),
+        }))));
+        assert_eq!(utilities.frame_time_history, [40.]);
         for _ in 0..2 {
             assert!(utilities.record_fps(Ok(Some(fps::Reading {
                 source: fps::Source::Gamescope,
                 current: 60.,
                 low_1: None,
                 low_01: None,
+                frame_time_ms: None,
+                peak_frame_time_ms: None,
             }))));
         }
         assert_eq!(utilities.fps_history.len(), 2);
+        assert!(utilities.frame_time_history.is_empty());
         assert!(utilities.record_fps(Ok(None)));
         assert!(utilities.fps_history.is_empty());
         assert!(!utilities.record_fps(Ok(None)));
@@ -172,8 +192,10 @@ impl Dashboard {
             self.utilities.fps_setup_task = None;
             self.utilities.fps_setup = None;
         } else if self.utilities.fps_setup_task.is_none() {
+            let directory = self.preferences.mangohud_directory.clone();
             self.utilities.fps_setup_task = Some(cx.spawn(async move |this, cx| {
-                let setup = blocking::unblock(fps::Setup::check).await;
+                let setup =
+                    blocking::unblock(move || fps::Setup::check(directory.as_deref())).await;
                 let _ = this.update(cx, |this, cx| {
                     this.utilities.fps_setup = Some(setup);
                     cx.notify();
@@ -188,19 +210,27 @@ impl Dashboard {
             self.utilities.fps_task = Some(cx.spawn(async move |this, cx| {
                 let mut feed: Option<fps::Feed> = None;
                 loop {
-                    let (next_feed, reading) = blocking::unblock(move || {
+                    let Ok(directory) =
+                        this.read_with(cx, |this, _| this.preferences.mangohud_directory.clone())
+                    else {
+                        break;
+                    };
+                    let (next_feed, reading, directory) = blocking::unblock(move || {
                         let reading = match &mut feed {
-                            Some(feed) => feed.sample(),
-                            None => {
-                                fps::Feed::open().and_then(|opened| feed.insert(opened).sample())
-                            }
+                            Some(feed) => feed.sample(directory.as_deref()),
+                            None => fps::Feed::open().and_then(|opened| {
+                                feed.insert(opened).sample(directory.as_deref())
+                            }),
                         };
-                        (feed, reading)
+                        (feed, reading, directory)
                     })
                     .await;
                     feed = next_feed;
                     if this
                         .update(cx, |this, cx| {
+                            if this.preferences.mangohud_directory != directory {
+                                return;
+                            }
                             let previous = this
                                 .showing_settings(Section::Integrations)
                                 .then(|| this.fps_integration_status());
@@ -525,79 +555,150 @@ impl Dashboard {
         width: f32,
         height: f32,
     ) -> impl IntoElement {
+        use FpsFeature::*;
+
         let state = &self.utilities;
         let tile = col().flex_1().gap(r(6.));
-        if let Some(reading) = &state.fps_reading {
-            let compact = height < 85.;
-            let gap = 8.;
-            let metric_width = (width - 2. * gap) / 3.;
-            let metric = |name, value: Option<f32>, color, size: f32| {
-                let text = value.map_or_else(|| "—".into(), |fps| format!("{fps:.1}"));
-                // Leave enough room for each monospace digit at narrow tile sizes.
-                let fitted_size = size.min(metric_width / (0.64 * text.chars().count() as f32));
-                col()
-                    .flex_1()
-                    .gap(r(2.))
-                    .child(theme.quiet(name).whitespace_nowrap())
-                    .child(
-                        mono(text)
-                            .text_size(r(fitted_size.max(10.)))
-                            .text_color(theme.color(color))
-                            .truncate(),
-                    )
-            };
-            tile.child(
-                split()
-                    .gap(r(gap))
-                    .flex_none()
-                    .child(metric(
-                        "Current",
-                        Some(reading.current),
-                        TEAL,
-                        if compact { 17. } else { 24. },
-                    ))
-                    .child(metric(
-                        "1% low",
-                        reading.low_1,
-                        INK,
-                        if compact { 14. } else { 19. },
-                    ))
-                    .child(metric(
-                        "0.1% low",
-                        reading.low_01,
-                        INK,
-                        if compact { 14. } else { 19. },
-                    )),
-            )
-            .when(height >= 75., |it| {
-                it.child(graph(
-                    (id, 0),
-                    theme,
-                    state.fps_history.clone(),
-                    None,
-                    state.fps_history.iter().copied().fold(60., f32::max),
-                    TEAL,
-                ))
-            })
-            .when(height >= 100., |it| {
-                it.child(
-                    theme
-                        .quiet(match reading.source {
-                            fps::Source::MangoHud(_) => {
-                                format!("MangoHud · last {HISTORY} seconds")
-                            }
-                            fps::Source::Gamescope => "Gamescope · Use MangoHud for lows".into(),
-                        })
-                        .truncate()
-                        .flex_none(),
-                )
-            })
-        } else {
+        let enabled = |feature| !self.preferences.hidden_fps_features.contains(&feature);
+        if !FpsFeature::ALL.into_iter().any(enabled) {
+            return tile.child(theme.quiet("All FPS features are off. Open Setup in Edit layout."));
+        }
+        let Some(reading) = &state.fps_reading else {
             let status = state
                 .fps_error
                 .as_deref()
                 .unwrap_or("Waiting for a game. See Settings → Widgets for MangoHud setup.");
-            tile.child(theme.quiet(status.to_owned()))
+            return tile.child(theme.quiet(status.to_owned()));
+        };
+
+        let compact = height < 85.;
+        let secondary_size: f32 = if compact { 14. } else { 19. };
+        let metrics: Vec<_> = [
+            (
+                CurrentFps,
+                "FPS",
+                Some(reading.current),
+                "",
+                TEAL,
+                if compact { 17. } else { 24. },
+            ),
+            (
+                OnePercentLow,
+                "1% low",
+                reading.low_1,
+                "",
+                INK,
+                secondary_size,
+            ),
+            (
+                PointOnePercentLow,
+                "0.1% low",
+                reading.low_01,
+                "",
+                INK,
+                secondary_size,
+            ),
+            (
+                FrameTime,
+                "Frame time",
+                reading.frame_time_ms,
+                " ms",
+                AMBER,
+                secondary_size,
+            ),
+        ]
+        .into_iter()
+        .filter(|&(feature, ..)| enabled(feature))
+        .collect();
+        let graphs: Vec<_> = [
+            (FpsGraph, "FPS", &state.fps_history, 60., TEAL),
+            (
+                FrameTimeGraph,
+                "Peak frame time",
+                &state.frame_time_history,
+                1000. / 60.,
+                AMBER,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        .filter(|(_, (feature, _, history, _, _))| enabled(*feature) && !history.is_empty())
+        .collect();
+        if metrics.is_empty() && graphs.is_empty() {
+            return tile.child(theme.quiet("The peak frame time graph uses MangoHud frame data."));
         }
+
+        let label_fps_graph = graphs.len() > 1 || !enabled(CurrentFps);
+        let show_graphs = !graphs.is_empty() && (metrics.is_empty() || height >= 75.);
+        tile.when(!metrics.is_empty(), |it| {
+            let gap = 6.;
+            let metrics_width = (width - (metrics.len() - 1) as f32 * gap).max(0.);
+            let weight = |feature| if feature == FrameTime { 7. } else { 6. };
+            let total_weight: f32 = metrics.iter().map(|&(feature, ..)| weight(feature)).sum();
+            let label_size = if width < 240. { 10. } else { 12. };
+            let items = metrics
+                .into_iter()
+                .map(|(feature, name, value, unit, color, size)| {
+                    let width = metrics_width * weight(feature) / total_weight;
+                    let text =
+                        value.map_or_else(|| "—".into(), |value| format!("{value:.1}{unit}"));
+                    let fitted_size = size.min(width / (0.64 * text.chars().count() as f32));
+                    col()
+                        .w(r(width))
+                        .flex_none()
+                        .gap(r(2.))
+                        .child(theme.quiet(name).text_size(r(label_size)).truncate())
+                        .child(
+                            mono(text)
+                                .text_size(r(fitted_size.max(9.)))
+                                .text_color(theme.color(color))
+                                .truncate(),
+                        )
+                });
+            it.child(split().gap(r(gap)).flex_none().children(items))
+        })
+        .when(show_graphs, |it| {
+            let graphs = graphs.into_iter().map(
+                |(index, (feature, name, history, minimum_scale, color))| {
+                    col()
+                        .flex_1()
+                        .gap(r(2.))
+                        .when(feature == FrameTimeGraph || label_fps_graph, |it| {
+                            it.child(
+                                theme
+                                    .quiet(name)
+                                    .text_size(r(11.))
+                                    .line_height(r(14.))
+                                    .text_color(theme.color(color))
+                                    .truncate()
+                                    .flex_none(),
+                            )
+                        })
+                        .child(graph(
+                            (id, index),
+                            theme,
+                            history.clone(),
+                            None,
+                            history.iter().copied().fold(minimum_scale, f32::max),
+                            color,
+                        ))
+                },
+            );
+            it.child(split().flex_1().min_h_0().gap(r(8.)).children(graphs))
+        })
+        .when(height >= 100., |it| {
+            it.child(
+                theme
+                    .quiet(match reading.source {
+                        fps::Source::MangoHud(_) if show_graphs => {
+                            format!("MangoHud · last {HISTORY} seconds")
+                        }
+                        fps::Source::MangoHud(_) => "MangoHud".into(),
+                        fps::Source::Gamescope => "Gamescope · Average FPS".into(),
+                    })
+                    .truncate()
+                    .flex_none(),
+            )
+        })
     }
 }
