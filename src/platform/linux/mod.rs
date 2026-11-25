@@ -5,6 +5,7 @@ pub mod calendar;
 mod discord;
 pub mod launch_display;
 mod media;
+pub mod touch;
 
 use async_channel::{RecvError, Sender};
 use async_io::Timer;

@@ -241,9 +241,6 @@ impl Render for TextInput {
                         color,
                     ));
                 }
-                #[cfg(feature = "ui-gpui")]
-                let _ = line.paint(origin, bounds.size.height, window, cx);
-                #[cfg(not(feature = "ui-gpui"))]
                 let _ = line.paint(
                     origin,
                     bounds.size.height,

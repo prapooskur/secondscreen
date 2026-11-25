@@ -47,11 +47,8 @@ impl Dashboard {
         cx.notify();
     }
 
-    pub(super) fn focus_overlay(&self, window: &mut Window, _cx: &mut Context<Self>) {
-        #[cfg(feature = "ui-gpui")]
-        window.focus(&self.overlay.focus);
-        #[cfg(not(feature = "ui-gpui"))]
-        window.focus(&self.overlay.focus, _cx);
+    pub(super) fn focus_overlay(&self, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.overlay.focus, cx);
     }
 
     pub(super) fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -65,9 +62,6 @@ impl Dashboard {
             .take()
             .filter(|focus| self.focus.contains(focus, window))
             .unwrap_or_else(|| self.focus.clone());
-        #[cfg(feature = "ui-gpui")]
-        window.focus(&previous);
-        #[cfg(not(feature = "ui-gpui"))]
         window.focus(&previous, cx);
         cx.notify();
     }

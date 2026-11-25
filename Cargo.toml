@@ -17,6 +17,7 @@ assets = [
     ["packaging/io.github.secondscreen.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
     ["packaging/io.github.secondscreen.metainfo.xml", "usr/share/metainfo/", "644"],
     ["assets/fonts/*-OFL.txt", "usr/share/doc/secondscreen/", "644"],
+    ["assets/licenses/gpui-LICENSE-APACHE", "usr/share/doc/secondscreen/gpui-LICENSE-APACHE", "644"],
 ]
 
 [package.metadata.generate-rpm]
@@ -27,6 +28,7 @@ assets = [
     { source = "packaging/io.github.secondscreen.svg", dest = "/usr/share/icons/hicolor/scalable/apps/", mode = "644" },
     { source = "packaging/io.github.secondscreen.metainfo.xml", dest = "/usr/share/metainfo/", mode = "644" },
     { source = "assets/fonts/*-OFL.txt", dest = "/usr/share/licenses/secondscreen/", mode = "644" },
+    { source = "assets/licenses/gpui-LICENSE-APACHE", dest = "/usr/share/licenses/secondscreen/gpui-LICENSE-APACHE", mode = "644" },
 ]
 
 [package.metadata.generate-rpm.requires]
@@ -42,7 +44,7 @@ gstreamer1-plugin-libav = "*"
 
 [features]
 default = ["ui-gpui"]
-ui-gpui = ["dep:gpui"]
+ui-gpui = ["dep:gpui", "dep:gpui-standard-platform"]
 ui-gpui-fast = ["dep:gpui-fast-backend", "dep:gpui-fast-platform"]
 
 [dependencies]
@@ -55,9 +57,10 @@ sysinfo = { version = "0.40", default-features = false, features = ["component",
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["async-io", "background"] }
 async-io = "2"
-gpui = { version = "0.2.2", optional = true, default-features = false, features = ["wayland"] }
-gpui-fast-backend = { package = "gpui-fast", version = "0.1.17", optional = true, default-features = false, features = ["wayland", "font-kit"] }
-gpui-fast-platform = { version = "0.1.17", optional = true, default-features = false, features = ["wayland"] }
+gpui = { package = "gpui-pre", version = "=0.3.14", optional = true, default-features = false, features = ["wayland"] }
+gpui-standard-platform = { package = "gpui-pre-platform", version = "=0.3.14", optional = true, default-features = false, features = ["wayland"] }
+gpui-fast-backend = { package = "gpui-fast", version = "=0.1.19", optional = true, default-features = false, features = ["wayland", "font-kit"] }
+gpui-fast-platform = { version = "=0.1.19", optional = true, default-features = false, features = ["wayland"] }
 blocking = "1"
 base64 = "0.22"
 futures-lite = "2"
@@ -65,6 +68,7 @@ jiff = { version = "0.2", default-features = false, features = ["serde", "std", 
 freedesktop-icons = "0.4"
 oo7 = { version = "0.5", default-features = false, features = ["async-std", "native_crypto"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+raw-window-handle = { version = "0.6", features = ["std"] }
 resvg = { version = "0.45.1", default-features = false, features = ["text", "system-fonts"] }
 rustix = { version = "1", features = ["event", "fs", "process", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "rustls-tls-native-roots"] }

@@ -94,9 +94,15 @@ pub(super) struct Layout {
 impl Default for Layout {
     fn default() -> Self {
         Self {
-            widgets: [Kind::Performance, Kind::Media, Kind::Audio, Kind::Discord]
-                .map(Kind::widget)
-                .into(),
+            widgets: [
+                Kind::Performance,
+                Kind::Network,
+                Kind::Media,
+                Kind::Audio,
+                Kind::Discord,
+            ]
+            .map(Kind::widget)
+            .into(),
             ..Self::empty()
         }
     }

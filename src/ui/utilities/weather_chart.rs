@@ -232,8 +232,5 @@ fn paint_label(
     );
     let origin = point(position.x - line.width / 2., position.y);
     let line_height = font_size * 1.3;
-    #[cfg(feature = "ui-gpui")]
-    let _ = line.paint(origin, line_height, window, cx);
-    #[cfg(not(feature = "ui-gpui"))]
     let _ = line.paint(origin, line_height, gpui::TextAlign::Left, None, window, cx);
 }

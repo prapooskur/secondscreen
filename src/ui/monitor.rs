@@ -92,10 +92,14 @@ pub(super) fn capacity(bytes: u64) -> String {
 }
 
 pub(super) fn rate(bytes: f32) -> (String, &'static str) {
-    if bytes >= 1024. * 1024. {
+    if bytes >= 1024. * 1024. * 1024. {
+        (format!("{:.1}", bytes / (1024. * 1024. * 1024.)), "GiB/s")
+    } else if bytes >= 1024. * 1024. {
         (format!("{:.1}", bytes / (1024. * 1024.)), "MiB/s")
-    } else {
+    } else if bytes >= 1024. {
         (format!("{:.1}", bytes / 1024.), "KiB/s")
+    } else {
+        (format!("{bytes:.0}"), "B/s")
     }
 }
 

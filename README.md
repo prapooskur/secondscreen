@@ -4,7 +4,8 @@ Second Screen is a Rust and GPUI dashboard for ultrawide secondary monitors. It 
 
 The app opens to a single resizable widget grid. Use **Edit layout** in the right-hand rail to choose the widgets on your display. **Settings** opens over the grid. Click outside it or press **Esc** to return to the dashboard.
 
-- **Performance** shows selected sensors as a chart, a pair, or a list. **Memory** and **Network** show live system readings and usage history. **Storage** shows each drive's capacity and the space used by mounted filesystems that can be attributed to that drive.
+- **Performance** shows selected sensors as a chart, a pair, or a list. **Memory** shows RAM usage and history. **Storage** shows each drive's capacity and the space used by mounted filesystems that can be attributed to that drive.
+- **Network** shows live download and upload speeds across active network interfaces, with a one-minute history chart. It appears on the default dashboard. Add it to a saved layout from **Edit layout → Add widget → Network**.
 - **Now playing** shows track details, album art, and playback controls. When multiple players are available, use the tabs at the top of the widget to switch between them. Make the widget at least three rows tall to see the seek bar.
 - **Audio** adjusts device volume and mute and lets you set the default output or microphone. Add **App mixer** to adjust playback and recording streams using app icons, mute buttons, and volume sliders. Hover over an icon to see the app and stream names.
 - **Quick controls** puts playback, audio, Discord voice, and dashboard shortcuts in a customizable grid. The icons reflow as you resize the tile. Scroll inside it when space is tight.
@@ -14,7 +15,7 @@ The app opens to a single resizable widget grid. Use **Edit layout** in the righ
 
 ## Install on Linux
 
-Open the **Linux packages** run for your commit under **Actions** on GitHub. Every push builds x86-64 packages with the default GPUI backend. Download and unzip the artifact for your distribution, then install the package inside it.
+Open the **Linux packages** run for your commit under **Actions** on GitHub. Every push builds x86-64 packages with the default `gpui-pre` backend. Download and unzip the artifact for your distribution, then install the package inside it.
 
 | Package | Build environment | Install |
 | --- | --- | --- |
@@ -69,7 +70,7 @@ Choose **Edit layout** to add widgets from the catalog and show widget names and
 
 Use the left rail to switch profiles. **+** creates an empty profile and selects it, up to five total. The existing Home layout becomes profile 1. Each profile saves its own layout and widget options. Select the pencil on the left rail to open the profile editor on the left side of the dashboard. Give the active profile a single letter, a number, or an SVG or PNG image. Secondscreen imports a copy of the image and remembers which profile was selected.
 
-Home fits four grid rows and up to five columns in the visible area. Widgets can span two to four visible rows. When the grid extends to the right, scroll horizontally with a trackpad, use **Shift** + mouse wheel, or use the arrows in the right-hand rail. The app keeps each widget’s requested size when space is limited and saves the layout in `${XDG_CONFIG_HOME:-~/.config}/secondscreen/home.json`.
+Home fits four grid rows and up to five columns in the visible area. Widgets can span two to four visible rows. When the grid extends to the right, swipe across it on a touchscreen, scroll horizontally with a trackpad, use **Shift** + mouse wheel, or use the arrows in the right-hand rail. The app keeps each widget’s requested size when space is limited and saves the layout in `${XDG_CONFIG_HOME:-~/.config}/secondscreen/home.json`.
 
 On the **Quick controls** tile, choose **Setup** in **Edit layout**. Use **+** to add an action, the up and down arrows to set its position, or **×** to remove it. Buttons fill each row from left to right. Each profile saves its own selection and order.
 

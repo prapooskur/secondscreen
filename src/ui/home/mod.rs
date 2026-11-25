@@ -9,8 +9,8 @@ use std::path::PathBuf;
 
 use gpui::{
     AnyElement, Context, DispatchPhase, HitboxBehavior, IntoElement, MouseButton, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, ScrollHandle, ScrollWheelEvent, Window, canvas, div, point,
-    prelude::*, px,
+    MouseUpEvent, Pixels, Point, ScrollEvent, ScrollHandle, Window, canvas, div, point, prelude::*,
+    px,
 };
 
 pub(super) use self::layout::Kind;
@@ -309,7 +309,7 @@ impl Dashboard {
                     .child(content),
             )
             .child(self.control_rail(fullscreen, scrolling, cx))
-            .when(self.home.resizing.is_some(), |it| {
+            .when(self.home.editing, |it| {
                 it.child(self.track_resize(cx))
             })
     }
@@ -516,7 +516,7 @@ impl Dashboard {
         canvas(
             |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
             move |_, hitbox, window, _| {
-                window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+                window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
                     if phase != DispatchPhase::Capture || !hitbox.should_handle_scroll(window) {
                         return;
                     }
@@ -876,6 +876,9 @@ impl Dashboard {
         .cursor_nwse_resize()
         .tab_index(0)
         .focus(move |it| it.border_color(theme.color(TEAL)))
+        .on_mouse_move(|_, _, _| {
+            super::touch::offer_drag(super::touch::DragTarget::Free);
+        })
         .on_mouse_down(MouseButton::Left, move |event, _, cx| {
             pointer.update(cx, |this, cx| {
                 this.home.resizing = Some(Resize {

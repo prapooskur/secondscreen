@@ -100,7 +100,7 @@ fn main() -> anyhow::Result<()> {
     let controls = platform::start(updates, preferences.discord.clone())
         .context("Could not start desktop services")?;
     #[cfg(feature = "ui-gpui")]
-    let app = gpui::Application::new();
+    let app = gpui_standard_platform::application();
     #[cfg(not(feature = "ui-gpui"))]
     let app = gpui_platform::application();
     app.with_assets(ui::IconAssets).run(move |cx: &mut App| {
@@ -147,15 +147,12 @@ fn main() -> anyhow::Result<()> {
         );
         match result {
             Ok(_) => {
-                let on_close = |cx: &mut App| {
+                cx.on_window_closed(|cx, _| {
                     if cx.windows().is_empty() {
                         cx.quit();
                     }
-                };
-                #[cfg(feature = "ui-gpui")]
-                cx.on_window_closed(on_close).detach();
-                #[cfg(not(feature = "ui-gpui"))]
-                cx.on_window_closed(move |cx, _| on_close(cx)).detach();
+                })
+                .detach();
                 cx.activate(true);
             }
             Err(error) => {

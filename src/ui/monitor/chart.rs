@@ -95,9 +95,6 @@ pub(in crate::ui) fn graph(
                 }
                 image
             };
-            #[cfg(feature = "ui-gpui")]
-            let result = window.paint_image(area, Default::default(), image, 0, false);
-            #[cfg(not(feature = "ui-gpui"))]
             let result = window.paint_image(area, area, Default::default(), image, 0, false);
             if let Err(error) = result {
                 log::debug!("Could not paint chart: {error:#}");

@@ -5,7 +5,7 @@ use gpui::{
 };
 use std::{cell::RefCell, rc::Rc};
 
-use super::theme::*;
+use super::{theme::*, touch};
 
 pub type Gesture = Rc<RefCell<Option<(String, f32)>>>;
 
@@ -67,10 +67,11 @@ pub fn slider(
                 let fraction = move |x: Pixels| ((x - left) / width).clamp(0., 1.);
                 let start = gesture.clone();
                 let start_id = track_id.clone();
+                let start_hitbox = hitbox.clone();
                 window.on_mouse_event(move |event: &MouseDownEvent, phase, window, _| {
                     if phase == DispatchPhase::Bubble
                         && event.button == MouseButton::Left
-                        && hitbox.is_hovered(window)
+                        && start_hitbox.is_hovered(window)
                     {
                         *start.borrow_mut() = Some((start_id.clone(), fraction(event.position.x)));
                         window.refresh();
@@ -79,19 +80,24 @@ pub fn slider(
                 let progress = gesture.clone();
                 let progress_id = track_id.clone();
                 window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, _| {
-                    if phase == DispatchPhase::Bubble
-                        && event.pressed_button == Some(MouseButton::Left)
-                        && let Some((_, value)) = progress
-                            .borrow_mut()
-                            .as_mut()
-                            .filter(|(id, _)| id == &progress_id)
-                    {
-                        *value = fraction(event.position.x);
+                    if phase != DispatchPhase::Bubble {
+                        return;
+                    }
+                    if hitbox.is_hovered(window) {
+                        touch::offer_drag(touch::DragTarget::Horizontal);
+                    }
+                    let mut progress = progress.borrow_mut();
+                    if let Some((_, value)) = progress.as_mut().filter(|(id, _)| id == &progress_id) {
+                        if event.pressed_button == Some(MouseButton::Left) {
+                            *value = fraction(event.position.x);
+                        } else {
+                            progress.take();
+                        }
                         window.refresh();
                     }
                 });
                 window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-                    if phase == DispatchPhase::Bubble
+                    if phase == DispatchPhase::Capture
                         && event.button == MouseButton::Left
                         && gesture
                             .borrow()

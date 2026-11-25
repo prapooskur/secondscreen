@@ -396,7 +396,7 @@ impl Dashboard {
         ) {
             return;
         }
-        // GPUI 0.2.2 uses the last key press serial for Wayland clipboard ownership.
+        // Synthesized touch clicks reach this handler without a native Wayland input serial.
         if cfg!(feature = "ui-gpui") && matches!(event, gpui::ClickEvent::Mouse(_)) {
             self.settings.launch_options_copy = LaunchOptionsCopy::Copying;
             cx.spawn(async move |this, cx| {

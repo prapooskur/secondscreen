@@ -3,7 +3,7 @@ use gpui::{AnyElement, Context, Div, FontWeight, IntoElement, Styled, div, prelu
 use crate::model::AudioKind;
 
 use super::super::{
-    Dashboard,
+    Dashboard, HISTORY,
     icons::Icon,
     media::album_art,
     monitor::{gib, graph, rate, storage_list},
@@ -42,7 +42,7 @@ impl Kind {
             Self::Mixer => "App volume and mute",
             Self::Discord => "Voice channel and controls",
             Self::Memory => "RAM usage over time",
-            Self::Network => "Download and upload activity",
+            Self::Network => "Live download and upload speeds",
             Self::Storage => "Drive capacity and usage",
             Self::Viewer => "Web, video, Twitch, and slideshows",
             Self::WorldClock => "Time and date across time zones",
@@ -114,7 +114,7 @@ impl Dashboard {
                 .memory_widget(tile.widget.id, theme, height)
                 .into_any_element(),
             Kind::Network => self
-                .network_widget(tile.widget.id, theme, height)
+                .network_widget(tile.widget.id, theme, width, height)
                 .into_any_element(),
             Kind::Storage => {
                 storage_list(theme, "home-storage", self.visible_disks()).into_any_element()
@@ -177,26 +177,20 @@ impl Dashboard {
             })
     }
 
-    fn network_widget(&self, id: u32, theme: Theme, height: f32) -> impl IntoElement {
-        let top = self
-            .history
-            .download
-            .iter()
-            .chain(&self.history.upload)
-            .copied()
-            .fold(65_536.0, f32::max)
-            * 1.08;
-        let network_rate = |label, amount, color| {
-            let (number, unit) = if self.metrics.network_available {
-                rate(amount)
-            } else {
-                ("—".into(), "")
-            };
-            let compact = height < 60.;
-            let reading = if compact { row() } else { col() };
-            reading
+    fn network_widget(&self, id: u32, theme: Theme, width: f32, height: f32) -> impl IntoElement {
+        let network = self.metrics.network;
+        let text_size = if height < 60. {
+            14.
+        } else if width < 250. {
+            17.
+        } else {
+            22.
+        };
+        let network_rate = |label, amount: Option<f32>, color| {
+            let (number, unit) = amount.map_or_else(|| ("—".into(), ""), rate);
+            col()
                 .flex_1()
-                .gap(r(4.))
+                .gap(r(2.))
                 .child(theme.quiet(label).truncate())
                 .child(
                     row()
@@ -204,11 +198,13 @@ impl Dashboard {
                         .gap(r(4.))
                         .child(
                             mono(number)
-                                .text_size(r(if height >= 75. { 22. } else { 14. }))
+                                .text_size(r(text_size))
                                 .text_color(theme.color(color))
                                 .truncate(),
                         )
-                        .child(theme.quiet(unit).whitespace_nowrap()),
+                        .when(amount.is_some(), |it| {
+                            it.child(theme.quiet(unit).flex_none().whitespace_nowrap())
+                        }),
                 )
         };
         col()
@@ -218,10 +214,26 @@ impl Dashboard {
                 split()
                     .gap(r(8.))
                     .flex_none()
-                    .child(network_rate("Download", self.metrics.download, AMBER))
-                    .child(network_rate("Upload", self.metrics.upload, BLUE)),
+                    .child(network_rate(
+                        "Download",
+                        network.map(|rate| rate.download),
+                        AMBER,
+                    ))
+                    .child(network_rate(
+                        "Upload",
+                        network.map(|rate| rate.upload),
+                        BLUE,
+                    )),
             )
-            .when(height >= 75., |it| {
+            .when(height >= 75. && network.is_some(), |it| {
+                let top = self
+                    .history
+                    .download
+                    .iter()
+                    .chain(&self.history.upload)
+                    .copied()
+                    .fold(1024.0, f32::max)
+                    * 1.08;
                 it.child(graph(
                     (id, 0),
                     theme,
@@ -231,12 +243,11 @@ impl Dashboard {
                     AMBER,
                 ))
             })
-            .when(height >= 105., |it| {
-                it.child(theme.quiet(if self.metrics.network_available {
-                    "Last 60 seconds"
-                } else {
-                    "No active interface"
-                }))
+            .when(height >= 105. && network.is_some(), |it| {
+                it.child(theme.quiet(format!("Last {HISTORY} seconds")))
+            })
+            .when(height >= 60. && network.is_none(), |it| {
+                it.child(theme.quiet("Waiting for network data"))
             })
     }
 

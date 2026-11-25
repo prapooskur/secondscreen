@@ -1,7 +1,7 @@
 use std::time::Instant;
-use sysinfo::{Gpus, Networks, System};
+use sysinfo::{Gpus, InterfaceOperationalState, Networks, System};
 
-use crate::model::{Metrics, Sensor};
+use crate::model::{Metrics, NetworkRates, Sensor};
 
 mod sensors;
 pub(crate) mod storage;
@@ -31,28 +31,36 @@ impl Monitor {
             .last_sample
             .replace(now)
             .map(|then| (now - then).as_secs_f32());
+        let network = self.networks.as_mut().and_then(|networks| {
+            networks.refresh(true);
+            let seconds = elapsed.filter(|&seconds| seconds > 0.)?;
+            let (received, sent) = networks
+                .iter()
+                .filter(|(name, network)| {
+                    *name != "lo"
+                        && !matches!(
+                            network.operational_state(),
+                            InterfaceOperationalState::Down
+                                | InterfaceOperationalState::LowerLayerDown
+                                | InterfaceOperationalState::NotPresent
+                                | InterfaceOperationalState::Testing
+                        )
+                })
+                .map(|(_, network)| (network.received(), network.transmitted()))
+                .reduce(|(received, sent), (rx, tx)| {
+                    (received.saturating_add(rx), sent.saturating_add(tx))
+                })?;
+            Some(NetworkRates {
+                download: received as f32 / seconds,
+                upload: sent as f32 / seconds,
+            })
+        });
         self.system.refresh_cpu_usage();
         self.system.refresh_memory();
-        if let Some(networks) = &mut self.networks {
-            networks.refresh(true);
-        }
         if let Some(gpus) = self.gpus.as_mut() {
             gpus.refresh(true);
         } else {
             self.gpus = Gpus::new_with_refreshed_list().ok();
-        }
-
-        let interfaces = self
-            .networks
-            .iter()
-            .flat_map(|networks| networks.iter())
-            .filter(|(name, _)| *name != "lo" && !name.to_string_lossy().starts_with("Loopback"));
-        let mut network_available = false;
-        let (mut received, mut sent) = (0u64, 0u64);
-        for (_, network) in interfaces {
-            network_available = true;
-            received = received.saturating_add(network.received());
-            sent = sent.saturating_add(network.transmitted());
         }
 
         let memory_used = self.system.used_memory();
@@ -121,9 +129,7 @@ impl Monitor {
                 .unwrap_or_default(),
             memory_used,
             memory_total,
-            download: elapsed.map_or(0.0, |seconds| received as f32 / seconds),
-            upload: elapsed.map_or(0.0, |seconds| sent as f32 / seconds),
-            network_available,
+            network,
         }
     }
 }

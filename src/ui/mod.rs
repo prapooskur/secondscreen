@@ -13,6 +13,7 @@ mod settings;
 mod slider;
 mod text_input;
 mod theme;
+mod touch;
 mod utilities;
 mod viewer;
 
@@ -104,6 +105,7 @@ pub struct Dashboard {
     controls: Controls,
     focus: FocusHandle,
     gesture: slider::Gesture,
+    touch: Option<touch::TouchInput>,
     error: Option<ErrorNotice>,
 }
 
@@ -120,6 +122,11 @@ impl Dashboard {
         Theme::apply(preferences.theme, window.appearance(), cx);
         cx.observe_window_appearance(window, |this, window, cx| {
             Theme::apply(this.preferences.theme, window.appearance(), cx);
+        })
+        .detach();
+        cx.on_app_quit(|this, _| {
+            this.touch.take();
+            async {}
         })
         .detach();
 
@@ -171,9 +178,6 @@ impl Dashboard {
         .detach();
 
         let focus = cx.focus_handle();
-        #[cfg(feature = "ui-gpui")]
-        window.focus(&focus);
-        #[cfg(not(feature = "ui-gpui"))]
         window.focus(&focus, cx);
         Self {
             home: home::Home::load(),
@@ -199,6 +203,7 @@ impl Dashboard {
             controls,
             focus,
             gesture: Rc::new(RefCell::new(None)),
+            touch: touch::TouchInput::start(window, cx),
             error: None,
         }
     }
@@ -227,11 +232,11 @@ impl Dashboard {
                 );
                 append(
                     &mut self.history.download,
-                    metrics.network_available.then_some(metrics.download),
+                    metrics.network.map(|network| network.download),
                 );
                 append(
                     &mut self.history.upload,
-                    metrics.network_available.then_some(metrics.upload),
+                    metrics.network.map(|network| network.upload),
                 );
                 self.metrics = metrics;
                 if redraw {
@@ -392,11 +397,8 @@ impl Dashboard {
             .collect()
     }
 
-    fn focus_dashboard(&self, window: &mut Window, _cx: &mut Context<Self>) {
-        #[cfg(feature = "ui-gpui")]
-        window.focus(&self.focus);
-        #[cfg(not(feature = "ui-gpui"))]
-        window.focus(&self.focus, _cx);
+    fn focus_dashboard(&self, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus, cx);
     }
 
     fn send_audio(&self, action: AudioAction) {
@@ -433,13 +435,6 @@ impl Dashboard {
             "tab" => {
                 let mut first_outside = None;
                 loop {
-                    #[cfg(feature = "ui-gpui")]
-                    if key.modifiers.shift {
-                        window.focus_prev();
-                    } else {
-                        window.focus_next();
-                    }
-                    #[cfg(not(feature = "ui-gpui"))]
                     if key.modifiers.shift {
                         window.focus_prev(cx);
                     } else {

@@ -8,9 +8,14 @@ pub struct Metrics {
     pub sensors: Vec<Sensor>,
     pub memory_used: u64,
     pub memory_total: u64,
+    pub network: Option<NetworkRates>,
+}
+
+#[derive(Clone, Copy)]
+pub struct NetworkRates {
+    // Bytes per second.
     pub download: f32,
     pub upload: f32,
-    pub network_available: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]

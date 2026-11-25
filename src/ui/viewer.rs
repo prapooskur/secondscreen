@@ -433,9 +433,12 @@ impl Viewer {
                     )
                 }
             }))
-            .on_scroll_wheel(cx.listener(|v, e: &gpui::ScrollWheelEvent, _, cx| {
-                v.wake_capture();
+            .on_scroll(cx.listener(|v, e: &gpui::ScrollEvent, _, cx| {
                 let d = e.delta.pixel_delta(px(40.));
+                if d == Point::default() {
+                    return;
+                }
+                v.wake_capture();
                 if let Some(web) = &v.web {
                     web.pointer(
                         3,
@@ -466,9 +469,6 @@ impl Viewer {
                 .on_mouse_down(
                     button,
                     cx.listener(move |v, e: &gpui::MouseDownEvent, window, cx| {
-                        #[cfg(feature = "ui-gpui")]
-                        window.focus(&v.focus);
-                        #[cfg(not(feature = "ui-gpui"))]
                         window.focus(&v.focus, cx);
                         v.wake_capture();
                         if let Some(web) = &v.web {
