@@ -4,12 +4,13 @@ use std::{
     num::NonZeroU32,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context as _, Result, ensure};
 use gpui::{
-    Context, Div, ObjectFit, PathPromptOptions, RenderImage, Task, Window, div, img, prelude::*,
+    Context, Div, Img, ObjectFit, PathPromptOptions, RenderImage, Task, Window, div, ease_in_out,
+    img, prelude::*,
 };
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
 
@@ -22,15 +23,34 @@ const MAX_IMAGE_SIDE: u32 = 8192;
 const MAX_RENDER_SIDE: u32 = 4096;
 const IMAGE_FILE: &str = "background-image";
 const DEFAULT_INTERVAL_MINUTES: NonZeroU32 = NonZeroU32::new(6 * 60).unwrap();
+const CROSSFADE_DURATION: Duration = Duration::from_millis(500);
 
 struct Wallpaper {
     path: PathBuf,
     image: Arc<RenderImage>,
+    opaque: bool,
+}
+
+impl Wallpaper {
+    fn element(&self, opacity: f32) -> Img {
+        img(self.image.clone())
+            .absolute()
+            .inset_0()
+            .size_full()
+            .object_fit(ObjectFit::Cover)
+            .opacity(opacity)
+    }
+}
+
+struct Crossfade {
+    outgoing: Wallpaper,
+    started_at: Instant,
 }
 
 #[derive(Default)]
 pub(crate) struct Background {
     wallpaper: Option<Wallpaper>,
+    crossfade: Option<Crossfade>,
     rotation: Option<Task<()>>,
     pub(super) pending: bool,
     pub(super) unavailable: bool,
@@ -61,29 +81,50 @@ impl Background {
         self.wallpaper.is_some()
     }
 
-    pub(super) fn element(&self, theme: Theme) -> Option<Div> {
-        let image = self.wallpaper.as_ref()?.image.clone();
+    pub(super) fn element(
+        &mut self,
+        theme: Theme,
+        window: &mut Window,
+        cx: &mut Context<Dashboard>,
+    ) -> Option<Div> {
+        let wallpaper = self.wallpaper.as_ref()?;
+        let background = div().absolute().inset_0();
+        let fade = self.crossfade.as_ref().and_then(|fade| {
+            let progress = fade
+                .started_at
+                .elapsed()
+                .div_duration_f32(CROSSFADE_DURATION);
+            (!cx.reduce_motion() && progress < 1.).then(|| (&fade.outgoing, ease_in_out(progress)))
+        });
+        let background = if let Some((outgoing, progress)) = fade {
+            window.request_animation_frame();
+            // Use an opaque base when possible so the theme color doesn't show through mid-fade.
+            if wallpaper.opaque {
+                background
+                    .child(outgoing.element(1.))
+                    .child(wallpaper.element(progress))
+            } else {
+                background
+                    .child(wallpaper.element(if outgoing.opaque { 1. } else { progress }))
+                    .child(outgoing.element(1. - progress))
+            }
+        } else {
+            if let Some(fade) = self.crossfade.take() {
+                cx.drop_image(fade.outgoing.image, Some(window));
+            }
+            background.child(wallpaper.element(1.))
+        };
         let tint = match theme {
             Theme::Dark => 0.26,
             Theme::Light => 0.30,
         };
         Some(
-            div()
-                .absolute()
-                .inset_0()
-                .child(
-                    img(image)
-                        .absolute()
-                        .inset_0()
-                        .size_full()
-                        .object_fit(ObjectFit::Cover),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .bg(theme.color(BACK).opacity(tint)),
-                ),
+            background.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(theme.color(BACK).opacity(tint)),
+            ),
         )
     }
 
@@ -267,11 +308,21 @@ impl Dashboard {
     fn set_background(
         &mut self,
         wallpaper: Option<Wallpaper>,
-        window: Option<&mut Window>,
+        mut window: Option<&mut Window>,
         cx: &mut Context<Self>,
     ) {
+        if let Some(fade) = self.background.crossfade.take() {
+            cx.drop_image(fade.outgoing.image, window.as_deref_mut());
+        }
         if let Some(previous) = std::mem::replace(&mut self.background.wallpaper, wallpaper) {
-            cx.drop_image(previous.image, window);
+            if self.background.wallpaper.is_some() && !cx.reduce_motion() {
+                self.background.crossfade = Some(Crossfade {
+                    outgoing: previous,
+                    started_at: Instant::now(),
+                });
+            } else {
+                cx.drop_image(previous.image, window);
+            }
         }
         self.background.unavailable = false;
     }
@@ -286,7 +337,7 @@ fn load_saved() -> Result<Option<Wallpaper>> {
         return Ok(None);
     };
     match File::open(&path) {
-        Ok(file) => read_image(file).map(|(_, image)| Some(Wallpaper { path, image })),
+        Ok(file) => read_image(file, path).map(|(_, wallpaper)| Some(wallpaper)),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
@@ -296,15 +347,12 @@ fn import_image(path: &Path) -> Result<Wallpaper> {
     let destination = background_path()?;
     ensure!(path.is_file(), "Choose an image file.");
     let file = File::open(path).context("Could not open the selected image")?;
-    let (bytes, image) = read_image(file)?;
-    config::write_file(&destination, |file| {
+    let (bytes, wallpaper) = read_image(file, destination)?;
+    config::write_file(&wallpaper.path, |file| {
         file.write_all(&bytes).map_err(Into::into)
     })
     .context("Could not save the background image")?;
-    Ok(Wallpaper {
-        path: destination,
-        image,
-    })
+    Ok(wallpaper)
 }
 
 fn next_wallpaper(folder: &Path, previous: Option<&Path>) -> Result<Wallpaper> {
@@ -323,11 +371,9 @@ fn next_wallpaper(folder: &Path, previous: Option<&Path>) -> Result<Wallpaper> {
         .chain(&files[..start])
         .find_map(|path| {
             let file = File::open(path).ok()?;
-            let (_, image) = read_image(file).ok()?;
-            Some(Wallpaper {
-                path: path.clone(),
-                image,
-            })
+            read_image(file, path.clone())
+                .ok()
+                .map(|(_, wallpaper)| wallpaper)
         })
         .context("No readable PNG, JPEG, WebP, or GIF images were found in this folder.")
 }
@@ -339,7 +385,7 @@ fn supported_format(format: ImageFormat) -> bool {
     )
 }
 
-fn read_image(file: File) -> Result<(Vec<u8>, Arc<RenderImage>)> {
+fn read_image(file: File, path: PathBuf) -> Result<(Vec<u8>, Wallpaper)> {
     let mut bytes = Vec::new();
     file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
     ensure!(
@@ -369,12 +415,18 @@ fn read_image(file: File) -> Result<(Vec<u8>, Arc<RenderImage>)> {
         image = image.thumbnail(MAX_RENDER_SIDE, MAX_RENDER_SIDE);
     }
     let mut image = image.into_rgba8();
+    let mut opaque = true;
     for pixel in image.pixels_mut() {
         pixel.0.swap(0, 2);
+        opaque = opaque && pixel.0[3] == u8::MAX;
     }
     Ok((
         bytes,
-        Arc::new(RenderImage::new([image::Frame::new(image)])),
+        Wallpaper {
+            path,
+            image: Arc::new(RenderImage::new([image::Frame::new(image)])),
+            opaque,
+        },
     ))
 }
 

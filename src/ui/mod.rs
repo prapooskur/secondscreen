@@ -570,7 +570,7 @@ impl Render for Dashboard {
             .size_full()
             .bg(theme.color(BACK))
             .overflow_hidden()
-            .children(self.background.element(theme))
+            .children(self.background.element(theme, window, cx))
             .child(home)
             .children(
                 self.overlay
