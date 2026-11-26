@@ -22,6 +22,8 @@ Open the **Linux packages** run for your commit under **Actions** on GitHub. Eve
 | RPM | Fedora 45 | `sudo dnf install ./*.rpm` |
 | Flatpak | GNOME 51 runtime from Flathub | `flatpak install --user ./*.flatpak` |
 
+Use the RPM built for your Fedora release. For another Fedora release, build the RPM there or in a matching Fedora container. The RPM filename includes the release, such as `.fc45.x86_64.rpm`. On Fedora Atomic desktops, use `sudo rpm-ostree install ./*.rpm` and reboot.
+
 Launch **Second Screen** from your app menu in a Wayland session. Flatpak keeps its settings separately under `~/.var/app/io.github.secondscreen`. Host notification monitoring and compositor-specific display placement require a native package. System monitor reports usage for filesystems visible inside the sandbox, including drives mounted under `/media`, `/mnt`, and `/run/media`.
 
 ### Build packages locally
