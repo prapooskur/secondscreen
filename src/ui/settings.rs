@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     io::{ErrorKind, Write},
+    num::NonZeroU32,
     process::{Command, Stdio},
 };
 
@@ -82,6 +83,7 @@ pub(super) struct SettingsView {
     pub(super) quick_controls_setup: bool,
     start_at_login: bool,
     start_at_login_pending: bool,
+    pub(super) background_interval_field: Option<Entity<TextInput>>,
     discord_fields: Option<DiscordFields>,
     discord_saved: bool,
     widget_fields: Option<(Entity<TextInput>, Entity<TextInput>)>,
@@ -96,6 +98,7 @@ impl SettingsView {
             quick_controls_setup: false,
             start_at_login: false,
             start_at_login_pending: false,
+            background_interval_field: None,
             discord_fields: None,
             discord_saved: false,
             widget_fields: None,
@@ -178,6 +181,7 @@ impl Dashboard {
         self.gesture.borrow_mut().take();
         self.settings.quick_controls_setup = false;
         self.home_assistant.close_settings();
+        self.settings.background_interval_field = None;
         self.settings.widget_fields = None;
         self.settings.mangohud_directory_field = None;
         if !matches!(
@@ -512,7 +516,7 @@ impl Dashboard {
         cx.notify();
     }
 
-    fn general_settings(&self, cx: &Context<Self>) -> impl IntoElement {
+    fn general_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::current(cx);
         let fullscreen_view = cx.entity();
         let autostart_view = cx.entity();
@@ -598,26 +602,27 @@ impl Dashboard {
             .child(self.launch_display_settings(theme, cx))
     }
 
-    fn background_settings(&self, theme: Theme, cx: &Context<Self>) -> impl IntoElement {
+    fn background_settings(&mut self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let slideshow = self.preferences.background_slideshow.as_ref();
         let view = cx.entity();
-        let choose = theme
-            .button("choose-background", None)
-            .h(r(30.))
-            .child("Choose image…");
+        let choices =
+            [("Choose image…", false), ("Choose folder…", true)].map(|(label, directory)| {
+                let button = theme.button(label, None).h(r(30.)).child(label);
+                if self.background.pending {
+                    disabled(button)
+                } else {
+                    let view = view.clone();
+                    theme.bind(button, move |_, cx| {
+                        view.update(cx, |this, cx| this.choose_background(directory, cx))
+                    })
+                }
+            });
         let reset = theme
             .button("reset-background", None)
             .h(r(30.))
             .child("Reset");
-        let choose = if self.background.pending {
-            disabled(choose)
-        } else {
-            let view = view.clone();
-            theme.bind(choose, move |_, cx| {
-                view.update(cx, |this, cx| this.choose_background(cx))
-            })
-        };
         let reset = if !self.background.pending
-            && (self.background.has_image() || self.background.unavailable)
+            && (slideshow.is_some() || self.background.has_image() || self.background.unavailable)
         {
             theme.bind(reset, move |window, cx| {
                 view.update(cx, |this, cx| this.reset_background(window, cx))
@@ -626,21 +631,95 @@ impl Dashboard {
             disabled(reset)
         };
         let detail = if self.background.pending {
-            "Opening image…"
+            "Opening background…".into()
+        } else if let Some(slideshow) = slideshow {
+            if self.background.unavailable {
+                format!("Folder unavailable · {}", slideshow.folder.display())
+            } else {
+                slideshow.folder.display().to_string()
+            }
         } else if self.background.unavailable {
-            "Saved image unavailable"
+            "Saved image unavailable".into()
         } else if self.background.has_image() {
-            "Custom image"
+            "Custom image".into()
         } else {
-            "PNG, JPEG, WebP, or GIF"
+            "PNG, JPEG, WebP, or GIF".into()
         };
-        preference_row(
-            theme,
-            "background-row",
-            "Background image",
-            detail,
-            row().gap(r(5.)).child(choose).child(reset),
-        )
+        let interval = slideshow.map(|slideshow| slideshow.interval_minutes);
+        col()
+            .id("background-row")
+            .flex_none()
+            .gap(r(5.))
+            .p(r(8.))
+            .rounded(r(8.))
+            .border_1()
+            .border_color(theme.color(STROKE))
+            .bg(theme.color(BACK).opacity(0.44))
+            .child(
+                row()
+                    .gap(r(10.))
+                    .justify_between()
+                    .child(
+                        theme
+                            .label("Background image")
+                            .text_color(theme.color(INK))
+                            .truncate(),
+                    )
+                    .child(row().flex_none().gap(r(5.)).children(choices).child(reset)),
+            )
+            .child(
+                theme
+                    .quiet(detail.clone())
+                    .id("background-detail")
+                    .truncate()
+                    .tooltip(move |_, cx| cx.new(|_| Tooltip(detail.clone().into())).into()),
+            )
+            .children(interval.map(|minutes| self.background_interval_setting(theme, minutes, cx)))
+    }
+
+    fn background_interval_setting(
+        &mut self,
+        theme: Theme,
+        minutes: NonZeroU32,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let input = self
+            .settings
+            .background_interval_field
+            .get_or_insert_with(|| cx.new(|cx| TextInput::new(minutes.to_string(), false, cx)))
+            .clone();
+        let view = cx.entity();
+        let save = theme
+            .button("save-background-interval", Some(TEAL))
+            .h(r(30.))
+            .child("Save");
+        let save = if self.background.pending {
+            disabled(save)
+        } else {
+            let input = input.clone();
+            theme.bind(save, move |_, cx| {
+                let minutes = input.read(cx).value.trim().parse::<NonZeroU32>();
+                view.update(cx, |this, cx| {
+                    if let Ok(minutes) = minutes {
+                        if this.set_background_interval(minutes, cx) {
+                            input.update(cx, |input, cx| input.set_value(minutes.to_string(), cx));
+                        }
+                    } else {
+                        this.set_error(
+                            "Enter a whole number of minutes greater than zero.".into(),
+                            cx,
+                        );
+                        cx.notify();
+                    }
+                });
+            })
+        };
+        row()
+            .gap(r(7.))
+            .child(theme.label("Change wallpaper every"))
+            .child(div().w(r(70.)).child(input))
+            .child(theme.quiet("minutes"))
+            .child(save)
     }
 
     fn widget_style_settings(&self, theme: Theme, cx: &Context<Self>) -> impl IntoElement {

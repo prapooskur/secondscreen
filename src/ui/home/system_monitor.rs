@@ -219,11 +219,17 @@ impl Dashboard {
             .fold(0., f32::max);
         widget
             .child(if cards.is_empty() {
-                readings.child(theme.quiet(if options.readings.is_empty() {
-                    "Add cards in Edit layout → Setup."
-                } else {
-                    "No visible drives."
-                }))
+                readings
+                    .gap(r(GAP))
+                    .when(options.readings.is_empty() && self.home.editing, |it| {
+                        it.child(theme.quiet("No cards yet."))
+                    })
+                    .when(!options.readings.is_empty(), |it| {
+                        it.child(theme.quiet("No visible drives."))
+                    })
+                    .when(!self.home.editing, |it| {
+                        it.child(row().child(self.monitor_add_cards_button(id, cx)))
+                    })
             } else {
                 readings.child(
                     div()

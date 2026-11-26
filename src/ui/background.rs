@@ -1,15 +1,19 @@
 use std::{
     fs::{self, File},
     io::{Cursor, ErrorKind, Read, Write},
+    num::NonZeroU32,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use anyhow::{Context as _, Result, ensure};
-use gpui::{Context, Div, ObjectFit, PathPromptOptions, RenderImage, Window, div, img, prelude::*};
+use gpui::{
+    Context, Div, ObjectFit, PathPromptOptions, RenderImage, Task, Window, div, img, prelude::*,
+};
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
 
-use crate::config;
+use crate::config::{self, BackgroundSlideshow};
 
 use super::{Dashboard, theme::*};
 
@@ -17,29 +21,44 @@ const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_IMAGE_SIDE: u32 = 8192;
 const MAX_RENDER_SIDE: u32 = 4096;
 const IMAGE_FILE: &str = "background-image";
+const DEFAULT_INTERVAL_MINUTES: NonZeroU32 = NonZeroU32::new(10).unwrap();
+
+struct Wallpaper {
+    path: PathBuf,
+    image: Arc<RenderImage>,
+}
 
 #[derive(Default)]
 pub(super) struct Background {
-    image: Option<Arc<RenderImage>>,
+    wallpaper: Option<Wallpaper>,
+    rotation: Option<Task<()>>,
     pub(super) pending: bool,
     pub(super) unavailable: bool,
 }
 
 impl Background {
-    pub(super) fn load(cx: &mut Context<Dashboard>) -> Self {
-        let Some(path) = config::path(IMAGE_FILE) else {
-            return Self::default();
-        };
+    pub(super) fn load(
+        slideshow: Option<&BackgroundSlideshow>,
+        cx: &mut Context<Dashboard>,
+    ) -> Self {
+        let folder = slideshow.map(|slideshow| slideshow.folder.clone());
         cx.spawn(async move |this, cx| {
-            let result = blocking::unblock(move || load_saved(&path)).await;
+            let result = blocking::unblock(move || match folder {
+                Some(folder) => next_wallpaper(&folder, None).map(Some),
+                None => load_saved(),
+            })
+            .await;
             let _ = this.update(cx, |this, cx| {
                 this.background.pending = false;
                 match result {
-                    Ok(image) => this.background.image = image,
+                    Ok(wallpaper) => this.set_background(wallpaper, None, cx),
                     Err(error) => {
-                        log::warn!("Could not load the background image: {error:#}");
+                        log::warn!("Could not load the background: {error:#}");
                         this.background.unavailable = true;
                     }
+                }
+                if let Some(slideshow) = this.preferences.background_slideshow.clone() {
+                    this.background.start_rotation(slideshow, cx);
                 }
                 cx.notify();
             });
@@ -52,11 +71,11 @@ impl Background {
     }
 
     pub(super) fn has_image(&self) -> bool {
-        self.image.is_some()
+        self.wallpaper.is_some()
     }
 
     pub(super) fn element(&self, theme: Theme) -> Option<Div> {
-        let image = self.image.clone()?;
+        let image = self.wallpaper.as_ref()?.image.clone();
         let tint = match theme {
             Theme::Dark => 0.26,
             Theme::Light => 0.30,
@@ -80,45 +99,140 @@ impl Background {
                 ),
         )
     }
+
+    fn start_rotation(&mut self, slideshow: BackgroundSlideshow, cx: &mut Context<Dashboard>) {
+        let mut previous = self
+            .wallpaper
+            .as_ref()
+            .map(|wallpaper| wallpaper.path.clone());
+        let interval = Duration::from_secs(u64::from(slideshow.interval_minutes.get()) * 60);
+        self.rotation = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(interval).await;
+                let folder = slideshow.folder.clone();
+                let current = previous.clone();
+                let next =
+                    blocking::unblock(move || next_wallpaper(&folder, current.as_deref())).await;
+                if this
+                    .update(cx, |this, cx| match next {
+                        Ok(wallpaper) => {
+                            previous = Some(wallpaper.path.clone());
+                            this.set_background(Some(wallpaper), None, cx);
+                            cx.notify();
+                        }
+                        Err(error) if !this.background.unavailable => {
+                            log::warn!("Could not rotate the background: {error:#}");
+                            this.background.unavailable = true;
+                            cx.notify();
+                        }
+                        Err(_) => {}
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+    }
 }
 
 impl Dashboard {
-    pub(super) fn choose_background(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn choose_background(&mut self, directory: bool, cx: &mut Context<Self>) {
         if self.background.pending {
             return;
         }
         let result = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
+            files: !directory,
+            directories: directory,
             multiple: false,
             prompt: Some("Use as dashboard background".into()),
         });
         self.background.pending = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = match result.await {
-                Ok(Ok(paths)) => match paths.and_then(|paths| paths.into_iter().next()) {
-                    Some(path) => blocking::unblock(move || import_image(path))
-                        .await
-                        .map(Some),
-                    None => Ok(None),
-                },
-                Ok(Err(error)) => Err(error),
-                Err(error) => Err(error.into()),
-            };
+            let result = async {
+                let paths = result.await??;
+                let Some(path) = paths.and_then(|paths| paths.into_iter().next()) else {
+                    return Ok(None);
+                };
+                blocking::unblock(move || {
+                    let wallpaper = if directory {
+                        next_wallpaper(&path, None)?
+                    } else {
+                        import_image(&path)?
+                    };
+                    Ok::<_, anyhow::Error>(Some((path, wallpaper)))
+                })
+                .await
+            }
+            .await;
             let _ = this.update(cx, |this, cx| {
                 this.background.pending = false;
                 match result {
-                    Ok(Some(image)) => this.set_background(Some(image), None, cx),
+                    Ok(Some((folder, wallpaper))) if directory => {
+                        this.set_background_folder(folder, wallpaper, cx);
+                    }
+                    Ok(Some((_, wallpaper))) => {
+                        this.set_static_background(Some(wallpaper), None, cx);
+                    }
                     Ok(None) => {}
                     Err(error) => {
-                        this.set_error(format!("Could not set the background image: {error:#}"), cx)
+                        this.set_error(format!("Could not set the background: {error:#}"), cx)
                     }
                 }
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    fn set_background_folder(
+        &mut self,
+        folder: PathBuf,
+        wallpaper: Wallpaper,
+        cx: &mut Context<Self>,
+    ) {
+        let interval_minutes = self
+            .preferences
+            .background_slideshow
+            .as_ref()
+            .map_or(DEFAULT_INTERVAL_MINUTES, |slideshow| {
+                slideshow.interval_minutes
+            });
+        let slideshow = BackgroundSlideshow {
+            folder,
+            interval_minutes,
+        };
+        let mut preferences = self.preferences.clone();
+        preferences.background_slideshow = Some(slideshow.clone());
+        if self.save_preferences(preferences, cx) {
+            self.set_background(Some(wallpaper), None, cx);
+            self.background.start_rotation(slideshow, cx);
+        }
+    }
+
+    pub(super) fn set_background_interval(
+        &mut self,
+        minutes: NonZeroU32,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.background.pending {
+            return false;
+        }
+        let mut preferences = self.preferences.clone();
+        let Some(slideshow) = &mut preferences.background_slideshow else {
+            return false;
+        };
+        if slideshow.interval_minutes == minutes {
+            return true;
+        }
+        slideshow.interval_minutes = minutes;
+        let slideshow = slideshow.clone();
+        if !self.save_preferences(preferences, cx) {
+            return false;
+        }
+        self.background.start_rotation(slideshow, cx);
+        true
     }
 
     pub(super) fn reset_background(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -131,7 +245,7 @@ impl Dashboard {
             Err(error) => Err(error.into()),
         });
         match result {
-            Ok(()) => self.set_background(None, Some(window), cx),
+            Ok(()) => self.set_static_background(None, Some(window), cx),
             Err(error) => self.set_error(
                 format!("Could not reset the background image: {error:#}"),
                 cx,
@@ -140,17 +254,35 @@ impl Dashboard {
         cx.notify();
     }
 
-    fn set_background(
+    fn set_static_background(
         &mut self,
-        image: Option<Arc<RenderImage>>,
+        wallpaper: Option<Wallpaper>,
         window: Option<&mut Window>,
         cx: &mut Context<Self>,
     ) {
-        if let Some(previous) = std::mem::replace(&mut self.background.image, image) {
-            cx.drop_image(previous, window);
+        if self.preferences.background_slideshow.is_some() {
+            let mut preferences = self.preferences.clone();
+            preferences.background_slideshow = None;
+            if !self.save_preferences(preferences, cx) {
+                return;
+            }
+            self.background.rotation = None;
+            self.settings.background_interval_field = None;
+        }
+        self.set_background(wallpaper, window, cx);
+        self.error = None;
+    }
+
+    fn set_background(
+        &mut self,
+        wallpaper: Option<Wallpaper>,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(previous) = std::mem::replace(&mut self.background.wallpaper, wallpaper) {
+            cx.drop_image(previous.image, window);
         }
         self.background.unavailable = false;
-        self.error = None;
     }
 }
 
@@ -158,15 +290,18 @@ fn background_path() -> Result<PathBuf> {
     config::path(IMAGE_FILE).context("No settings directory is available.")
 }
 
-fn load_saved(path: &Path) -> Result<Option<Arc<RenderImage>>> {
-    match File::open(path) {
-        Ok(file) => read_image(file).map(|(_, image)| Some(image)),
+fn load_saved() -> Result<Option<Wallpaper>> {
+    let Some(path) = config::path(IMAGE_FILE) else {
+        return Ok(None);
+    };
+    match File::open(&path) {
+        Ok(file) => read_image(file).map(|(_, image)| Some(Wallpaper { path, image })),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
 }
 
-fn import_image(path: PathBuf) -> Result<Arc<RenderImage>> {
+fn import_image(path: &Path) -> Result<Wallpaper> {
     let destination = background_path()?;
     ensure!(path.is_file(), "Choose an image file.");
     let file = File::open(path).context("Could not open the selected image")?;
@@ -175,7 +310,42 @@ fn import_image(path: PathBuf) -> Result<Arc<RenderImage>> {
         file.write_all(&bytes).map_err(Into::into)
     })
     .context("Could not save the background image")?;
-    Ok(image)
+    Ok(Wallpaper {
+        path: destination,
+        image,
+    })
+}
+
+fn next_wallpaper(folder: &Path, previous: Option<&Path>) -> Result<Wallpaper> {
+    let mut files = fs::read_dir(folder)
+        .with_context(|| format!("Could not open {}", folder.display()))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| ImageFormat::from_path(path).is_ok_and(supported_format) && path.is_file())
+        .collect::<Vec<_>>();
+    files.sort();
+    let start = previous.map_or(0, |previous| {
+        files.partition_point(|path| path.as_path() <= previous)
+    });
+    files[start..]
+        .iter()
+        .chain(&files[..start])
+        .find_map(|path| {
+            let file = File::open(path).ok()?;
+            let (_, image) = read_image(file).ok()?;
+            Some(Wallpaper {
+                path: path.clone(),
+                image,
+            })
+        })
+        .context("No readable PNG, JPEG, WebP, or GIF images were found in this folder.")
+}
+
+fn supported_format(format: ImageFormat) -> bool {
+    matches!(
+        format,
+        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP | ImageFormat::Gif
+    )
 }
 
 fn read_image(file: File) -> Result<(Vec<u8>, Arc<RenderImage>)> {
@@ -188,10 +358,7 @@ fn read_image(file: File) -> Result<(Vec<u8>, Arc<RenderImage>)> {
 
     let mut reader = ImageReader::new(Cursor::new(&bytes)).with_guessed_format()?;
     ensure!(
-        matches!(
-            reader.format(),
-            Some(ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP | ImageFormat::Gif)
-        ),
+        reader.format().is_some_and(supported_format),
         "Choose a PNG, JPEG, WebP, or GIF image."
     );
     let mut limits = Limits::default();
@@ -218,4 +385,30 @@ fn read_image(file: File) -> Result<(Vec<u8>, Arc<RenderImage>)> {
         bytes,
         Arc::new(RenderImage::new([image::Frame::new(image)])),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rotation_skips_unreadable_images_and_wraps_in_filename_order() {
+        let directory = tempfile::tempdir().unwrap();
+        let folder = directory.path();
+        let first = folder.join("01.PNG");
+        let last = folder.join("03.png");
+        let image = DynamicImage::new_rgb8(1, 1);
+        image.save_with_format(&last, ImageFormat::Png).unwrap();
+        image.save_with_format(&first, ImageFormat::Png).unwrap();
+        fs::write(folder.join("02.jpg"), b"not an image").unwrap();
+
+        assert_eq!(next_wallpaper(folder, None).unwrap().path, first);
+        assert_eq!(next_wallpaper(folder, Some(&first)).unwrap().path, last);
+        assert_eq!(next_wallpaper(folder, Some(&last)).unwrap().path, first);
+
+        fs::remove_file(&first).unwrap();
+        assert_eq!(next_wallpaper(folder, Some(&first)).unwrap().path, last);
+        fs::remove_file(&last).unwrap();
+        assert!(next_wallpaper(folder, Some(&last)).is_err());
+    }
 }

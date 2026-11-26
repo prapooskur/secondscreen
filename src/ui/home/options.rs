@@ -87,6 +87,20 @@ impl Default for MonitorOptions {
     }
 }
 
+impl MonitorOptions {
+    pub(super) fn starter() -> Self {
+        let mut chart = sensor("cpu".into(), MonitorDisplay::Chart);
+        chart
+            .chart
+            .additional
+            .push(MonitorSource::Sensor("memory".into()));
+        Self {
+            readings: vec![chart],
+            ..Self::default()
+        }
+    }
+}
+
 fn sensor(key: String, display: MonitorDisplay) -> MonitorReading {
     MonitorReading::new(MonitorSource::Sensor(key), display)
 }

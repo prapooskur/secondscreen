@@ -15,8 +15,10 @@ use gpui::{
 
 pub(super) use self::layout::Kind;
 use self::layout::{Layout, MAX_COLUMNS, MIN_ROWS, Placement, VISIBLE_ROWS, Widget, shifted_span};
-pub(super) use self::profiles::{Badge, MAX_PROFILES, Profile, ProfileDetails, import_profile_image};
 use self::profiles::Profiles;
+pub(super) use self::profiles::{
+    Badge, MAX_PROFILES, Profile, ProfileDetails, import_profile_image,
+};
 use self::system_monitor::MonitorSetup;
 use super::{
     Dashboard, Tooltip,
@@ -647,26 +649,25 @@ impl Dashboard {
             0.
         };
         let body_height = height - tabs_height;
-        let setup_open = editing
-            && match kind {
-                Kind::SystemMonitor => self
-                    .home
-                    .monitor_setup
-                    .as_ref()
-                    .is_some_and(|setup| setup.id == tile.widget.id),
-                Kind::Fps => self.home.fps_setup == Some(tile.widget.id),
-                Kind::Viewer => self
-                    .viewers
-                    .get(&tile.widget.id)
-                    .is_some_and(|viewer| viewer.read(cx).is_editing()),
-                _ => false,
-            };
+        let setup_open = match kind {
+            Kind::SystemMonitor => self
+                .home
+                .monitor_setup
+                .as_ref()
+                .is_some_and(|setup| setup.id == tile.widget.id),
+            Kind::Fps => self.home.fps_setup == Some(tile.widget.id),
+            Kind::Viewer => self
+                .viewers
+                .get(&tile.widget.id)
+                .is_some_and(|viewer| viewer.read(cx).is_editing()),
+            _ => false,
+        };
         let padding = if kind == Kind::SystemMonitor && !setup_open {
             0.
         } else {
             widget_padding(body_height)
         };
-        let vertical_padding = if setup_open {
+        let vertical_padding = if editing && setup_open {
             WIDGET_CONTROL_HEIGHT + 2. * WIDGET_CONTROL_INSET
         } else {
             padding

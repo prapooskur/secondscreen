@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
     io::{ErrorKind, Write},
+    num::NonZeroU32,
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -17,6 +18,8 @@ pub struct Preferences {
     pub widget_style: WidgetStyle,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub glass_transparency: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background_slideshow: Option<BackgroundSlideshow>,
     pub start_fullscreen: bool,
     pub launch_display: Option<String>,
     pub clock_zones: Option<Vec<String>>,
@@ -36,6 +39,12 @@ pub struct Preferences {
     pub discord: Option<DiscordCredentials>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub home_assistant: Option<HomeAssistantCredentials>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct BackgroundSlideshow {
+    pub folder: PathBuf,
+    pub interval_minutes: NonZeroU32,
 }
 
 #[derive(Clone, Copy, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]

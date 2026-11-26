@@ -57,6 +57,8 @@ In **Settings → General**, enable **Start at login** to open Second Screen whe
 
 Use **Launch display** in **Settings → General** to choose a connected output on Sway or KDE Plasma 6 on Wayland. The dashboard moves to that display and returns to it when it reconnects or the system wakes from sleep, preserving the selected fullscreen or windowed mode. If the display is disconnected at launch, the desktop chooses an output until the selected display returns. On GNOME, the desktop chooses the display.
 
+In **Settings → General → Background image**, select **Choose folder…** to cycle through its PNG, JPEG, WebP, and GIF images in filename order. Rotation defaults to 10 minutes. Enter a positive whole number of minutes and select **Save** to change it. **Choose image…** switches to a single image, and **Reset** restores the default background.
+
 The same app can also be built with GPUI Fast:
 
 ```sh
@@ -77,7 +79,7 @@ On the **Quick controls** tile, choose **Setup** in **Edit layout**. Use **+** t
 
 ## Configure System monitor
 
-In **Edit layout**, choose **Setup** on a System monitor tile. New monitors start empty. Select **Add card**, pick **Bar**, **Chart**, or **Gauge**, then choose the metric to display. Each card shows its display type above its metrics. Use **Edit** to change a card’s type or metrics, or use the arrows to reorder cards. The **Top bar** toggle controls the widget title, CPU model, and host uptime.
+The starter dashboard shows live CPU and memory usage. Select **Add cards** directly on an empty System monitor tile, or open **Edit layout → Setup** and select **Add card**. Pick **Bar**, **Chart**, or **Gauge**, then choose the metric to display. Each card shows its display type above its metrics. Use **Edit** to change a card’s type or metrics, or use the arrows to reorder cards. The **Top bar** toggle controls the widget title, CPU model, and host uptime.
 
 In the chart editor, use **Add metric** to select up to four readings. **Separate plots** puts them side by side when space allows. **Shared graph** overlays them with color-coded values. Readings with the same units share a scale, and mixed units use independent scales. Hover over a reading for its full label and scale.
 

@@ -68,6 +68,34 @@ enum Change {
 }
 
 impl Dashboard {
+    fn set_monitor_setup(
+        &mut self,
+        id: u32,
+        page: Option<Page>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.home.fps_setup = None;
+        self.home.monitor_setup = page.map(|page| MonitorSetup { id, page });
+        self.focus_dashboard(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn monitor_add_cards_button(&self, id: u32, cx: &Context<Self>) -> Stateful<Div> {
+        let theme = Theme::current(cx);
+        let view = cx.entity();
+        theme.bind(
+            theme
+                .button(("monitor-add-cards", id as usize), Some(TEAL))
+                .child("Add cards"),
+            move |window, cx| {
+                view.update(cx, |this, cx| {
+                    this.set_monitor_setup(id, Some(Page::AddCard), window, cx);
+                })
+            },
+        )
+    }
+
     pub(in crate::ui::home) fn monitor_setup_button(
         &self,
         id: u32,
@@ -88,13 +116,7 @@ impl Dashboard {
                 .child(if open { "Done" } else { "Setup" }),
             move |window, cx| {
                 view.update(cx, |this, cx| {
-                    this.home.fps_setup = None;
-                    this.home.monitor_setup = (!open).then_some(MonitorSetup {
-                        id,
-                        page: Page::Cards,
-                    });
-                    this.focus_dashboard(window, cx);
-                    cx.notify();
+                    this.set_monitor_setup(id, (!open).then_some(Page::Cards), window, cx);
                 })
             },
         )
@@ -113,7 +135,7 @@ impl Dashboard {
             Page::AddCard => (
                 row()
                     .child(back())
-                    .child(theme.label("Choose a display type")),
+                    .child(theme.label("Display type").truncate()),
                 self.monitor_card_types(id, theme, cx).into_any_element(),
             ),
             Page::Pick(pick, search) => {
@@ -187,7 +209,15 @@ impl Dashboard {
             .id(("monitor-setup-menu", id as usize))
             .flex_1()
             .gap(r(6.))
-            .child(controls.flex_none().gap(r(5.)))
+            .child(
+                row()
+                    .flex_none()
+                    .gap(r(5.))
+                    .child(controls.flex_1().min_w_0().gap(r(5.)))
+                    .when(!self.home.editing, |it| {
+                        it.child(self.monitor_setup_button(id, cx))
+                    }),
+            )
             .child(body)
     }
 

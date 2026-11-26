@@ -182,8 +182,8 @@ impl Dashboard {
         Self {
             home: home::Home::load(),
             utilities: utilities::Utilities::new(preferences.mangohud_directory.as_deref()),
+            background: background::Background::load(preferences.background_slideshow.as_ref(), cx),
             preferences,
-            background: background::Background::load(cx),
             display: display::DisplayWatch::new(fullscreen, placing_at_startup),
             overlay: overlay::OverlayView::new(cx.focus_handle()),
             profile_editor: profile_editor::ProfileEditor::default(),

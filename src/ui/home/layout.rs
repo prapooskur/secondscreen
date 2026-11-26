@@ -91,10 +91,15 @@ pub(super) struct Layout {
 
 impl Default for Layout {
     fn default() -> Self {
+        let monitor = Kind::SystemMonitor.widget();
         Self {
-            widgets: [Kind::SystemMonitor, Kind::Media, Kind::Audio, Kind::Discord]
-                .map(Kind::widget)
-                .into(),
+            widgets: vec![
+                monitor,
+                Kind::Media.widget(),
+                Kind::Audio.widget(),
+                Kind::Discord.widget(),
+            ],
+            monitors: BTreeMap::from([(monitor.id, MonitorOptions::starter())]),
             ..Self::empty()
         }
     }
@@ -278,6 +283,26 @@ mod tests {
     use super::*;
     use crate::ui::home::options::{ChartLayout, MonitorDisplay, MonitorReading, MonitorSource};
     use std::collections::HashSet;
+
+    #[test]
+    fn starter_metrics_are_saved_only_for_the_starter_monitor() {
+        let mut layout = Layout::default();
+        layout.add(Kind::SystemMonitor);
+        let saved: Layout = serde_json::from_str(&serde_json::to_string(&layout).unwrap()).unwrap();
+        let [chart] = &saved.monitors[&saved.widgets[0].id].readings[..] else {
+            panic!("expected one starter chart");
+        };
+        assert_eq!(chart.display, MonitorDisplay::Chart);
+        assert_eq!(chart.chart.layout, ChartLayout::Separate);
+        assert_eq!(chart.source, MonitorSource::Sensor("cpu".into()));
+        assert_eq!(
+            chart.chart.additional,
+            [MonitorSource::Sensor("memory".into())]
+        );
+        let added = saved.widgets.last().unwrap();
+        assert_eq!(added.kind, Kind::SystemMonitor);
+        assert!(!saved.monitors.contains_key(&added.id));
+    }
 
     #[test]
     fn quick_controls_preserve_defaults_and_explicit_order_in_saved_layouts() {
