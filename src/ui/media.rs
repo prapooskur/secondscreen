@@ -336,7 +336,6 @@ impl Dashboard {
                 .w(r(width))
                 .h(r(LYRICS_TOGGLE_HEIGHT))
                 .px(r(6.))
-                .gap(r(6.))
                 .role(Role::Switch)
                 .aria_label("Lyrics")
                 .aria_toggled(if enabled {
@@ -344,8 +343,7 @@ impl Dashboard {
                 } else {
                     Toggled::False
                 })
-                .child("Lyrics")
-                .child(theme.quiet(if enabled { "On" } else { "Off" })),
+                .child("Lyrics"),
             move |_, cx| {
                 view.update(cx, |this, cx| {
                     this.media_lyrics.enabled = !this.media_lyrics.enabled;

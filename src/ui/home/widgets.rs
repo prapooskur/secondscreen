@@ -2,8 +2,8 @@ use gpui::{AnyElement, Context, Div, FontWeight, IntoElement, Styled, div, prelu
 
 use crate::{config::FpsFeature, model::AudioKind};
 
-use super::super::{Dashboard, icons::Icon, theme::*};
-use super::layout::{Kind, Placement};
+use super::super::{Dashboard, Tooltip, icons::Icon, theme::*};
+use super::layout::{Kind, MixerOrientation, Placement};
 
 impl Kind {
     pub(super) fn name(self) -> &'static str {
@@ -95,7 +95,12 @@ impl Dashboard {
             Kind::Audio => self.audio_widget(cx).into_any_element(),
             Kind::Mixer => self.mixer_widget(cx).into_any_element(),
             Kind::VolumeMixer => self
-                .volume_mixer_widget(width, height, cx)
+                .volume_mixer_widget(
+                    self.home.layout().volume_mixer_orientation,
+                    width,
+                    height,
+                    cx,
+                )
                 .into_any_element(),
             Kind::Discord => self.discord_widget(cx).into_any_element(),
             Kind::WorldClock => self.world_clock(theme, height).into_any_element(),
@@ -123,6 +128,33 @@ impl Dashboard {
                 .children(self.viewers.get(&tile.widget.id).cloned())
                 .into_any_element(),
         }
+    }
+
+    pub(super) fn mixer_orientation_button(&self, cx: &Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
+        let view = cx.entity();
+        let (label, next) = match self.home.layout().volume_mixer_orientation {
+            MixerOrientation::Vertical => ("Vertical", MixerOrientation::Horizontal),
+            MixerOrientation::Horizontal => ("Horizontal", MixerOrientation::Vertical),
+        };
+        theme.bind(
+            theme
+                .button("mixer-orientation", None)
+                .h(r(26.))
+                .px(r(7.))
+                .child(label)
+                .tooltip(|_, cx| {
+                    cx.new(|_| Tooltip("Switch fader orientation".into()))
+                        .into()
+                }),
+            move |window, cx| {
+                view.update(cx, |this, cx| {
+                    this.home.layout_mut().volume_mixer_orientation = next;
+                    this.focus_dashboard(window, cx);
+                    this.save_home(cx);
+                });
+            },
+        )
     }
 
     pub(super) fn fps_setup_button(&self, id: u32, cx: &Context<Self>) -> impl IntoElement {

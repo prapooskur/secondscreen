@@ -13,7 +13,7 @@ pub type Gesture = Rc<RefCell<Option<(String, f32)>>>;
 pub enum SliderStyle {
     Standard(Color),
     Scrubber { accent: Color, height: f32 },
-    Fader(Color),
+    Fader { accent: Color, vertical: bool },
 }
 
 pub fn drag_value(gesture: &Gesture, id: &str) -> Option<f32> {
@@ -35,10 +35,11 @@ pub fn slider(
     change: impl Fn(f32, &mut App) + 'static,
 ) -> impl IntoElement {
     let (accent, height) = match style {
-        SliderStyle::Standard(accent) | SliderStyle::Fader(accent) => (accent, 25.),
+        SliderStyle::Standard(accent) | SliderStyle::Fader { accent, .. } => (accent, 25.),
         SliderStyle::Scrubber { accent, height } => (accent, height - 2.),
     };
-    let vertical = matches!(style, SliderStyle::Fader(_));
+    let fader = matches!(style, SliderStyle::Fader { .. });
+    let vertical = matches!(style, SliderStyle::Fader { vertical: true, .. });
     let change = Rc::new(change);
     let keyboard = change.clone();
     let track_id = id.clone();
@@ -49,7 +50,7 @@ pub fn slider(
             let (radius, thickness, offset) = match style {
                 SliderStyle::Standard(_) => (px(5.), px(4.), px(0.)),
                 SliderStyle::Scrubber { .. } => (px(9. * scale), px(6. * scale), px(10. * scale)),
-                SliderStyle::Fader(_) => (px(4. * scale), px(12. * scale), px(0.)),
+                SliderStyle::Fader { .. } => (px(4. * scale), px(8. * scale), px(0.)),
             };
             let (start, length, center) = if vertical {
                 (
@@ -64,23 +65,29 @@ pub fn slider(
                     bounds.center().y + offset,
                 )
             };
-            let length = (length - radius * 2.).max(px(1.));
+            let length = length - radius * 2.;
+            if fader && length <= px(0.) {
+                return;
+            }
+            let length = length.max(px(1.));
             let current = drag_value(&gesture, &track_id)
                 .unwrap_or(value)
                 .clamp(0., 1.);
-            let line = |length: Pixels, color| {
-                let bounds = if vertical {
+            let along_track = |position: Pixels, length: Pixels, width: Pixels| {
+                if vertical {
                     Bounds::new(
-                        point(center - thickness / 2., start - length),
-                        size(thickness, length),
+                        point(center - width / 2., start - position - length),
+                        size(width, length),
                     )
                 } else {
                     Bounds::new(
-                        point(start, center - thickness / 2.),
-                        size(length, thickness),
+                        point(start + position, center - width / 2.),
+                        size(length, width),
                     )
-                };
-                fill(bounds, color).corner_radii(thickness / 2.)
+                }
+            };
+            let line = |length, color| {
+                fill(along_track(px(0.), length, thickness), color).corner_radii(thickness / 2.)
             };
             window.paint_quad(line(length, theme.color(STROKE)));
             if current > 0. {
@@ -92,25 +99,18 @@ pub fn slider(
                 ));
             }
             if enabled {
-                let (thumb, rounding) = if vertical {
-                    let half_width = px(12. * scale);
-                    (
-                        Bounds::new(
-                            point(center - half_width, start - length * current - radius),
-                            size(half_width * 2., radius * 2.),
-                        ),
-                        px(2. * scale),
-                    )
+                let position = length * current;
+                let (thumb_width, rounding) = if fader {
+                    (px(20. * scale), px(2. * scale))
                 } else {
-                    (
-                        Bounds::new(
-                            point(start + length * current - radius, center - radius),
-                            size(radius * 2., radius * 2.),
-                        ),
-                        radius,
-                    )
+                    (radius * 2., radius)
                 };
+                let thumb = along_track(position - radius, radius * 2., thumb_width);
                 window.paint_quad(fill(thumb, theme.color(accent)).corner_radii(rounding));
+                if fader {
+                    let grip = along_track(position - px(0.5 * scale), px(scale), px(10. * scale));
+                    window.paint_quad(fill(grip, theme.color(PANEL).opacity(0.65)));
+                }
                 window.set_cursor_style(CursorStyle::PointingHand, &hitbox);
 
                 let fraction = move |position: Point<Pixels>| {
@@ -179,7 +179,7 @@ pub fn slider(
     row()
         .id(gpui::SharedString::from(id))
         .flex_1()
-        .when(vertical, |it| it.w(r(42.)).min_h_0())
+        .when(vertical, |it| it.w(r(31.)).min_h_0())
         .border_1()
         .border_color(theme.color(PANEL))
         .when(!matches!(style, SliderStyle::Standard(_)), |it| {

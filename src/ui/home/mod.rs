@@ -14,7 +14,7 @@ use gpui::{
     px,
 };
 
-pub(super) use self::layout::Kind;
+pub(super) use self::layout::{Kind, MixerOrientation};
 use self::layout::{Layout, MAX_COLUMNS, MIN_ROWS, Placement, VISIBLE_ROWS, Widget, shifted_span};
 pub(super) use self::presets::ProfilePreset;
 use self::profiles::Profiles;
@@ -678,7 +678,7 @@ impl Dashboard {
         } else {
             widget_padding(body_height)
         };
-        let vertical_padding = if editing && setup_open {
+        let vertical_padding = if editing && (setup_open || kind == Kind::VolumeMixer) {
             WIDGET_CONTROL_HEIGHT + 2. * WIDGET_CONTROL_INSET
         } else {
             padding
@@ -768,6 +768,7 @@ impl Dashboard {
             Kind::QuickControls => {
                 return Some(self.quick_controls_setup_button(cx).into_any_element());
             }
+            Kind::VolumeMixer => return Some(self.mixer_orientation_button(cx).into_any_element()),
             _ => return None,
         };
         let view = cx.entity();
@@ -839,6 +840,9 @@ impl Dashboard {
                             layout.home_assistant.remove(&id);
                             if widget.kind == Kind::QuickControls {
                                 layout.quick_controls = None;
+                            }
+                            if widget.kind == Kind::VolumeMixer {
+                                layout.volume_mixer_orientation = MixerOrientation::default();
                             }
                             this.viewers.remove(&id);
                             super::monitor::discard_charts(Some(id), window, cx);

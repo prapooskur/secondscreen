@@ -81,6 +81,20 @@ pub(super) struct Widget {
     pub rows: u8,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(in crate::ui) enum MixerOrientation {
+    #[default]
+    Vertical,
+    Horizontal,
+}
+
+impl MixerOrientation {
+    pub(in crate::ui) fn is_vertical(&self) -> bool {
+        *self == Self::Vertical
+    }
+}
+
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 pub(super) struct Layout {
     #[serde(deserialize_with = "read_widgets")]
@@ -93,6 +107,8 @@ pub(super) struct Layout {
     pub home_assistant: BTreeMap<u32, Binding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quick_controls: Option<Vec<QuickAction>>,
+    #[serde(default, skip_serializing_if = "MixerOrientation::is_vertical")]
+    pub volume_mixer_orientation: MixerOrientation,
 }
 
 impl Default for Layout {
@@ -119,6 +135,7 @@ impl Layout {
             viewers: BTreeMap::new(),
             home_assistant: BTreeMap::new(),
             quick_controls: None,
+            volume_mixer_orientation: MixerOrientation::default(),
         }
     }
 
@@ -160,6 +177,9 @@ impl Layout {
         } else if let Some(actions) = &mut self.quick_controls {
             let mut unique = HashSet::new();
             actions.retain(|action| unique.insert(action.key().to_owned()));
+        }
+        if !seen.contains(&Kind::VolumeMixer) {
+            self.volume_mixer_orientation = MixerOrientation::default();
         }
     }
 
@@ -352,6 +372,27 @@ mod tests {
         layout.quick_controls = Some(Vec::new());
         let saved: Layout = serde_json::from_str(&serde_json::to_string(&layout).unwrap()).unwrap();
         assert!(saved.quick_actions().is_empty());
+    }
+
+    #[test]
+    fn volume_mixer_orientation_defaults_to_vertical_and_saves_horizontal() {
+        let mut layout: Layout = serde_json::from_str(
+            r#"{"widgets":[{"id":1,"kind":"volume_mixer","columns":2,"rows":4}]}"#,
+        )
+        .unwrap();
+        assert!(layout.volume_mixer_orientation.is_vertical());
+        assert!(
+            serde_json::to_value(&layout)
+                .unwrap()
+                .get("volume_mixer_orientation")
+                .is_none()
+        );
+
+        layout.volume_mixer_orientation = MixerOrientation::Horizontal;
+        let mut saved: Layout =
+            serde_json::from_value(serde_json::to_value(&layout).unwrap()).unwrap();
+        saved.normalize();
+        assert_eq!(saved, layout);
     }
 
     #[test]

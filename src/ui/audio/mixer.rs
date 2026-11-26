@@ -3,14 +3,22 @@ use gpui::{Context, Div, IntoElement, Styled, prelude::*};
 use super::{Dashboard, Tooltip, audio_icon, channel_description, kind_key};
 use crate::{
     model::{AudioChannel, AudioKind},
-    ui::{icons::Icon, slider::SliderStyle, theme::*},
+    ui::{home::MixerOrientation, icons::Icon, slider::SliderStyle, theme::*},
 };
 
 const STRIP_GAP: f32 = 6.;
+const FADER_SPACING_SCALE: f32 = 0.66;
+
+#[derive(Clone, Copy)]
+struct ChannelLayout {
+    vertical: bool,
+    compact: bool,
+}
 
 impl Dashboard {
     pub(in crate::ui) fn volume_mixer_widget(
         &self,
+        orientation: MixerOrientation,
         width: f32,
         height: f32,
         cx: &Context<Self>,
@@ -29,23 +37,17 @@ impl Dashboard {
 
         let stream_kind = self.volume_mixer_kind;
         let recording = stream_kind == AudioKind::Recording;
-        let compact = height < 170.;
-        let (device_kind, device_name, device_icon, app_icon, accent) = if recording {
-            (
-                AudioKind::Input,
-                if compact { "Mic" } else { "Microphone" },
-                Icon::Mic,
-                Icon::Mic,
-                BLUE,
-            )
+        let vertical = orientation.is_vertical();
+        let compact = if vertical {
+            height < 170.
         } else {
-            (
-                AudioKind::Output,
-                "System",
-                Icon::Speaker,
-                Icon::Music,
-                AMBER,
-            )
+            width < 260.
+        };
+        let channel_layout = ChannelLayout { vertical, compact };
+        let (device_kind, device_icon, app_icon, accent) = if recording {
+            (AudioKind::Input, Icon::Mic, Icon::Mic, BLUE)
+        } else {
+            (AudioKind::Output, Icon::Speaker, Icon::Music, AMBER)
         };
         let default_device =
             |channel: &AudioChannel| channel.is_default && channel.id.kind == device_kind;
@@ -58,31 +60,37 @@ impl Dashboard {
             .iter()
             .filter(|channel| channel.id.kind == stream_kind)
             .collect();
-        let strip_width = (width * 0.4).clamp(66., 94.);
+        let strip_width = if compact { 66. } else { 65. };
+        let strip = |accent| {
+            mixer_strip(theme, accent).when(vertical, |it| it.w(r(strip_width)).items_center())
+        };
 
         let master = if let Some(channel) = master {
-            mixer_strip(theme, strip_width, Some(accent)).child(self.mixer_channel(
+            strip(Some(accent)).child(self.mixer_channel(
                 channel,
-                device_name,
                 device_icon,
                 accent,
-                compact,
+                channel_layout,
                 cx,
             ))
         } else {
             let hidden = self.audio.channels.iter().any(default_device);
-            mixer_strip(theme, strip_width, Some(accent))
-                .justify_center()
-                .child(theme.label(device_name))
-                .child(
-                    theme
-                        .quiet(if hidden {
-                            "Default device hidden"
-                        } else {
-                            "No default device"
-                        })
-                        .text_center(),
-                )
+            let heading = if vertical { col() } else { row().min_h(r(31.)) };
+            strip(Some(accent)).justify_center().child(
+                heading
+                    .items_center()
+                    .gap(r(4.))
+                    .child(theme.icon_tile(device_icon, accent, 20.))
+                    .child(
+                        theme
+                            .quiet(if hidden {
+                                "Default device hidden"
+                            } else {
+                                "No default device"
+                            })
+                            .text_center(),
+                    ),
+            )
         };
 
         let apps = if streams.is_empty() {
@@ -101,26 +109,32 @@ impl Dashboard {
                 )
                 .into_any_element()
         } else {
-            let overflows =
-                (streams.len() + 1) as f32 * strip_width + streams.len() as f32 * STRIP_GAP > width;
-            split()
-                .id(kind_key(stream_kind))
+            let overflows_horizontally = vertical
+                && (streams.len() + 1) as f32 * strip_width + streams.len() as f32 * STRIP_GAP
+                    > width;
+            let bank = if vertical { split() } else { col() };
+            bank.id((kind_key(stream_kind), usize::from(vertical)))
                 .flex_1()
                 .gap(r(STRIP_GAP))
-                .when(overflows, |it| it.overflow_x_scroll().occlude())
+                .when(overflows_horizontally, |it| {
+                    it.overflow_x_scroll().occlude()
+                })
+                .when(!vertical, |it| {
+                    it.overflow_y_scroll().restrict_scroll_to_axis()
+                })
                 .children(streams.into_iter().map(|channel| {
-                    mixer_strip(theme, strip_width, None).child(self.mixer_channel(
+                    strip(None).child(self.mixer_channel(
                         channel,
-                        &channel.label,
                         app_icon,
                         accent,
-                        compact,
+                        channel_layout,
                         cx,
                     ))
                 }))
                 .into_any_element()
         };
 
+        let body = if vertical { split() } else { col() };
         col()
             .id("volume-mixer")
             .flex_1()
@@ -132,8 +146,7 @@ impl Dashboard {
                 cx,
             ))
             .child(
-                split()
-                    .flex_1()
+                body.flex_1()
                     .min_h_0()
                     .gap(r(STRIP_GAP))
                     .child(master)
@@ -145,68 +158,78 @@ impl Dashboard {
     fn mixer_channel(
         &self,
         channel: &AudioChannel,
-        name: &str,
         fallback: Icon,
         accent: Color,
-        compact: bool,
+        layout: ChannelLayout,
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let theme = Theme::current(cx);
+        let ChannelLayout { vertical, compact } = layout;
         let key = kind_key(channel.id.kind);
         let scope = |control: &str| format!("volume-mixer-{key}-{}-{control}", channel.id.index);
         let description = channel_description(channel);
-        let symbol = audio_icon(
-            channel,
-            fallback,
-            theme,
-            accent,
-            if compact { 16. } else { 28. },
-        );
-        let label = theme
-            .label(name.to_owned())
-            .min_w_0()
-            .truncate()
-            .when(compact, |it| it.text_size(r(12.)).line_height(r(16.)))
-            .text_color(theme.color(INK));
-        let heading = if compact {
-            row().gap(r(2.)).justify_center().child(symbol).child(label)
-        } else {
-            col()
-                .items_center()
-                .gap(r(4.))
-                .child(symbol)
-                .child(label.w_full().text_center())
-        };
+        let icon_size = if compact { 20. } else { 26. };
+        let symbol = row()
+            .id(scope("icon"))
+            .size(r(icon_size))
+            .flex_none()
+            .justify_center()
+            .rounded(r(6.))
+            .bg(theme.color(accent).opacity(0.11))
+            .child(audio_icon(channel, fallback, theme, accent, icon_size - 6.))
+            .tooltip(move |_, cx| cx.new(|_| Tooltip(description.clone().into())).into());
+        let level_color = if channel.muted { MUTED } else { accent };
         let (volume, percent) = self.audio_volume(
             channel,
             scope("volume"),
-            SliderStyle::Fader(if channel.muted { MUTED } else { accent }),
+            SliderStyle::Fader {
+                accent: level_color,
+                vertical,
+            },
             cx,
         );
-
-        col()
-            .flex_1()
-            .w_full()
-            .items_center()
-            .gap(r(if compact { 2. } else { 6. }))
+        let readout_color = if channel.volume.is_some() {
+            level_color
+        } else {
+            MUTED
+        };
+        let controls = if vertical && !compact {
+            col().items_center()
+        } else {
+            row()
+        };
+        let controls = controls
+            .flex_none()
+            .gap(r(if compact { 3. } else { STRIP_GAP }))
             .child(
-                heading
-                    .id(scope("label"))
-                    .w_full()
-                    .flex_none()
-                    .tooltip(move |_, cx| cx.new(|_| Tooltip(description.clone().into())).into()),
+                percent
+                    .line_height(r(16.))
+                    .text_color(theme.color(readout_color))
+                    .when(!vertical, |it| it.w(r(32.)).text_right()),
             )
-            .child(percent.when(compact, |it| it.line_height(r(16.))))
-            .child(volume)
             .child(
                 self.audio_mute(channel, scope("mute"), cx)
-                    .w(r(40.))
-                    .h(r(if compact { 26. } else { 31. })),
-            )
+                    .when(compact, |it| it.size(r(24.))),
+            );
+
+        let gap = if vertical && compact { 2. } else { STRIP_GAP };
+        let gap = r(gap * FADER_SPACING_SCALE);
+        if vertical {
+            col()
+                .flex_1()
+                .w_full()
+                .items_center()
+                .gap(gap)
+                .child(symbol)
+                .child(volume)
+                .child(controls)
+        } else {
+            row().gap(gap).child(symbol).child(volume).child(controls)
+        }
     }
 }
 
-fn mixer_strip(theme: Theme, width: f32, accent: Option<Color>) -> Div {
+fn mixer_strip(theme: Theme, accent: Option<Color>) -> Div {
     let (stroke, surface) = match accent {
         Some(accent) => {
             let color = theme.color(accent);
@@ -215,11 +238,8 @@ fn mixer_strip(theme: Theme, width: f32, accent: Option<Color>) -> Div {
         None => (theme.color(STROKE), theme.color(BACK).opacity(0.42)),
     };
     col()
-        .w(r(width))
         .flex_none()
-        .items_center()
-        .gap(r(4.))
-        .p(r(6.))
+        .p(r(6. * FADER_SPACING_SCALE))
         .rounded(r(8.))
         .border_1()
         .border_color(stroke)
