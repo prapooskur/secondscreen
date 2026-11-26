@@ -10,7 +10,7 @@ use super::{Dashboard, WINDOW_TITLE, settings::Section};
 const SCAN_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Default)]
-pub(super) struct DisplayWatch {
+pub(crate) struct DisplayWatch {
     pub fullscreen: bool,
     pub placing_at_startup: bool,
     pub displays: Option<Result<Vec<Display>, String>>,

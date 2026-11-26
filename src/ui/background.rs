@@ -29,7 +29,7 @@ struct Wallpaper {
 }
 
 #[derive(Default)]
-pub(super) struct Background {
+pub(crate) struct Background {
     wallpaper: Option<Wallpaper>,
     rotation: Option<Task<()>>,
     pub(super) pending: bool,
@@ -37,36 +37,23 @@ pub(super) struct Background {
 }
 
 impl Background {
-    pub(super) fn load(
-        slideshow: Option<&BackgroundSlideshow>,
-        cx: &mut Context<Dashboard>,
-    ) -> Self {
-        let folder = slideshow.map(|slideshow| slideshow.folder.clone());
-        cx.spawn(async move |this, cx| {
-            let result = blocking::unblock(move || match folder {
-                Some(folder) => next_wallpaper(&folder, None).map(Some),
-                None => load_saved(),
-            })
-            .await;
-            let _ = this.update(cx, |this, cx| {
-                this.background.pending = false;
-                match result {
-                    Ok(wallpaper) => this.set_background(wallpaper, None, cx),
-                    Err(error) => {
-                        log::warn!("Could not load the background: {error:#}");
-                        this.background.unavailable = true;
-                    }
+    pub(crate) fn load(slideshow: Option<&BackgroundSlideshow>) -> Self {
+        let result = match slideshow {
+            Some(slideshow) => next_wallpaper(&slideshow.folder, None).map(Some),
+            None => load_saved(),
+        };
+        match result {
+            Ok(wallpaper) => Self {
+                wallpaper,
+                ..Self::default()
+            },
+            Err(error) => {
+                log::warn!("Could not load the background: {error:#}");
+                Self {
+                    unavailable: true,
+                    ..Self::default()
                 }
-                if let Some(slideshow) = this.preferences.background_slideshow.clone() {
-                    this.background.start_rotation(slideshow, cx);
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-        Self {
-            pending: true,
-            ..Self::default()
+            }
         }
     }
 
@@ -100,7 +87,11 @@ impl Background {
         )
     }
 
-    fn start_rotation(&mut self, slideshow: BackgroundSlideshow, cx: &mut Context<Dashboard>) {
+    pub(super) fn start_rotation(
+        &mut self,
+        slideshow: BackgroundSlideshow,
+        cx: &mut Context<Dashboard>,
+    ) {
         let mut previous = self
             .wallpaper
             .as_ref()

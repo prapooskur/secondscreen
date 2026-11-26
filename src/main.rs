@@ -87,6 +87,8 @@ fn main() -> anyhow::Result<()> {
     );
 
     let preferences = config::Preferences::load();
+    let slideshow = preferences.background_slideshow.clone();
+    let background = blocking::unblock(move || ui::Background::load(slideshow.as_ref()));
     fullscreen |= preferences.start_fullscreen;
     let startup_title = preferences.launch_display.as_deref().and_then(|display| {
         platform::launch_display::prepare_startup(display, ui::WINDOW_TITLE).unwrap_or_else(
@@ -112,6 +114,8 @@ fn main() -> anyhow::Result<()> {
         }
 
         let bounds = Bounds::centered(None, size(px(1440.), px(432.)), cx);
+        // GPUI draws the root view during open_window, so the wallpaper must be ready here.
+        let background = futures_lite::future::block_on(background);
         let result = cx.open_window(
             WindowOptions {
                 window_bounds: Some(if fullscreen {
@@ -137,8 +141,8 @@ fn main() -> anyhow::Result<()> {
                         controls,
                         receiver,
                         preferences,
-                        fullscreen,
-                        startup_title.is_some(),
+                        background,
+                        ui::DisplayWatch::new(fullscreen, startup_title.is_some()),
                         window,
                         cx,
                     )

@@ -17,7 +17,7 @@ mod touch;
 mod utilities;
 mod viewer;
 
-pub(crate) use icons::IconAssets;
+pub(crate) use {background::Background, display::DisplayWatch, icons::IconAssets};
 
 use std::{
     cell::RefCell,
@@ -85,8 +85,8 @@ pub struct Dashboard {
     home: home::Home,
     utilities: utilities::Utilities,
     preferences: Preferences,
-    background: background::Background,
-    display: display::DisplayWatch,
+    background: Background,
+    display: DisplayWatch,
     overlay: overlay::OverlayView,
     profile_editor: profile_editor::ProfileEditor,
     settings: settings::SettingsView,
@@ -114,8 +114,8 @@ impl Dashboard {
         controls: Controls,
         updates: Receiver<Update>,
         preferences: Preferences,
-        fullscreen: bool,
-        placing_at_startup: bool,
+        mut background: Background,
+        display: DisplayWatch,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -177,14 +177,17 @@ impl Dashboard {
         })
         .detach();
 
+        if let Some(slideshow) = preferences.background_slideshow.clone() {
+            background.start_rotation(slideshow, cx);
+        }
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         Self {
             home: home::Home::load(),
             utilities: utilities::Utilities::new(preferences.mangohud_directory.as_deref()),
-            background: background::Background::load(preferences.background_slideshow.as_ref(), cx),
+            background,
             preferences,
-            display: display::DisplayWatch::new(fullscreen, placing_at_startup),
+            display,
             overlay: overlay::OverlayView::new(cx.focus_handle()),
             profile_editor: profile_editor::ProfileEditor::default(),
             settings: settings::SettingsView::new(),
