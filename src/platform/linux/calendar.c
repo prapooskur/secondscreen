@@ -1,5 +1,60 @@
+#include <dlfcn.h>
 #include <libecal/libecal.h>
 #include <stdint.h>
+
+#define CALENDAR_FUNCTIONS(X) \
+    X(e_cal_client_connect_sync) \
+    X(e_cal_client_generate_instances_sync) \
+    X(e_cal_client_set_default_timezone) \
+    X(e_cal_util_get_system_timezone) \
+    X(e_source_get_extension) \
+    X(e_source_registry_list_enabled) \
+    X(e_source_registry_new_sync) \
+    X(e_source_selectable_get_selected) \
+    X(i_cal_component_get_status) \
+    X(i_cal_component_get_summary) \
+    X(i_cal_time_as_timet_with_zone) \
+    X(i_cal_time_get_timezone) \
+    X(i_cal_time_is_date) \
+    X(i_cal_timezone_get_builtin_timezone) \
+    X(i_cal_timezone_get_utc_timezone)
+
+static struct {
+#define DECLARE_SYMBOL(name) __typeof__(&name) name;
+    CALENDAR_FUNCTIONS(DECLARE_SYMBOL)
+#undef DECLARE_SYMBOL
+} calendar_api;
+
+static gboolean resolve_calendar_api(void *handle)
+{
+#define LOAD_SYMBOL(name) \
+    calendar_api.name = (__typeof__(&name))dlsym(handle, #name); \
+    if (!calendar_api.name) \
+        return FALSE;
+    CALENDAR_FUNCTIONS(LOAD_SYMBOL)
+#undef LOAD_SYMBOL
+    return TRUE;
+}
+
+#undef CALENDAR_FUNCTIONS
+
+static gboolean load_calendar_api(void)
+{
+    static GMutex lock;
+    static void *library;
+    g_mutex_lock(&lock);
+    if (!library) {
+        // The handle also resolves symbols in libecal's linked dependencies.
+        void *handle = dlopen("libecal-2.0.so.3", RTLD_NOW | RTLD_LOCAL);
+        if (handle && resolve_calendar_api(handle))
+            library = handle;
+        else if (handle)
+            dlclose(handle);
+    }
+    gboolean loaded = library != NULL;
+    g_mutex_unlock(&lock);
+    return loaded;
+}
 
 typedef void (*EventCallback)(void *, const char *, int64_t, int64_t, int);
 
@@ -12,21 +67,20 @@ typedef struct {
 static time_t event_time(ICalTime *time, ICalTimezone *local_zone, gboolean all_day)
 {
     // Encode date-only values at midnight UTC so they retain their original date.
-    if (all_day)
-        return i_cal_time_as_timet_with_zone(time, i_cal_timezone_get_utc_timezone());
-    ICalTimezone *zone = i_cal_time_get_timezone(time);
-    return i_cal_time_as_timet_with_zone(time, zone ? zone : local_zone);
+    ICalTimezone *zone = all_day ? calendar_api.i_cal_timezone_get_utc_timezone()
+                                 : calendar_api.i_cal_time_get_timezone(time);
+    return calendar_api.i_cal_time_as_timet_with_zone(time, zone ? zone : local_zone);
 }
 
 static gboolean collect_event(ICalComponent *component, ICalTime *start, ICalTime *end,
     gpointer data, G_GNUC_UNUSED GCancellable *cancellable, G_GNUC_UNUSED GError **error)
 {
-    if (i_cal_component_get_status(component) == I_CAL_STATUS_CANCELLED)
+    if (calendar_api.i_cal_component_get_status(component) == I_CAL_STATUS_CANCELLED)
         return TRUE;
 
     EventSink *sink = data;
-    gboolean all_day = i_cal_time_is_date(start);
-    sink->callback(sink->data, i_cal_component_get_summary(component),
+    gboolean all_day = calendar_api.i_cal_time_is_date(start);
+    sink->callback(sink->data, calendar_api.i_cal_component_get_summary(component),
         event_time(start, sink->zone, all_day), event_time(end, sink->zone, all_day), all_day);
     return TRUE;
 }
@@ -51,39 +105,42 @@ static gboolean service_running(const char *name)
 }
 
 // Returns 0 on success, 1 on partial failure, 2 with no selected calendars,
-// -1 if a required service is unavailable, and -2 if every selected calendar failed.
+// -1 if a required service is unavailable, -2 if every selected calendar failed,
+// and -3 if the calendar library is unavailable.
 int secondscreen_calendar_events(int64_t start, int64_t end, const char *timezone,
     EventCallback callback, void *data)
 {
+    if (!load_calendar_api())
+        return -3;
+
     GMainContext *context = g_main_context_new();
     g_main_context_push_thread_default(context);
-    ESourceRegistry *registry = e_source_registry_new_sync(NULL, NULL);
+    ESourceRegistry *registry = calendar_api.e_source_registry_new_sync(NULL, NULL);
     int status = -1;
     if (registry) {
-        ICalTimezone *zone = timezone ? i_cal_timezone_get_builtin_timezone(timezone) : NULL;
+        ICalTimezone *zone = timezone ? calendar_api.i_cal_timezone_get_builtin_timezone(timezone) : NULL;
         if (!zone)
-            zone = e_cal_util_get_system_timezone();
-        EventSink sink = {callback, data, zone ? zone : i_cal_timezone_get_utc_timezone()};
-        GList *sources = e_source_registry_list_enabled(registry, E_SOURCE_EXTENSION_CALENDAR);
+            zone = calendar_api.e_cal_util_get_system_timezone();
+        EventSink sink = {callback, data, zone ? zone : calendar_api.i_cal_timezone_get_utc_timezone()};
+        GList *sources = calendar_api.e_source_registry_list_enabled(registry, E_SOURCE_EXTENSION_CALENDAR);
         gboolean loaded = FALSE;
         gboolean failed = FALSE;
         for (GList *item = sources; item; item = item->next) {
             ESource *source = item->data;
-            ESourceSelectable *calendar = e_source_get_extension(source, E_SOURCE_EXTENSION_CALENDAR);
-            if (!e_source_selectable_get_selected(calendar))
+            ESourceSelectable *calendar = calendar_api.e_source_get_extension(source, E_SOURCE_EXTENSION_CALENDAR);
+            if (!calendar_api.e_source_selectable_get_selected(calendar))
                 continue;
 
-            EClient *client = e_cal_client_connect_sync(source, E_CAL_CLIENT_SOURCE_TYPE_EVENTS,
-                (guint32)-1, NULL, NULL);
-            if (!client) {
+            ECalClient *events = (ECalClient *)calendar_api.e_cal_client_connect_sync(source,
+                E_CAL_CLIENT_SOURCE_TYPE_EVENTS, (guint32)-1, NULL, NULL);
+            if (!events) {
                 failed = TRUE;
                 continue;
             }
-            ECalClient *events = E_CAL_CLIENT(client);
-            e_cal_client_set_default_timezone(events, sink.zone);
-            e_cal_client_generate_instances_sync(events, start, end, NULL, collect_event, &sink);
+            calendar_api.e_cal_client_set_default_timezone(events, sink.zone);
+            calendar_api.e_cal_client_generate_instances_sync(events, start, end, NULL, collect_event, &sink);
             loaded = TRUE;
-            g_object_unref(client);
+            g_object_unref(events);
         }
         status = loaded ? (failed ? 1 : 0) : (failed ? -2 : 2);
         // EDS can return an empty registry even when the source service is absent.

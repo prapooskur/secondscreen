@@ -22,7 +22,10 @@ fn main() {
         .compile("secondscreen_desktop_apps");
 
     println!("cargo:rerun-if-changed=src/platform/linux/calendar.c");
-    let calendar = pkg_config::probe_library("libecal-2.0").unwrap();
+    let calendar = pkg_config::Config::new()
+        .cargo_metadata(false)
+        .probe("libecal-2.0")
+        .unwrap();
     cc::Build::new()
         .file("src/platform/linux/calendar.c")
         .includes(calendar.include_paths)

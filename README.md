@@ -24,6 +24,8 @@ Open the **Linux packages** run for your commit under **Actions** on GitHub. Eve
 
 Use the RPM built for your Fedora release. For another Fedora release, build the RPM there or in a matching Fedora container. The RPM filename includes the release, such as `.fc45.x86_64.rpm`. On Fedora Atomic desktops, use `sudo rpm-ostree install ./*.rpm` and reboot.
 
+On native packages, install `evolution-data-server` to show events from Evolution or GNOME Calendar. For the Viewer, install `libwebkit2gtk-4.1-0` on Debian or Ubuntu, or `webkit2gtk4.1` on Fedora. Install the system GStreamer Good and libav plugins if you need additional playback codecs.
+
 Launch **Second Screen** from your app menu in a Wayland session. Flatpak keeps its settings separately under `~/.var/app/io.github.secondscreen`. Host notification monitoring and compositor-specific display placement require a native package. System monitor reports usage for filesystems visible inside the sandbox, including drives mounted under `/media`, `/mnt`, and `/run/media`.
 
 ### Build packages locally
@@ -36,7 +38,7 @@ With Rust 1.95 or newer, run the script for your format from the repository root
 | RPM | `./packaging/build-rpm.sh` | `target/generate-rpm/` |
 | Flatpak | `./packaging/build-flatpak.sh` | `target/packaging/` |
 
-- **DEB** uses the Debian or Ubuntu build dependencies below plus `dpkg-dev`. The script installs `cargo-deb` if it is missing.
+- **DEB** builds on Debian, Ubuntu, or a derivative, including in a container. Install the build dependencies below plus `dpkg-dev`. The script installs `cargo-deb` if it is missing.
 - **RPM** uses the Fedora packages `gcc`, `gcc-c++`, `make`, `pkgconf-pkg-config`, `fontconfig-devel`, `freetype-devel`, `wayland-devel`, `libxkbcommon-devel`, `'pkgconfig(xkbcommon-x11)'`, `webkit2gtk4.1-devel`, and `evolution-data-server-devel`. The script installs `cargo-generate-rpm` if it is missing.
 - **Flatpak** requires `flatpak` and `flatpak-builder`. The script installs the runtime and SDK from Flathub in your user installation. If they are already installed, pass `--skip-install-deps`.
 
@@ -130,7 +132,7 @@ See [BENCHMARK.md](BENCHMARK.md) for the performance results and reproduction st
 Add these tiles from **Edit layout → Add widget**. Open **Settings → Widgets** to change time zones, weather location, or the weather units and time format.
 
 - **World clock** shows local time and your chosen IANA time zones. Enter names such as `America/New_York, Asia/Kolkata`. Each clock follows its zone’s daylight-saving rules.
-- **Calendar** marks dates with events from the enabled calendars in Evolution Data Server, which GNOME Calendar and Evolution share. Select a date to see its events in local time. Use the arrows to browse months, or click the month name to return to today. The widget refreshes every 30 seconds. Install `evolution-data-server` on the host if your desktop does not already provide it, including when using Flatpak.
+- **Calendar** marks dates with events from the enabled calendars in Evolution Data Server, which GNOME Calendar and Evolution share. Select a date to see its events in local time. Use the arrows to browse months, or click the month name to return to today. The widget refreshes every 30 seconds. Reading events requires `evolution-data-server` on the host, including when using Flatpak.
 - **Weather / AQI** shows current conditions, today’s hourly temperatures in the location’s time zone, and a ten-day forecast with color-coded low-to-high ranges. Hover over the chart for the temperature at a specific hour. The tile also shows wind, sunrise and sunset, and US AQI. Leave the location blank to use your desktop’s Location portal, or enter a city name or exact latitude and longitude. City search uses the first matching location. The widget refreshes every 15 minutes and retries after five minutes when data is unavailable. [Open-Meteo weather](https://open-meteo.com/) · [Air quality data from CAMS via Open-Meteo](https://open-meteo.com/en/docs/air-quality-api)
 - **Notifications** shows the latest 30 incoming Freedesktop desktop notifications while the tile is on Home. Use **Settings → Notifications** to hide individual apps or message bodies. Apps appear in Settings as they send notifications. Filters persist across restarts, and the history stays in memory. To clear it, choose **Clear** on the tile in **Edit layout**. The desktop session bus must allow notification monitoring.
 - **FPS** shows current FPS, 1% low, 0.1% low, and the latest frame time in milliseconds. The 60-second graphs show FPS and peak frame time for each sample. Install MangoHud and add the tile. Copy the MangoHud launch options from **Settings → Widgets** into Steam. For a standalone game, replace `%command%` with its executable. Start Secondscreen once per login before launching the game so it can create `$XDG_RUNTIME_DIR/secondscreen-mangohud` for MangoHud's per-frame CSV files. Current FPS and peak frame time use the latest second of frames. Each low is the frame rate of the slowest 1% or 0.1% of frames in the latest 60 seconds, rounded up to at least one frame.

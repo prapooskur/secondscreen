@@ -60,6 +60,7 @@ pub enum Status {
     NoSelectedCalendars,
     CalendarsUnavailable,
     ServiceUnavailable,
+    BackendUnavailable,
 }
 
 impl Status {
@@ -70,6 +71,7 @@ impl Status {
             Self::NoSelectedCalendars => Some("No calendars selected"),
             Self::CalendarsUnavailable => Some("Selected calendars are unavailable"),
             Self::ServiceUnavailable => Some("System calendar unavailable"),
+            Self::BackendUnavailable => Some("Calendar integration is not installed"),
         }
     }
 }
@@ -151,6 +153,7 @@ pub fn fetch(first: Date) -> Month {
                 1 => Status::Partial,
                 2 => Status::NoSelectedCalendars,
                 -2 => Status::CalendarsUnavailable,
+                -3 => Status::BackendUnavailable,
                 _ => Status::ServiceUnavailable,
             },
         })

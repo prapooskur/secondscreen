@@ -9,8 +9,8 @@ repository = "https://github.com/prapooskur/secondscreen"
 [package.metadata.deb]
 maintainer = "Prasiddh <61389919+prapooskur@users.noreply.github.com>"
 section = "utils"
-depends = "$auto, libvulkan1, libwebkit2gtk-4.1-0, pulseaudio-utils, wl-clipboard"
-recommends = "evolution-data-server, gstreamer1.0-plugins-good, gstreamer1.0-libav"
+depends = "$auto, libvulkan1, pulseaudio-utils, wl-clipboard"
+suggests = "evolution-data-server, libwebkit2gtk-4.1-0, gstreamer1.0-plugins-good, gstreamer1.0-libav"
 assets = [
     ["target/release/secondscreen", "usr/bin/secondscreen", "755"],
     ["packaging/io.github.secondscreen.desktop", "usr/share/applications/", "644"],
@@ -32,13 +32,13 @@ assets = [
 ]
 
 [package.metadata.generate-rpm.requires]
-evolution-data-server = "*"
 vulkan-loader = "*"
-"libwebkit2gtk-4.1.so.0()(64bit)" = "*"
 pulseaudio-utils = "*"
 wl-clipboard = "*"
 
-[package.metadata.generate-rpm.recommends]
+[package.metadata.generate-rpm.suggests]
+evolution-data-server = "*"
+"libwebkit2gtk-4.1.so.0()(64bit)" = "*"
 gstreamer1-plugins-good = "*"
 gstreamer1-plugin-libav = "*"
 

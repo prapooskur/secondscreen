@@ -34,10 +34,15 @@ impl Dashboard {
             ),
             Some(CalendarStatus::ServiceUnavailable) => (
                 "Service unavailable",
-                "Install or check Evolution Data Server on the host, then open GNOME Calendar or Evolution.",
+                "Check that Evolution Data Server is installed on the host and that your events load in GNOME Calendar or Evolution.",
                 RED,
             ),
-            None => ("Checking", "Connecting to Evolution Data Server…", MUTED),
+            Some(CalendarStatus::BackendUnavailable) => (
+                "Optional integration",
+                "Install Evolution Data Server if you want to show events from GNOME Calendar or Evolution.",
+                MUTED,
+            ),
+            None => ("Checking", "Looking for your system calendar…", MUTED),
         };
         let notifications = match self.utilities.notification_status {
             notifications::Status::Connecting => {
