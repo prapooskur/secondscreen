@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, Context, Div, Entity, IntoElement, KeyDownEvent, MouseButton, PathPromptOptions, Pixels,
-    Point, RenderImage, Stateful, Task, Window, div, prelude::*, px,
+    App, Bounds, Context, DispatchPhase, Div, Entity, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Point, RenderImage,
+    ScrollHandle, Stateful, Task, Window, canvas, div, prelude::*, px,
 };
 
 use super::{
@@ -25,6 +26,8 @@ pub(super) struct ProfileEditor {
     picker: Option<Task<()>>,
     confirm_delete: bool,
     creation: Option<ProfileCreation>,
+    list: ScrollHandle,
+    drag: Option<ProfileDrag>,
 }
 
 #[derive(Clone, Copy)]
@@ -33,30 +36,21 @@ struct ProfileCreation {
     return_to_editor: bool,
 }
 
-struct ProfileDrag(usize);
-
-struct ProfileDragPreview {
-    name: String,
-    cursor_offset: Point<Pixels>,
+struct ProfileDrag {
+    from: usize,
+    to: Option<usize>,
+    chip: Bounds<Pixels>,
+    start: Point<Pixels>,
+    pointer: Point<Pixels>,
 }
 
-impl Render for ProfileDragPreview {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::current(cx);
-        row()
-            .ml(self.cursor_offset.x + px(9.))
-            .mt(self.cursor_offset.y + px(9.))
-            .h(r(28.))
-            .max_w(r(180.))
-            .px(r(8.))
-            .gap(r(5.))
-            .rounded(r(7.))
-            .border_1()
-            .border_color(theme.color(TEAL))
-            .bg(theme.color(PANEL))
-            .shadow_md()
-            .child(icon(Icon::Grip, theme.color(TEAL), 15.))
-            .child(theme.label(self.name.clone()).min_w_0().truncate())
+impl ProfileDrag {
+    fn destination(&self, pointer: Point<Pixels>, list: &ScrollHandle, count: usize) -> usize {
+        let center = self.chip.center().y + (pointer.y - self.start.y) - list.offset().y;
+        (0..count)
+            .filter_map(|slot| Some((slot, list.bounds_for_item(slot)?)))
+            .min_by_key(|(_, bounds)| (bounds.center().y - center).abs())
+            .map_or(self.from, |(slot, _)| slot)
     }
 }
 
@@ -148,7 +142,8 @@ impl Dashboard {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if cx.stop_active_drag(window) {
+        if self.profile_editor.drag.take().is_some() {
+            cx.notify();
             return true;
         }
         if self.profile_editor.creation.is_some() {
@@ -323,6 +318,7 @@ impl Dashboard {
                     .child(self.profile_list(theme, index, active, cx))
                     .child(body),
             )
+            .child(self.track_profile_drag(cx))
     }
 
     fn profile_list(
@@ -333,6 +329,8 @@ impl Dashboard {
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let profiles = self.home.profiles();
+        let drag = self.profile_editor.drag.as_ref();
+        let moving = drag.and_then(|drag| drag.to.map(|to| (drag.from, to)));
         let add = theme
             .button("new-profile-in-editor", None)
             .child(icon(Icon::Plus, theme.color(TEXT), 15.))
@@ -361,57 +359,57 @@ impl Dashboard {
                     .id("profile-list")
                     .flex_1()
                     .overflow_y_scroll()
+                    .track_scroll(&self.profile_editor.list)
                     .gap(r(5.))
-                    .children(profiles.iter().enumerate().map(|(index, profile)| {
+                    .children((0..profiles.len()).map(|slot| {
+                        let index =
+                            moving.map_or(slot, |(from, to)| moved_profile_index(slot, to, from));
+                        if moving.is_some_and(|(from, _)| from == index) {
+                            return div()
+                                .h(r(38.))
+                                .flex_none()
+                                .rounded(r(8.))
+                                .border_1()
+                                .border_dashed()
+                                .border_color(theme.color(TEAL).opacity(0.5))
+                                .bg(theme.color(TEAL).opacity(0.07))
+                                .into_any_element();
+                        }
+                        let profile = &profiles[index];
                         let name = profile.name(index);
                         let tooltip = if index == active {
                             format!("{name} (active)")
                         } else {
-                            name.clone()
+                            name
                         };
-                        let grip = profile_grip(theme, index, &name, profiles.len() > 1);
-                        let label = row()
+                        let grip = profile_grip(theme, index);
+                        let grip = if profiles.len() > 1 {
+                            grip.cursor_grab()
+                                .hover(move |it| it.bg(theme.color(HOVER)))
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| Tooltip("Drag to reorder".into())).into()
+                                })
+                                .on_mouse_move(|_, _, _| offer_drag(DragTarget::Free))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                        this.start_profile_drag(index, event.position, cx);
+                                        cx.stop_propagation();
+                                    }),
+                                )
+                        } else {
+                            grip.opacity(0.4)
+                        };
+                        let label = profile_chip_label(theme, profile, index, index == active)
                             .id(format!("profile-label-{tooltip}"))
-                            .h_full()
-                            .flex_1()
-                            .gap(r(6.))
-                            .child(
-                                row()
-                                    .size(r(24.))
-                                    .flex_none()
-                                    .justify_center()
-                                    .child(profile.button_content(index, theme, 18.)),
-                            )
-                            .child(col().flex_1().truncate().child(name))
-                            .when(index == active, |label| label.child(theme.dot(TEAL)))
                             .tooltip(move |_, cx| {
                                 cx.new(|_| Tooltip(tooltip.clone().into())).into()
                             });
                         editor_button(
                             theme,
-                            theme
-                                .button(
-                                    ("edit-profile-entry", index),
-                                    (index == selected).then_some(TEAL),
-                                )
-                                .h(r(38.))
-                                .pl(r(7.))
-                                .pr(r(3.))
-                                .gap(r(6.))
-                                .justify_start()
+                            profile_chip(theme, ("edit-profile-entry", index), index == selected)
                                 .child(label)
                                 .child(grip)
-                                .drag_over(move |mut style, drag: &ProfileDrag, _, _| {
-                                    if drag.0 != index {
-                                        style.border_color = Some(theme.color(TEAL));
-                                        style.background =
-                                            Some(theme.color(TEAL).opacity(0.17).into());
-                                    }
-                                    style
-                                })
-                                .on_drop(cx.listener(move |this, drag: &ProfileDrag, _, cx| {
-                                    this.reorder_profile(drag.0, index, cx);
-                                }))
                                 .on_key_down(cx.listener(move |this, event, window, cx| {
                                     this.reorder_profile_with_key(index, event, window, cx);
                                 })),
@@ -421,9 +419,118 @@ impl Dashboard {
                                 cx.notify();
                             },
                         )
+                        .into_any_element()
                     })),
             )
             .child(add)
+    }
+
+    pub(super) fn dragged_profile_chip(&self, theme: Theme) -> Option<Div> {
+        let drag = self.profile_editor.drag.as_ref()?;
+        drag.to?;
+        let index = drag.from;
+        let profile = self.home.profiles().get(index)?;
+        let selected = self.profile_editor.selected == Some(index);
+        let active = self.home.active_profile().0 == index;
+        let origin = drag.chip.origin + (drag.pointer - drag.start);
+        Some(
+            div()
+                .absolute()
+                .left(origin.x)
+                .top(origin.y)
+                .w(drag.chip.size.width)
+                .h(drag.chip.size.height)
+                .rounded(r(8.))
+                .bg(theme.color(PANEL))
+                .shadow_md()
+                .cursor_grabbing()
+                .occlude()
+                .child(
+                    profile_chip(theme, "dragged-profile-chip", selected)
+                        .size_full()
+                        .border_color(theme.color(TEAL))
+                        .child(profile_chip_label(theme, profile, index, active))
+                        .child(profile_grip(theme, index)),
+                ),
+        )
+    }
+
+    fn start_profile_drag(&mut self, index: usize, start: Point<Pixels>, cx: &mut Context<Self>) {
+        let editor = &mut self.profile_editor;
+        if let Some(mut chip) = editor.list.bounds_for_item(index) {
+            chip.origin += editor.list.offset();
+            editor.drag = Some(ProfileDrag {
+                from: index,
+                to: None,
+                chip,
+                start,
+                pointer: start,
+            });
+            cx.notify();
+        }
+    }
+
+    fn track_profile_drag(&self, cx: &Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        canvas(
+            |_, _, _| (),
+            move |_, _, window, _| {
+                let movement = view.clone();
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture {
+                        movement.update(cx, |this, cx| this.move_profile_drag(event, cx));
+                    }
+                });
+                window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                    if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
+                        view.update(cx, |this, cx| this.finish_profile_drag(event, window, cx));
+                    }
+                });
+            },
+        )
+        .absolute()
+        .inset_0()
+    }
+
+    fn move_profile_drag(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        let editor = &mut self.profile_editor;
+        let Some(drag) = &mut editor.drag else {
+            return;
+        };
+        if event.pressed_button != Some(MouseButton::Left) {
+            editor.drag = None;
+        } else {
+            let distance = event.position - drag.start;
+            if drag.to.is_none() && distance.x.abs().max(distance.y.abs()) < px(3.) {
+                return;
+            }
+            drag.pointer = event.position;
+            drag.to =
+                Some(drag.destination(event.position, &editor.list, self.home.profiles().len()));
+        }
+        cx.notify();
+    }
+
+    fn finish_profile_drag(
+        &mut self,
+        event: &MouseUpEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(drag) = self.profile_editor.drag.take() else {
+            return;
+        };
+        let viewport = Bounds::new(Point::default(), window.viewport_size());
+        if drag.to.is_some() && viewport.contains(&event.position) {
+            let to = drag.destination(
+                event.position,
+                &self.profile_editor.list,
+                self.home.profiles().len(),
+            );
+            self.reorder_profile(drag.from, to, cx);
+        }
+        cx.stop_propagation();
+        cx.notify();
     }
 
     fn reorder_profile(&mut self, from: usize, to: usize, cx: &mut Context<Self>) -> bool {
@@ -451,7 +558,7 @@ impl Dashboard {
             "down" => 1,
             _ => return,
         };
-        if cx.has_active_drag() || event.keystroke.modifiers.modified() {
+        if self.profile_editor.drag.is_some() || event.keystroke.modifiers.modified() {
             return;
         }
         cx.stop_propagation();
@@ -797,30 +904,41 @@ impl Dashboard {
     }
 }
 
-fn profile_grip(theme: Theme, index: usize, name: &str, enabled: bool) -> Stateful<Div> {
-    let grip = row()
+fn profile_chip(theme: Theme, id: impl Into<gpui::ElementId>, selected: bool) -> Stateful<Div> {
+    theme
+        .button(id, selected.then_some(TEAL))
+        .h(r(38.))
+        .pl(r(7.))
+        .pr(r(3.))
+        .gap(r(6.))
+        .justify_start()
+}
+
+fn profile_chip_label(theme: Theme, profile: &Profile, index: usize, active: bool) -> Div {
+    row()
+        .h_full()
+        .flex_1()
+        .gap(r(6.))
+        .child(
+            row()
+                .size(r(24.))
+                .flex_none()
+                .justify_center()
+                .child(profile.button_content(index, theme, 18.)),
+        )
+        .child(col().flex_1().truncate().child(profile.name(index)))
+        .when(active, |label| label.child(theme.dot(TEAL)))
+}
+
+fn profile_grip(theme: Theme, index: usize) -> Stateful<Div> {
+    row()
         .id(("profile-drag-handle", index))
         .w(r(30.))
         .h_full()
         .flex_none()
         .justify_center()
         .rounded(r(6.))
-        .child(icon(Icon::Grip, theme.color(MUTED), 18.));
-    if !enabled {
-        return grip.opacity(0.4);
-    }
-    let name = name.to_owned();
-    grip.cursor_grab()
-        .hover(move |it| it.bg(theme.color(HOVER)))
-        .tooltip(|_, cx| cx.new(|_| Tooltip("Drag to reorder".into())).into())
-        .on_mouse_move(|_, _, _| offer_drag(DragTarget::Free))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_drag(ProfileDrag(index), move |_, cursor_offset, _, cx| {
-            cx.new(|_| ProfileDragPreview {
-                name: name.clone(),
-                cursor_offset,
-            })
-        })
+        .child(icon(Icon::Grip, theme.color(MUTED), 18.))
 }
 
 fn editor_button(
@@ -831,8 +949,10 @@ fn editor_button(
 ) -> Stateful<Div> {
     let view = cx.entity();
     theme.bind(button, move |window, cx| {
-        if !cx.has_active_drag() {
-            view.update(cx, |this, cx| action(this, window, cx));
-        }
+        view.update(cx, |this, cx| {
+            if this.profile_editor.drag.is_none() {
+                action(this, window, cx);
+            }
+        });
     })
 }

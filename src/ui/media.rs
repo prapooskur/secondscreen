@@ -268,17 +268,25 @@ impl Dashboard {
                         .text_size(r(if width >= 340. { 22. } else { 17. }))
                         .font_weight(FontWeight::SEMIBOLD)
                         .truncate()
-                        .child(
-                            track.map_or_else(|| player.name.clone(), |track| track.title.clone()),
-                        ),
+                        .child(SharedString::from(track.map_or(
+                            player.name.as_str(),
+                            |track| {
+                                if track.title.is_empty() {
+                                    "Untitled track"
+                                } else {
+                                    track.title.as_str()
+                                }
+                            },
+                        ))),
                 )
                 .when_some(track.filter(|_| track_height >= 48.), |it, track| {
+                    let artist = track.artists.join(", ");
                     it.child(
                         theme
-                            .quiet(if track.artist.is_empty() {
+                            .quiet(if artist.is_empty() {
                                 player.name.clone()
                             } else {
-                                track.artist.clone()
+                                artist
                             })
                             .truncate(),
                     )

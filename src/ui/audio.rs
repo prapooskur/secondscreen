@@ -1,9 +1,11 @@
-use gpui::{Context, ElementId, IntoElement, ObjectFit, Styled, img, prelude::*};
+mod mixer;
+
+use gpui::{Context, ElementId, IntoElement, ObjectFit, Stateful, Styled, img, prelude::*};
 
 use super::{
     Dashboard, Tooltip,
     icons::{Icon, icon},
-    slider::{SliderStyle, slider},
+    slider::{SliderStyle, drag_value, slider},
     theme::*,
 };
 use crate::model::{AudioAction, AudioChannel, AudioKind};
@@ -14,30 +16,6 @@ impl Dashboard {
         if let Some(error) = &self.audio.issue {
             return theme.quiet(error.clone()).into_any_element();
         }
-        let view = cx.entity();
-        let tabs = row().gap(r(5.)).children(
-            [
-                (AudioKind::Playback, "Playback"),
-                (AudioKind::Recording, "Recording"),
-            ]
-            .into_iter()
-            .map(|(kind, text)| {
-                let view = view.clone();
-                theme.bind(
-                    theme
-                        .button(text, (self.audio_kind == kind).then_some(VIOLET))
-                        .h(r(28.))
-                        .child(text),
-                    move |_, cx| {
-                        view.update(cx, |this, cx| {
-                            this.audio_kind = kind;
-                            cx.notify();
-                        })
-                    },
-                )
-            }),
-        );
-
         let streams: Vec<_> = self
             .audio
             .channels
@@ -45,10 +23,16 @@ impl Dashboard {
             .filter(|channel| channel.id.kind == self.audio_kind)
             .collect();
         col()
+            .id("app-mixer")
             .flex_1()
             .overflow_hidden()
             .gap(r(6.))
-            .child(tabs)
+            .child(self.stream_tabs(
+                self.audio_kind,
+                VIOLET,
+                |this, kind| this.audio_kind = kind,
+                cx,
+            ))
             .when(streams.is_empty(), |it| {
                 it.child(theme.empty(
                     Icon::Audio,
@@ -75,81 +59,109 @@ impl Dashboard {
             .into_any_element()
     }
 
-    fn audio_levels(&self, channel: &AudioChannel, cx: &Context<Self>) -> impl IntoElement {
+    fn stream_tabs(
+        &self,
+        active: AudioKind,
+        accent: Color,
+        select: fn(&mut Self, AudioKind),
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
         let theme = Theme::current(cx);
-        const LIMIT: f32 = 150.;
         let view = cx.entity();
-        let kind = channel.id.kind;
-        let key = kind_key(kind);
-        let scope =
-            |control: &str| ElementId::Name(format!("{key}-{}-{control}", channel.id.index).into());
-        let recording = matches!(kind, AudioKind::Input | AudioKind::Recording);
-        let accent = if recording { BLUE } else { TEAL };
-        let mute_icon = match (recording, channel.muted) {
+        row().flex_none().gap(r(5.)).children(
+            [
+                (AudioKind::Playback, "Playback"),
+                (AudioKind::Recording, "Recording"),
+            ]
+            .map(|(kind, text)| {
+                let view = view.clone();
+                theme.bind(
+                    theme
+                        .button(text, (active == kind).then_some(accent))
+                        .h(r(28.))
+                        .child(text),
+                    move |_, cx| {
+                        view.update(cx, |this, cx| {
+                            select(this, kind);
+                            cx.notify();
+                        });
+                    },
+                )
+            }),
+        )
+    }
+
+    fn audio_mute(
+        &self,
+        channel: &AudioChannel,
+        id: impl Into<ElementId>,
+        cx: &Context<Self>,
+    ) -> Stateful<gpui::Div> {
+        let theme = Theme::current(cx);
+        let view = cx.entity();
+        let recording = matches!(channel.id.kind, AudioKind::Input | AudioKind::Recording);
+        let muted = channel.muted;
+        let mute_icon = match (recording, muted) {
             (true, true) => Icon::MicOff,
             (true, false) => Icon::Mic,
             (false, true) => Icon::SpeakerOff,
             (false, false) => Icon::Speaker,
         };
         let mute_id = channel.id.clone();
-        let muted = channel.muted;
-        let mute_button = theme.bind(
-            theme
-                .button(scope("mute"), muted.then_some(AMBER))
-                .size(r(31.))
-                .px_0()
-                .child(icon(
-                    mute_icon,
-                    theme.color(if muted { AMBER } else { TEXT }),
-                    16.,
-                )),
-            {
-                let view = view.clone();
+        let label = format!("Toggle mute for {}", channel.label);
+        theme
+            .bind(
+                theme
+                    .button(id, muted.then_some(AMBER))
+                    .size(r(31.))
+                    .px_0()
+                    .child(icon(
+                        mute_icon,
+                        theme.color(if muted { AMBER } else { TEXT }),
+                        16.,
+                    )),
                 move |_, cx| {
                     view.read(cx)
-                        .send_audio(AudioAction::Mute(mute_id.clone(), !muted))
-                }
-            },
-        );
+                        .send_audio(AudioAction::Mute(mute_id.clone(), !muted));
+                },
+            )
+            .tooltip(move |_, cx| cx.new(|_| Tooltip(label.clone().into())).into())
+    }
+
+    fn audio_volume(
+        &self,
+        channel: &AudioChannel,
+        slider_id: String,
+        style: SliderStyle,
+        cx: &Context<Self>,
+    ) -> (impl IntoElement, gpui::Div) {
+        const LIMIT: f32 = 150.;
+        let theme = Theme::current(cx);
+        let view = cx.entity();
         let volume_id = channel.id.clone();
-        let slider_id = format!("{key}-{}-volume", channel.id.index);
-        let shown_volume = self
-            .gesture
-            .borrow()
-            .as_ref()
-            .filter(|(id, _)| *id == slider_id)
-            .map(|(_, fraction)| (fraction * LIMIT).round() as u16)
+        let shown_volume = drag_value(&self.gesture, &slider_id)
+            .map(|fraction| (fraction * LIMIT).round() as u16)
             .or(channel.volume);
         let volume = slider(
             theme,
             slider_id,
             channel.volume.map_or(0., |value| f32::from(value) / LIMIT),
-            SliderStyle::Standard(if channel.muted { MUTED } else { accent }),
+            style,
             channel.volume.is_some(),
             self.gesture.clone(),
             5. / LIMIT,
-            {
-                let view = view.clone();
-                move |value, cx| {
-                    view.read(cx).send_audio(AudioAction::Volume(
-                        volume_id.clone(),
-                        (value * LIMIT).round() as u16,
-                    ))
-                }
+            move |value, cx| {
+                view.read(cx).send_audio(AudioAction::Volume(
+                    volume_id.clone(),
+                    (value * LIMIT).round() as u16,
+                ));
             },
         );
         let percent = mono(shown_volume.map_or_else(|| "—".into(), |value| format!("{value}%")))
-            .w(r(38.))
             .flex_none()
-            .text_right()
             .text_size(r(12.))
-            .text_color(theme.color(if muted { AMBER } else { TEXT }));
-        row()
-            .gap(r(6.))
-            .flex_1()
-            .child(mute_button)
-            .child(volume)
-            .child(percent)
+            .text_color(theme.color(if channel.muted { AMBER } else { TEXT }));
+        (volume, percent)
     }
 
     pub(super) fn channel(&self, channel: &AudioChannel, cx: &Context<Self>) -> impl IntoElement {
@@ -157,12 +169,22 @@ impl Dashboard {
         let view = cx.entity();
         let kind = channel.id.kind;
         let key = kind_key(kind);
-        let scope =
-            |control: &str| ElementId::Name(format!("{key}-{}-{control}", channel.id.index).into());
+        let scope = |control: &str| format!("{key}-{}-{control}", channel.id.index);
         let recording = matches!(kind, AudioKind::Input | AudioKind::Recording);
         let device = matches!(kind, AudioKind::Input | AudioKind::Output);
         let accent = if recording { BLUE } else { TEAL };
-        let meter = self.audio_levels(channel, cx);
+        let (volume, percent) = self.audio_volume(
+            channel,
+            scope("volume"),
+            SliderStyle::Standard(if channel.muted { MUTED } else { accent }),
+            cx,
+        );
+        let meter = row()
+            .gap(r(6.))
+            .flex_1()
+            .child(self.audio_mute(channel, scope("mute"), cx))
+            .child(volume)
+            .child(percent.w(r(38.)).text_right());
         let surface = col()
             .flex_none()
             .bg(theme.color(BACK).opacity(0.42))
@@ -172,28 +194,17 @@ impl Dashboard {
             .px(r(7.))
             .py(r(5.));
         if !device {
-            let description = if channel.detail.is_empty() {
-                channel.label.clone()
-            } else {
-                format!("{} · {}", channel.label, channel.detail)
-            };
             let fallback = if recording { Icon::Mic } else { Icon::Music };
             let app_icon = row()
                 .id(scope("app-icon"))
                 .size(r(30.))
                 .flex_none()
                 .justify_center()
-                .child(match &channel.icon {
-                    Some(path) => img(path.clone())
-                        .size(r(28.))
-                        .object_fit(ObjectFit::Contain)
-                        .with_fallback(move || {
-                            icon(fallback, theme.color(accent), 24.).into_any_element()
-                        })
-                        .into_any_element(),
-                    None => icon(fallback, theme.color(accent), 24.).into_any_element(),
-                })
-                .tooltip(move |_, cx| cx.new(|_| Tooltip(description.clone().into())).into());
+                .child(audio_icon(channel, fallback, theme, accent, 28.))
+                .tooltip({
+                    let description = channel_description(channel);
+                    move |_, cx| cx.new(|_| Tooltip(description.clone().into())).into()
+                });
             return surface
                 .child(row().gap(r(8.)).child(app_icon).child(meter))
                 .into_any_element();
@@ -234,6 +245,32 @@ impl Dashboard {
             )
             .child(meter)
             .into_any_element()
+    }
+}
+
+fn channel_description(channel: &AudioChannel) -> String {
+    if channel.detail.is_empty() {
+        channel.label.clone()
+    } else {
+        format!("{} · {}", channel.label, channel.detail)
+    }
+}
+
+fn audio_icon(
+    channel: &AudioChannel,
+    fallback: Icon,
+    theme: Theme,
+    accent: Color,
+    size: f32,
+) -> impl IntoElement {
+    let fallback = move || icon(fallback, theme.color(accent), size - 4.).into_any_element();
+    match &channel.icon {
+        Some(path) => img(path.clone())
+            .size(r(size))
+            .object_fit(ObjectFit::Contain)
+            .with_fallback(fallback)
+            .into_any_element(),
+        None => fallback(),
     }
 }
 

@@ -113,7 +113,7 @@ pub enum Artwork {
 pub struct Track {
     pub id: String,
     pub title: String,
-    pub artist: String,
+    pub artists: Vec<String>,
     pub album: String,
     pub duration: Option<i64>,
     pub artwork: Option<Artwork>,

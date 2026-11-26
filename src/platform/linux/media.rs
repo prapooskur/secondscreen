@@ -386,13 +386,12 @@ fn metadata(value: OwnedValue) -> Option<Track> {
         return None;
     }
 
-    let artist = values
+    let artists = values
         .get("xesam:artist")
         .and_then(|value| value.try_clone().ok())
         .and_then(|value| Vec::<String>::try_from(value).ok())
         .filter(|names| !names.is_empty())
-        .map(|names| names.join(", "))
-        .or_else(|| string(&values, "xesam:artist").map(str::to_owned))
+        .or_else(|| string(&values, "xesam:artist").map(|name| vec![name.to_owned()]))
         .unwrap_or_default();
     let artwork = string(&values, "mpris:artUrl")
         .and_then(|value| url::Url::parse(value).ok())
@@ -404,11 +403,8 @@ fn metadata(value: OwnedValue) -> Option<Track> {
 
     Some(Track {
         id,
-        title: title
-            .filter(|title| !title.is_empty())
-            .unwrap_or("Untitled track")
-            .to_owned(),
-        artist,
+        title: title.unwrap_or_default().to_owned(),
+        artists,
         album: string(&values, "xesam:album")
             .unwrap_or_default()
             .to_owned(),

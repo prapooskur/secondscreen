@@ -1,7 +1,7 @@
 use gpui::{
     App, Bounds, CursorStyle, DispatchPhase, HitboxBehavior, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Styled, canvas, fill, point, prelude::*,
-    px, size,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Styled, canvas, fill, point,
+    prelude::*, px, size,
 };
 use std::{cell::RefCell, rc::Rc};
 
@@ -13,6 +13,7 @@ pub type Gesture = Rc<RefCell<Option<(String, f32)>>>;
 pub enum SliderStyle {
     Standard(Color),
     Scrubber { accent: Color, height: f32 },
+    Fader(Color),
 }
 
 pub fn drag_value(gesture: &Gesture, id: &str) -> Option<f32> {
@@ -34,9 +35,10 @@ pub fn slider(
     change: impl Fn(f32, &mut App) + 'static,
 ) -> impl IntoElement {
     let (accent, height) = match style {
-        SliderStyle::Standard(accent) => (accent, 25.),
+        SliderStyle::Standard(accent) | SliderStyle::Fader(accent) => (accent, 25.),
         SliderStyle::Scrubber { accent, height } => (accent, height - 2.),
     };
+    let vertical = matches!(style, SliderStyle::Fader(_));
     let change = Rc::new(change);
     let keyboard = change.clone();
     let track_id = id.clone();
@@ -47,41 +49,78 @@ pub fn slider(
             let (radius, thickness, offset) = match style {
                 SliderStyle::Standard(_) => (px(5.), px(4.), px(0.)),
                 SliderStyle::Scrubber { .. } => (px(9. * scale), px(6. * scale), px(10. * scale)),
+                SliderStyle::Fader(_) => (px(4. * scale), px(12. * scale), px(0.)),
             };
-            let left = bounds.left() + radius;
-            let width = (bounds.size.width - radius * 2.).max(px(1.));
-            let center = bounds.center().y + offset;
+            let (start, length, center) = if vertical {
+                (
+                    bounds.bottom() - radius,
+                    bounds.size.height,
+                    bounds.center().x,
+                )
+            } else {
+                (
+                    bounds.left() + radius,
+                    bounds.size.width,
+                    bounds.center().y + offset,
+                )
+            };
+            let length = (length - radius * 2.).max(px(1.));
             let current = drag_value(&gesture, &track_id)
                 .unwrap_or(value)
                 .clamp(0., 1.);
             let line = |length: Pixels, color| {
-                fill(
+                let bounds = if vertical {
                     Bounds::new(
-                        point(left, center - thickness / 2.),
+                        point(center - thickness / 2., start - length),
+                        size(thickness, length),
+                    )
+                } else {
+                    Bounds::new(
+                        point(start, center - thickness / 2.),
                         size(length, thickness),
-                    ),
-                    color,
-                )
-                .corner_radii(thickness / 2.)
+                    )
+                };
+                fill(bounds, color).corner_radii(thickness / 2.)
             };
-            window.paint_quad(line(width, theme.color(STROKE)));
+            window.paint_quad(line(length, theme.color(STROKE)));
             if current > 0. {
                 window.paint_quad(line(
-                    width * current,
+                    length * current,
                     theme
                         .color(accent)
                         .opacity(if enabled { 0.85 } else { 0.4 }),
                 ));
             }
             if enabled {
-                let thumb = Bounds::new(
-                    point(left + width * current - radius, center - radius),
-                    size(radius * 2., radius * 2.),
-                );
-                window.paint_quad(fill(thumb, theme.color(accent)).corner_radii(radius));
+                let (thumb, rounding) = if vertical {
+                    let half_width = px(12. * scale);
+                    (
+                        Bounds::new(
+                            point(center - half_width, start - length * current - radius),
+                            size(half_width * 2., radius * 2.),
+                        ),
+                        px(2. * scale),
+                    )
+                } else {
+                    (
+                        Bounds::new(
+                            point(start + length * current - radius, center - radius),
+                            size(radius * 2., radius * 2.),
+                        ),
+                        radius,
+                    )
+                };
+                window.paint_quad(fill(thumb, theme.color(accent)).corner_radii(rounding));
                 window.set_cursor_style(CursorStyle::PointingHand, &hitbox);
 
-                let fraction = move |x: Pixels| ((x - left) / width).clamp(0., 1.);
+                let fraction = move |position: Point<Pixels>| {
+                    let distance = if vertical {
+                        start - position.y
+                    } else {
+                        position.x - start
+                    };
+                    (distance / length).clamp(0., 1.)
+                };
                 let start = gesture.clone();
                 let start_id = track_id.clone();
                 let start_hitbox = hitbox.clone();
@@ -90,7 +129,7 @@ pub fn slider(
                         && event.button == MouseButton::Left
                         && start_hitbox.is_hovered(window)
                     {
-                        *start.borrow_mut() = Some((start_id.clone(), fraction(event.position.x)));
+                        *start.borrow_mut() = Some((start_id.clone(), fraction(event.position)));
                         window.refresh();
                     }
                 });
@@ -101,13 +140,17 @@ pub fn slider(
                         return;
                     }
                     if hitbox.is_hovered(window) {
-                        touch::offer_drag(touch::DragTarget::Horizontal);
+                        touch::offer_drag(if vertical {
+                            touch::DragTarget::Vertical
+                        } else {
+                            touch::DragTarget::Horizontal
+                        });
                     }
                     let mut progress = progress.borrow_mut();
                     if let Some((_, value)) = progress.as_mut().filter(|(id, _)| id == &progress_id)
                     {
                         if event.pressed_button == Some(MouseButton::Left) {
-                            *value = fraction(event.position.x);
+                            *value = fraction(event.position);
                         } else {
                             progress.take();
                         }
@@ -123,7 +166,7 @@ pub fn slider(
                             .is_some_and(|(id, _)| id == &track_id)
                     {
                         gesture.borrow_mut().take();
-                        change(fraction(event.position.x), cx);
+                        change(fraction(event.position), cx);
                         window.refresh();
                     }
                 });
@@ -131,14 +174,15 @@ pub fn slider(
         },
     )
     .w_full()
-    .h(r(height));
+    .when_else(vertical, |it| it.h_full(), |it| it.h(r(height)));
 
     row()
         .id(gpui::SharedString::from(id))
         .flex_1()
+        .when(vertical, |it| it.w(r(42.)).min_h_0())
         .border_1()
         .border_color(theme.color(PANEL))
-        .when(matches!(style, SliderStyle::Scrubber { .. }), |it| {
+        .when(!matches!(style, SliderStyle::Standard(_)), |it| {
             it.border(r(1.))
                 .border_color(theme.color(PANEL).opacity(0.))
         })

@@ -96,6 +96,7 @@ pub struct Dashboard {
     storage_active: bool,
     audio: AudioState,
     audio_kind: AudioKind,
+    volume_mixer_kind: AudioKind,
     media: MediaState,
     media_lyrics: media::MediaLyrics,
     player: Option<String>,
@@ -198,6 +199,7 @@ impl Dashboard {
             storage_active: false,
             audio: AudioState::default(),
             audio_kind: AudioKind::Playback,
+            volume_mixer_kind: AudioKind::Playback,
             media: MediaState::default(),
             media_lyrics: media::MediaLyrics::default(),
             player: None,
@@ -271,6 +273,7 @@ impl Dashboard {
                 if self.showing_settings(Section::Audio)
                     || self.home.shows(Kind::Audio)
                     || self.home.shows(Kind::Mixer)
+                    || self.home.shows(Kind::VolumeMixer)
                     || self.home.shows(Kind::QuickControls)
                 {
                     Refresh::Immediate

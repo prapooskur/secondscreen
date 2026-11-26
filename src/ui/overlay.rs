@@ -37,7 +37,7 @@ impl Dashboard {
     ) {
         if self.overlay.open != Some(overlay) {
             if let Some(previous) = self.overlay.open.replace(overlay) {
-                self.reset_overlay(previous, window, cx);
+                self.reset_overlay(previous, cx);
             } else {
                 self.overlay.previous_focus = window.focused(cx);
                 self.gesture.borrow_mut().take();
@@ -55,7 +55,7 @@ impl Dashboard {
         let Some(overlay) = self.overlay.open.take() else {
             return;
         };
-        self.reset_overlay(overlay, window, cx);
+        self.reset_overlay(overlay, cx);
         let previous = self
             .overlay
             .previous_focus
@@ -66,13 +66,10 @@ impl Dashboard {
         cx.notify();
     }
 
-    fn reset_overlay(&mut self, overlay: Overlay, window: &mut Window, cx: &mut Context<Self>) {
+    fn reset_overlay(&mut self, overlay: Overlay, cx: &mut Context<Self>) {
         match overlay {
             Overlay::Settings => self.reset_settings(),
-            Overlay::Profile => {
-                cx.stop_active_drag(window);
-                self.profile_editor.reset(cx);
-            }
+            Overlay::Profile => self.profile_editor.reset(cx),
         }
     }
 
@@ -104,6 +101,7 @@ impl Dashboard {
                     .on_click(cx.listener(|this, _, window, cx| this.close_overlay(window, cx))),
             )
             .child(panel)
+            .children(self.dragged_profile_chip(theme))
     }
 
     pub(super) fn overlay_panel(

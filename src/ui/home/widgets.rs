@@ -12,6 +12,7 @@ impl Kind {
             Self::Media => "Now playing",
             Self::Audio => "Audio",
             Self::Mixer => "App mixer",
+            Self::VolumeMixer => "Volume mixer",
             Self::Discord => "Discord",
             Self::Viewer => "Viewer",
             Self::WorldClock => "World clock",
@@ -30,6 +31,7 @@ impl Kind {
             Self::Media => "Track details and playback",
             Self::Audio => "Audio devices and volume",
             Self::Mixer => "App volume and mute",
+            Self::VolumeMixer => "Device and app levels",
             Self::Discord => "Voice channel and controls",
             Self::Viewer => "Web, video, Twitch, and slideshows",
             Self::WorldClock => "Time and date across time zones",
@@ -47,7 +49,7 @@ impl Kind {
             Self::SystemMonitor => Icon::Activity,
             Self::Media => Icon::Music,
             Self::Audio => Icon::Speaker,
-            Self::Mixer => Icon::Audio,
+            Self::Mixer | Self::VolumeMixer => Icon::Audio,
             Self::Discord => Icon::Discord,
             Self::Viewer => Icon::Play,
             Self::WorldClock => Icon::Clock,
@@ -64,7 +66,7 @@ impl Kind {
         match self {
             Self::SystemMonitor => TEAL,
             Self::Media => PINK,
-            Self::Mixer | Self::Audio => AMBER,
+            Self::Mixer | Self::Audio | Self::VolumeMixer => AMBER,
             Self::Discord => VIOLET,
             Self::Viewer => BLUE,
             Self::WorldClock => TEAL,
@@ -92,6 +94,9 @@ impl Dashboard {
             Kind::Media => self.media_widget(width, height, cx),
             Kind::Audio => self.audio_widget(cx).into_any_element(),
             Kind::Mixer => self.mixer_widget(cx).into_any_element(),
+            Kind::VolumeMixer => self
+                .volume_mixer_widget(width, height, cx)
+                .into_any_element(),
             Kind::Discord => self.discord_widget(cx).into_any_element(),
             Kind::WorldClock => self.world_clock(theme, height).into_any_element(),
             Kind::Calendar => self.calendar(theme, width, height, cx).into_any_element(),

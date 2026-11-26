@@ -15,6 +15,7 @@ const TAP_SLOP: Pixels = px(8.);
 pub(super) enum DragTarget {
     Scroll,
     Horizontal,
+    Vertical,
     Free,
 }
 
@@ -134,6 +135,7 @@ impl ActiveContact {
             self.gesture = match target {
                 DragTarget::Free => Gesture::Drag,
                 DragTarget::Horizontal if horizontal => Gesture::Drag,
+                DragTarget::Vertical if !horizontal => Gesture::Drag,
                 _ => Gesture::Pan { horizontal },
             };
             if matches!(self.gesture, Gesture::Drag) {

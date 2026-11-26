@@ -27,15 +27,17 @@ pub(in crate::ui) enum Kind {
     Fps,
     HomeAssistant,
     QuickControls,
+    VolumeMixer,
 }
 
 impl Kind {
-    pub(super) const ALL: [Self; 13] = [
+    pub(super) const ALL: [Self; 14] = [
         Self::SystemMonitor,
         Self::Media,
         Self::Audio,
         Self::Discord,
         Self::Mixer,
+        Self::VolumeMixer,
         Self::Viewer,
         Self::WorldClock,
         Self::Calendar,
@@ -57,7 +59,11 @@ impl Kind {
         Widget {
             id: self as u32 + 1,
             kind: self,
-            columns: if self == Self::SystemMonitor { 2 } else { 1 },
+            columns: if matches!(self, Self::SystemMonitor | Self::VolumeMixer) {
+                2
+            } else {
+                1
+            },
             rows: if matches!(self, Self::HomeAssistant | Self::QuickControls) {
                 MIN_ROWS
             } else {

@@ -80,12 +80,11 @@ impl ProfilePreset {
             },
             Self {
                 name: "Music & Audio",
-                description: "Now playing, app mixer, and audio devices",
+                description: "Now playing, volume mixer, and playback shortcuts",
                 icon: Some(ProfileIcon::Headphones),
                 tiles: &[
                     (Standard(Kind::Media), 2, VISIBLE_ROWS),
-                    (Standard(Kind::Mixer), 1, VISIBLE_ROWS),
-                    (Standard(Kind::Audio), 1, VISIBLE_ROWS),
+                    (Standard(Kind::VolumeMixer), 2, VISIBLE_ROWS),
                     (Standard(Kind::QuickControls), 1, VISIBLE_ROWS),
                 ],
                 controls: &[
