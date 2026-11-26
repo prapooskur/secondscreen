@@ -7,7 +7,7 @@ use gpui::{
 
 use super::{
     Dashboard, Tooltip,
-    home::{Badge, MAX_PROFILES, Profile, ProfileDetails, import_profile_image},
+    home::{Badge, MAX_PROFILES, Profile, ProfileDetails, ProfilePreset, import_profile_image},
     icons::{Icon, ProfileIcon, icon},
     overlay::Overlay,
     text_input::{TextInput, field},
@@ -20,6 +20,13 @@ pub(super) struct ProfileEditor {
     drafts: Vec<Option<Draft>>,
     picker: Option<Task<()>>,
     confirm_delete: bool,
+    creation: Option<ProfileCreation>,
+}
+
+#[derive(Clone, Copy)]
+struct ProfileCreation {
+    preset: usize,
+    return_to_editor: bool,
 }
 
 struct Draft {
@@ -92,7 +99,169 @@ impl Draft {
 }
 
 impl Dashboard {
+    pub(super) fn show_profile_presets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let return_to_editor = self.overlay.open == Some(Overlay::Profile);
+        self.profile_editor.picker = None;
+        self.profile_editor.creation = Some(ProfileCreation {
+            preset: 0,
+            return_to_editor,
+        });
+        self.show_overlay(Overlay::Profile, window, cx);
+        if return_to_editor {
+            self.focus_overlay(window, cx);
+        }
+    }
+
+    pub(super) fn dismiss_profile_step(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.profile_editor.creation.is_some() {
+            self.finish_profile_creation(window, cx);
+        } else if self.profile_editor.cancel_delete() {
+            self.focus_overlay(window, cx);
+            cx.notify();
+        } else {
+            return false;
+        }
+        true
+    }
+
+    fn finish_profile_creation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .profile_editor
+            .creation
+            .take()
+            .is_some_and(|creation| creation.return_to_editor)
+        {
+            self.focus_overlay(window, cx);
+            cx.notify();
+        } else {
+            self.close_overlay(window, cx);
+        }
+    }
+
+    fn profile_presets_panel(
+        &self,
+        creation: ProfileCreation,
+        cx: &Context<Self>,
+    ) -> Stateful<Div> {
+        let theme = Theme::current(cx);
+        let choices = ProfilePreset::ALL
+            .iter()
+            .enumerate()
+            .map(|(index, preset)| {
+                let selected = index == creation.preset;
+                let symbol = preset.icon.map_or_else(
+                    || icon(Icon::Plus, theme.color(MUTED), 19.).into_any_element(),
+                    |symbol| symbol.element(theme, 22.).into_any_element(),
+                );
+                let button = theme
+                    .button(("profile-preset", index), selected.then_some(TEAL))
+                    .h_full()
+                    .justify_start()
+                    .gap(r(10.))
+                    .px(r(9.))
+                    .child(
+                        row()
+                            .size(r(36.))
+                            .flex_none()
+                            .justify_center()
+                            .rounded(r(7.))
+                            .bg(theme
+                                .color(if selected { TEAL } else { MUTED })
+                                .opacity(0.10))
+                            .child(symbol),
+                    )
+                    .child(
+                        col()
+                            .flex_1()
+                            .child(
+                                theme
+                                    .label(preset.name)
+                                    .text_color(theme.color(INK))
+                                    .line_height(r(16.))
+                                    .truncate(),
+                            )
+                            .child(
+                                theme
+                                    .quiet(preset.description)
+                                    .line_height(r(15.))
+                                    .line_clamp(2),
+                            ),
+                    )
+                    .child(row().size(r(15.)).flex_none().when(selected, |it| {
+                        it.child(icon(Icon::Check, theme.color(TEAL), 15.))
+                    }));
+                editor_button(theme, button, cx, move |this, _, cx| {
+                    if let Some(creation) = &mut this.profile_editor.creation {
+                        creation.preset = index;
+                        cx.notify();
+                    }
+                })
+            });
+        let cancel = editor_button(
+            theme,
+            theme.button("cancel-new-profile", None).child("Cancel"),
+            cx,
+            |this, window, cx| this.finish_profile_creation(window, cx),
+        );
+        let create = editor_button(
+            theme,
+            theme
+                .button("create-profile", Some(TEAL))
+                .child("Create profile"),
+            cx,
+            |this, window, cx| {
+                if let Some(creation) = this.profile_editor.creation
+                    && let Some(index) =
+                        this.add_profile(ProfilePreset::ALL[creation.preset], window, cx)
+                {
+                    if creation.return_to_editor {
+                        this.profile_editor.select(index);
+                    }
+                    this.finish_profile_creation(window, cx);
+                }
+            },
+        );
+
+        self.overlay_panel(Overlay::Profile, theme.title("New profile"), cx)
+            .child(
+                col()
+                    .id("profile-presets")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .child(
+                        div()
+                            .grid()
+                            .grid_cols(2)
+                            .grid_rows(4)
+                            .h_full()
+                            .min_h(r(216.))
+                            .max_h(r(256.))
+                            .flex_none()
+                            .gap(r(8.))
+                            .children(choices),
+                    ),
+            )
+            .child(
+                row()
+                    .flex_none()
+                    .justify_end()
+                    .gap(r(6.))
+                    .pt(r(8.))
+                    .border_t_1()
+                    .border_color(theme.color(STROKE))
+                    .child(cancel)
+                    .child(create),
+            )
+    }
+
     pub(super) fn profile_editor_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(creation) = self.profile_editor.creation {
+            return self.profile_presets_panel(creation, cx);
+        }
         let theme = Theme::current(cx);
         let (active, _) = self.home.active_profile();
         let count = self.home.profiles().len();
@@ -141,9 +310,7 @@ impl Dashboard {
             })
         } else {
             editor_button(theme, add, cx, |this, window, cx| {
-                if let Some(index) = this.add_profile(window, cx) {
-                    this.profile_editor.select(index);
-                }
+                this.show_profile_presets(window, cx)
             })
         };
 

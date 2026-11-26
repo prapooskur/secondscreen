@@ -21,7 +21,7 @@ use super::{
         overlay::Overlay,
         theme::*,
     },
-    Home, Layout, RAIL_BUTTON_SIZE, RAIL_WIDTH, rail_control,
+    Home, Layout, ProfilePreset, RAIL_BUTTON_SIZE, RAIL_WIDTH, rail_control,
 };
 
 pub(in crate::ui) const MAX_PROFILES: usize = 5;
@@ -115,12 +115,12 @@ impl Profiles {
         Ok(profiles)
     }
 
-    pub fn add(&mut self) -> Option<usize> {
+    fn add(&mut self, preset: ProfilePreset) -> Option<usize> {
         let index = self.items.len();
         if index >= MAX_PROFILES {
             return None;
         }
-        self.items.push(Profile::new(Layout::empty()));
+        self.items.push(preset.build());
         Some(index)
     }
 
@@ -328,7 +328,7 @@ impl Dashboard {
                     false,
                     move |window, cx| {
                         view.update(cx, |this, cx| {
-                            this.add_profile(window, cx);
+                            this.show_profile_presets(window, cx);
                         })
                     },
                 ))
@@ -367,10 +367,12 @@ impl Dashboard {
 
     pub(in crate::ui) fn add_profile(
         &mut self,
+        preset: ProfilePreset,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<usize> {
-        let index = self.home.profiles.add()?;
+        let index = self.home.profiles.add(preset)?;
+        self.error = None;
         self.switch_profile(index, window, cx);
         if self.home.profiles.active == index {
             Some(index)
@@ -459,10 +461,10 @@ mod tests {
         assert_eq!(profiles.active, 0);
         assert_eq!(profiles.items.len(), 1);
         for index in 1..MAX_PROFILES {
-            assert_eq!(profiles.add(), Some(index));
+            assert_eq!(profiles.add(ProfilePreset::BLANK), Some(index));
             assert!(profiles.items[index].layout.widgets.is_empty());
         }
-        assert_eq!(profiles.add(), None);
+        assert_eq!(profiles.add(ProfilePreset::BLANK), None);
         profiles.items[1].layout.add(Kind::Weather);
         profiles.items[1].details.name = Some("Weather".into());
         profiles.items[2].details.name = Some("Studio".into());
@@ -487,6 +489,61 @@ mod tests {
         );
         assert_eq!(saved.items[4].name(4), "Profile 5");
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn presets_keep_their_layout_and_widget_options_when_reopened() {
+        use crate::ui::home::layout::{MAX_COLUMNS, place};
+        use crate::viewer::ViewerMode;
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        for (position, preset) in ProfilePreset::ALL.into_iter().enumerate() {
+            let mut profiles = Profiles::default();
+            profiles.active = profiles.add(preset).unwrap();
+            profiles.write(file.path()).unwrap();
+
+            let restored = Profiles::read(file.path()).unwrap();
+            assert_eq!(restored.active, 1);
+            assert_eq!(restored.items[0].layout, profiles.items[0].layout);
+            let profile = &restored.items[1];
+            assert_eq!(profile.layout, profiles.items[1].layout);
+            assert_eq!(profile.layout.widgets.is_empty(), position == 0);
+            assert_eq!(profile.details.badge, preset.icon.map(Badge::Preset));
+            assert_eq!(
+                profile.name(1),
+                if position == 0 {
+                    "Profile 2"
+                } else {
+                    preset.name
+                }
+            );
+
+            let placements = place(profile.layout.widgets.iter().copied(), MAX_COLUMNS);
+            assert!(
+                placements
+                    .iter()
+                    .all(|tile| tile.x + usize::from(tile.columns) <= usize::from(MAX_COLUMNS))
+            );
+            for tile in &profile.layout.widgets {
+                if tile.kind == Kind::SystemMonitor {
+                    assert!(!profile.layout.monitors[&tile.id].readings.is_empty());
+                }
+            }
+            if preset.name == "Stream Companion" {
+                let viewers = &profile.layout.viewers;
+                assert_eq!(viewers.len(), 2);
+                for (tile, mode) in profile
+                    .layout
+                    .widgets
+                    .iter()
+                    .zip([ViewerMode::TwitchLive, ViewerMode::TwitchChat])
+                {
+                    assert_eq!(tile.kind, Kind::Viewer);
+                    assert_eq!(viewers[&tile.id].mode, mode);
+                    assert!(viewers[&tile.id].source.is_empty());
+                }
+            }
+        }
     }
 
     #[test]
@@ -525,7 +582,7 @@ mod tests {
     fn removes_profiles_and_preserves_the_active_selection() {
         let mut profiles = Profiles::default();
         for (index, name) in ["Studio", "Games", "Desk"].into_iter().enumerate() {
-            assert_eq!(profiles.add(), Some(index + 1));
+            assert_eq!(profiles.add(ProfilePreset::BLANK), Some(index + 1));
             profiles.items[index + 1].details.name = Some(name.into());
         }
         profiles.active = 2;

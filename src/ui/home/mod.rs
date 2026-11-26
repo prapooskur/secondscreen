@@ -1,5 +1,6 @@
 mod layout;
 mod options;
+mod presets;
 mod profiles;
 mod quick_controls;
 mod system_monitor;
@@ -15,6 +16,7 @@ use gpui::{
 
 pub(super) use self::layout::Kind;
 use self::layout::{Layout, MAX_COLUMNS, MIN_ROWS, Placement, VISIBLE_ROWS, Widget, shifted_span};
+pub(super) use self::presets::ProfilePreset;
 use self::profiles::Profiles;
 pub(super) use self::profiles::{
     Badge, MAX_PROFILES, Profile, ProfileDetails, import_profile_image,

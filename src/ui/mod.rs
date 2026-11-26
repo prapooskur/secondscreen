@@ -430,11 +430,7 @@ impl Dashboard {
             "f11" => self.toggle_fullscreen(window),
             "escape"
                 if self.overlay.open == Some(Overlay::Profile)
-                    && self.profile_editor.cancel_delete() =>
-            {
-                self.focus_overlay(window, cx);
-                cx.notify();
-            }
+                    && self.dismiss_profile_step(window, cx) => {}
             "escape" if self.overlay.open.is_some() => self.close_overlay(window, cx),
             "escape" if self.home.escape() => {
                 self.focus_dashboard(window, cx);
