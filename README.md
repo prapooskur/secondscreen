@@ -19,7 +19,7 @@ Open the **Linux packages** run for your commit under **Actions** on GitHub. Eve
 | Package | Build environment | Install |
 | --- | --- | --- |
 | DEB | Ubuntu 24.04 | `sudo apt install ./*.deb` |
-| RPM | Fedora 44 | `sudo dnf install ./*.rpm` |
+| RPM | Fedora 45 | `sudo dnf install ./*.rpm` |
 | Flatpak | GNOME 51 runtime from Flathub | `flatpak install --user ./*.flatpak` |
 
 Launch **Second Screen** from your app menu in a Wayland session. Flatpak keeps its settings separately under `~/.var/app/io.github.secondscreen`. Host notification monitoring and compositor-specific display placement require a native package. System monitor reports usage for filesystems visible inside the sandbox, including drives mounted under `/media`, `/mnt`, and `/run/media`.

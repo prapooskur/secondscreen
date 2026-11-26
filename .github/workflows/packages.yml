@@ -41,7 +41,7 @@ jobs:
 
   rpm:
     runs-on: ubuntu-24.04
-    container: fedora:44
+    container: fedora:45
     env:
       CARGO_PROFILE_RELEASE_STRIP: symbols
     steps:
@@ -55,7 +55,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          key: fedora-44
+          key: fedora-45
       - name: Build RPM
         run: |
           cargo install --locked cargo-generate-rpm --version 0.21.1
