@@ -55,7 +55,7 @@ log = "0.4"
 sysinfo = { version = "0.40", default-features = false, features = ["component", "gpu", "network", "system"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-ashpd = { version = "0.13", default-features = false, features = ["async-io", "background"] }
+ashpd = { version = "0.13", default-features = false, features = ["async-io", "background", "location"] }
 async-io = "2"
 gpui = { package = "gpui-pre", version = "=0.3.14", optional = true, default-features = false, features = ["wayland"] }
 gpui-standard-platform = { package = "gpui-pre-platform", version = "=0.3.14", optional = true, default-features = false, features = ["wayland"] }

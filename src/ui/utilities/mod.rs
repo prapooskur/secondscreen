@@ -106,6 +106,7 @@ impl Utilities {
         self.weather_error = None;
         if report.weather.is_none()
             && let Some(previous) = self.report.take()
+            && report.place.same_location(&previous.report.place)
             && previous.report.weather.is_some()
         {
             report.weather = previous.report.weather;
@@ -267,10 +268,7 @@ impl Dashboard {
             self.utilities.report = None;
             self.utilities.weather_error = None;
         }
-        if query.is_empty()
-            || !self.home.contains(Kind::Weather)
-            || self.utilities.weather_task.is_some()
-        {
+        if !self.home.contains(Kind::Weather) || self.utilities.weather_task.is_some() {
             return;
         }
         let query = query.to_owned();
@@ -287,7 +285,9 @@ impl Dashboard {
                 && let Some(cached) =
                     blocking::unblock(move || weather::CachedReport::load(&path)).await
             {
-                delay = cached.refresh_delay(SystemTime::now());
+                if !query.is_empty() {
+                    delay = cached.refresh_delay(SystemTime::now());
+                }
                 if this
                     .update(cx, |this, cx| {
                         this.utilities.report = Some(cached);
@@ -332,8 +332,7 @@ impl Dashboard {
                 }) else {
                     break;
                 };
-                let query = query.clone();
-                let result = blocking::unblock(move || weather::fetch(&query, known_place)).await;
+                let result = weather::fetch(query.clone(), known_place).await;
                 let Ok(cached) = this.update(cx, |this, cx| {
                     this.utilities.weather_refreshing = false;
                     let cached = match result {

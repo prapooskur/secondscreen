@@ -1,4 +1,6 @@
 use anyhow::{Context, Result, ensure};
+use ashpd::desktop::location::{Accuracy, CreateSessionOptions, LocationProxy};
+use futures_lite::{StreamExt, future};
 use jiff::civil::{Date, DateTime, Time};
 use reqwest::{
     StatusCode,
@@ -8,6 +10,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use std::{
     path::{Path, PathBuf},
+    pin::pin,
     time::{Duration, SystemTime},
 };
 
@@ -18,6 +21,7 @@ const CURRENT_FIELDS: &str = "temperature_2m,weather_code,is_day,wind_speed_10m"
 const DAILY_FIELDS: &str = "weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset";
 const SHORT_TIMEOUT: Duration = Duration::from_secs(8);
 const FORECAST_TIMEOUT: Duration = Duration::from_secs(15);
+const LOCATION_TIMEOUT: Duration = Duration::from_secs(45);
 const REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
 pub(super) const RETRY_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const FORECAST_DAYS: usize = 10;
@@ -31,6 +35,12 @@ pub(super) struct Place {
     longitude: f64,
     #[serde(default)]
     country: String,
+}
+
+impl Place {
+    pub(super) fn same_location(&self, other: &Self) -> bool {
+        self.latitude == other.latitude && self.longitude == other.longitude
+    }
 }
 
 pub(in crate::ui) fn coordinates(input: &str) -> Result<Option<(f64, f64)>> {
@@ -122,6 +132,48 @@ fn locate(client: &Client, query: &str) -> Result<Place> {
         found.name = format!("{}, {}", found.name, found.country);
     }
     Ok(found)
+}
+
+async fn detect_location() -> Result<Place> {
+    let detect = async {
+        let connection = zbus::Connection::session().await?;
+        let proxy = LocationProxy::with_connection(connection).await?;
+        let session = proxy
+            .create_session(CreateSessionOptions::default().set_accuracy(Accuracy::City))
+            .await?;
+        let mut updates = pin!(proxy.receive_location_updated().await?);
+        proxy
+            .start(&session, None, Default::default())
+            .await?
+            .response()?;
+        let location = updates
+            .next()
+            .await
+            .context("The portal did not provide a location")?;
+        if let Err(error) = session.close().await {
+            log::debug!("Could not close the location session: {error}");
+        }
+        let (latitude, longitude) = (location.latitude(), location.longitude());
+        ensure!(
+            (-90.0..=90.0).contains(&latitude) && (-180.0..=180.0).contains(&longitude),
+            "The portal returned invalid coordinates"
+        );
+        Ok(Place {
+            name: "Current location".into(),
+            latitude: (latitude * 100.).round() / 100.,
+            longitude: (longitude * 100.).round() / 100.,
+            country: String::new(),
+        })
+    };
+    future::or(detect, async {
+        async_io::Timer::after(LOCATION_TIMEOUT).await;
+        anyhow::bail!("Desktop location lookup timed out")
+    })
+    .await
+    .map_err(|error| {
+        log::debug!("Could not detect the weather location: {error:#}");
+        error.context("Location unavailable. Enable desktop location access or enter a city or coordinates in Settings.")
+    })
 }
 
 #[derive(Deserialize)]
@@ -339,17 +391,25 @@ fn cache_file(home: &Path, query: &str) -> PathBuf {
         .join(format!("{key:x}.json"))
 }
 
-pub(super) fn fetch(query: &str, known: Option<Place>) -> Result<Report> {
-    let client = Client::builder()
-        .connect_timeout(SHORT_TIMEOUT)
-        .timeout(FORECAST_TIMEOUT)
-        .build()
-        .context("Could not initialize the weather connection.")?;
-    let place = match known {
-        Some(p) => p,
-        None => locate(&client, query)?,
+pub(super) async fn fetch(query: String, known: Option<Place>) -> Result<Report> {
+    let known = if query.is_empty() {
+        Some(detect_location().await?)
+    } else {
+        known
     };
-    fetch_at(&client, place, FORECAST, AIR_QUALITY)
+    blocking::unblock(move || {
+        let client = Client::builder()
+            .connect_timeout(SHORT_TIMEOUT)
+            .timeout(FORECAST_TIMEOUT)
+            .build()
+            .context("Could not initialize the weather connection.")?;
+        let place = match known {
+            Some(place) => place,
+            None => locate(&client, &query)?,
+        };
+        fetch_at(&client, place, FORECAST, AIR_QUALITY)
+    })
+    .await
 }
 
 fn fetch_at(client: &Client, place: Place, forecast: &str, air_quality: &str) -> Result<Report> {
@@ -594,16 +654,31 @@ mod tests {
         assert!(air_only.weather.is_none());
         let retried_at = refreshed_at + RETRY_INTERVAL;
         utilities.record_weather(air_only, retried_at);
-        let combined = utilities.report.unwrap();
+        let combined = utilities.report.as_ref().unwrap();
         assert_eq!(combined.report.aqi, Some(52.));
         assert_eq!(
-            combined.report.weather.unwrap().upcoming_days().count(),
+            combined
+                .report
+                .weather
+                .as_ref()
+                .unwrap()
+                .upcoming_days()
+                .count(),
             FORECAST_DAYS
         );
         assert_eq!(combined.updated_at, refreshed_at);
         assert_eq!(combined.fetched_at, retried_at);
         assert!(!combined.complete);
         assert!(utilities.weather_error.is_some());
+        let moved = utilities.record_weather(
+            Report {
+                place: locate(&client, "40.7, -74.0").unwrap(),
+                weather: None,
+                aqi: Some(24.),
+            },
+            retried_at + RETRY_INTERVAL,
+        );
+        assert!(moved.report.weather.is_none());
         let Err(error) = fetch_at(&client, place, &forecast, &air) else {
             panic!("a denied forecast and missing AQI should fail");
         };

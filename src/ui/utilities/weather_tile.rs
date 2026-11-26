@@ -26,13 +26,10 @@ impl Dashboard {
     ) -> impl IntoElement {
         let state = &self.utilities;
         let busy = state.weather_refreshing;
-        let configured = state.weather_task.is_some();
         let description = if busy {
             "Refreshing weather…"
-        } else if configured {
-            "Refresh weather"
         } else {
-            "Choose a weather location in Settings"
+            "Refresh weather"
         };
         let view = cx.entity();
         let refresh = theme
@@ -47,12 +44,11 @@ impl Dashboard {
                 16.,
             ))
             .tooltip(|_, cx| cx.new(|_| Tooltip("Refresh weather".into())).into())
-            .when(configured && !busy, |button| {
+            .when(!busy, |button| {
                 theme.bind(button, move |_, cx| {
                     view.update(cx, |dashboard, cx| dashboard.refresh_weather(cx));
                 })
-            })
-            .when(!configured, disabled);
+            });
         let location = state
             .report
             .as_ref()
@@ -72,15 +68,16 @@ impl Dashboard {
             .overflow_y_scroll()
             .gap(r(10.));
         let Some(cached) = &state.report else {
-            let message = if state.weather_query.is_empty() {
-                "Choose a location in Settings → Widgets."
+            let loading = if state.weather_query.is_empty() {
+                "Detecting your location and fetching the forecast…"
             } else {
-                state
-                    .weather_error
-                    .as_deref()
-                    .filter(|_| !busy)
-                    .unwrap_or("Fetching the forecast and air quality…")
+                "Fetching the forecast and air quality…"
             };
+            let message = state
+                .weather_error
+                .as_deref()
+                .filter(|_| !busy)
+                .unwrap_or(loading);
             return tile.child(readings.child(theme.quiet(message.to_owned())));
         };
 

@@ -327,6 +327,7 @@ impl Dashboard {
             .child(field(theme, "World clock time zones", zones))
             .child(theme.quiet("Separate IANA time zones with commas. Local time is always shown."))
             .child(field(theme, "Weather and air quality location", location))
+            .child(theme.quiet("Leave blank to use your desktop’s location."))
             .child(row().child(save))
             .child(
                 row()
