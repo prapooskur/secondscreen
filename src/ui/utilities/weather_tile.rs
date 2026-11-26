@@ -1,6 +1,6 @@
 use gpui::{
-    Div, FontWeight, IntoElement, Styled, div, hsla, linear_color_stop, linear_gradient,
-    prelude::*, relative, rgb,
+    Context, Div, FontWeight, IntoElement, Role, Styled, div, hsla, linear_color_stop,
+    linear_gradient, prelude::*, relative, rgb,
 };
 
 use super::{
@@ -13,29 +13,75 @@ use crate::ui::{
     theme::*,
 };
 
+const REFRESH_BUTTON_SIZE: f32 = 28.;
+const HEADER_GAP: f32 = 8.;
+
 impl Dashboard {
     pub(in crate::ui) fn weather_widget(
         &self,
         theme: Theme,
         width: f32,
         height: f32,
+        cx: &Context<Self>,
     ) -> impl IntoElement {
         let state = &self.utilities;
-        let tile = col()
+        let busy = state.weather_refreshing;
+        let configured = state.weather_task.is_some();
+        let description = if busy {
+            "Refreshing weather…"
+        } else if configured {
+            "Refresh weather"
+        } else {
+            "Choose a weather location in Settings"
+        };
+        let view = cx.entity();
+        let refresh = theme
+            .button("refresh-weather", busy.then_some(TEAL))
+            .size(r(REFRESH_BUTTON_SIZE))
+            .px_0()
+            .role(Role::Button)
+            .aria_label(description)
+            .child(icon(
+                Icon::Refresh,
+                theme.color(if busy { TEAL } else { TEXT }),
+                16.,
+            ))
+            .tooltip(|_, cx| cx.new(|_| Tooltip("Refresh weather".into())).into())
+            .when(configured && !busy, |button| {
+                theme.bind(button, move |_, cx| {
+                    view.update(cx, |dashboard, cx| dashboard.refresh_weather(cx));
+                })
+            })
+            .when(!configured, disabled);
+        let location = state
+            .report
+            .as_ref()
+            .map_or(state.weather_query.as_str(), |cached| {
+                cached.report.place.name.as_str()
+            });
+        let tile = col().flex_1().p(r(10.)).gap(r(HEADER_GAP)).child(
+            row()
+                .flex_none()
+                .gap(r(8.))
+                .child(theme.label(location.to_owned()).flex_1().truncate())
+                .child(refresh),
+        );
+        let readings = col()
             .id("weather-readings")
             .flex_1()
             .overflow_y_scroll()
-            .p(r(10.))
             .gap(r(10.));
         let Some(cached) = &state.report else {
-            let message = state.weather_error.as_deref().unwrap_or_else(|| {
-                if state.weather_query.is_empty() {
-                    "Choose a location in Settings → Widgets."
-                } else {
-                    "Fetching the forecast and air quality…"
-                }
-            });
-            return tile.child(theme.quiet(message.to_owned()));
+            let message = if state.weather_query.is_empty() {
+                "Choose a location in Settings → Widgets."
+            } else {
+                state
+                    .weather_error
+                    .as_deref()
+                    .filter(|_| !busy)
+                    .unwrap_or("Fetching the forecast and air quality…")
+            };
+            return tile.child(readings.child(theme.quiet(message.to_owned())));
         };
 
         let report = &cached.report;
@@ -51,15 +97,9 @@ impl Dashboard {
         let current = forecast.and_then(|weather| weather.current.as_ref());
         let wide = width >= 720.;
         let split_forecast = width >= 460.;
+        let height = height - REFRESH_BUTTON_SIZE - HEADER_GAP;
         let compact = height < 245.;
-        let summary = summary(
-            theme,
-            &report.place.name,
-            current,
-            today,
-            fahrenheit,
-            compact,
-        );
+        let summary = summary(theme, current, today, fahrenheit, compact);
         let chart_height = if wide {
             (height - 99.).clamp(90., 242.)
         } else if compact {
@@ -108,7 +148,8 @@ impl Dashboard {
                 .child(details)
         };
 
-        tile.child(contents)
+        let readings = readings
+            .child(contents)
             .children(
                 state
                     .weather_error
@@ -121,13 +162,13 @@ impl Dashboard {
                     .quiet(format!("Open-Meteo / CAMS · {minutes} min ago"))
                     .text_size(r(10.))
                     .flex_none()
-            })
+            });
+        tile.child(readings)
     }
 }
 
 fn summary(
     theme: Theme,
-    name: &str,
     current: Option<&weather::Conditions>,
     today: Option<&weather::Day>,
     fahrenheit: bool,
@@ -146,7 +187,6 @@ fn summary(
             col()
                 .flex_1()
                 .gap(r(2.))
-                .child(theme.label(name.to_owned()).truncate())
                 .child(
                     div()
                         .text_size(r(temp_size))
@@ -250,13 +290,15 @@ fn daily_forecast(
     compact: bool,
 ) -> Div {
     let list = col().flex_none().gap(r(1.));
-    let Some(weather) = forecast.filter(|weather| !weather.days.is_empty()) else {
+    let days = forecast
+        .into_iter()
+        .flat_map(weather::Weather::upcoming_days);
+    if days.clone().next().is_none() {
         return list.child(theme.quiet("Daily forecast unavailable"));
-    };
+    }
 
-    let (low, high) = weather
-        .days
-        .iter()
+    let (low, high) = days
+        .clone()
         .flat_map(|day| [day.low, day.high])
         .flatten()
         .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), temp| {
@@ -265,13 +307,8 @@ fn daily_forecast(
     let span = (high - low).max(1.);
     let start = (low + high - span) * 0.5;
     let normalize = |temperature: f32| ((temperature - start) / span).clamp(0., 1.);
-    list.children(weather.days.iter().map(|day| {
-        let today = Some(day.date) == weather.today;
-        let name = if today {
-            "Today".into()
-        } else {
-            day.date.strftime("%a %-d").to_string()
-        };
+    list.children(days.map(|day| {
+        let name = day.date.strftime("%a %-d").to_string();
         let description = format!(
             "{} · {}",
             day.date.strftime("%A, %b %e"),

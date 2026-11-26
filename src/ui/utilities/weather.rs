@@ -21,6 +21,7 @@ const FORECAST_TIMEOUT: Duration = Duration::from_secs(15);
 const REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
 pub(super) const RETRY_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const FORECAST_DAYS: usize = 10;
+const FORECAST_DAYS_WITH_TODAY: usize = FORECAST_DAYS + 1;
 pub(super) const HOURS_PER_DAY: usize = 24;
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -58,9 +59,31 @@ struct Matches {
 }
 
 fn get_json<T: DeserializeOwned>(request: RequestBuilder, service: &str) -> Result<T> {
-    request
-        .send()
-        .and_then(|response| response.error_for_status()?.json())
+    let retry = request.try_clone();
+    let send = |request: RequestBuilder| {
+        request
+            .send()
+            .and_then(|response| response.error_for_status()?.json())
+    };
+    send(request)
+        .or_else(|error| {
+            let transient = error.is_connect()
+                || error.is_timeout()
+                || matches!(
+                    error.status(),
+                    Some(
+                        StatusCode::REQUEST_TIMEOUT
+                            | StatusCode::INTERNAL_SERVER_ERROR
+                            | StatusCode::BAD_GATEWAY
+                            | StatusCode::SERVICE_UNAVAILABLE
+                            | StatusCode::GATEWAY_TIMEOUT
+                    )
+                );
+            match retry {
+                Some(request) if transient => send(request),
+                _ => Err(error),
+            }
+        })
         .map_err(|error| {
             let message = if let Some(status) = error.status() {
                 format!("{service} returned HTTP {}", status.as_u16())
@@ -146,7 +169,7 @@ impl DailyReading {
         };
         self.time
             .iter()
-            .take(FORECAST_DAYS)
+            .take(FORECAST_DAYS_WITH_TODAY)
             .enumerate()
             .filter_map(|(index, date)| {
                 Some(Day {
@@ -188,6 +211,13 @@ pub(super) struct Weather {
 impl Weather {
     pub(super) fn has_hourly_temperatures(&self) -> bool {
         self.hourly.iter().any(Option::is_some)
+    }
+
+    pub(super) fn upcoming_days(&self) -> impl Iterator<Item = &Day> + Clone {
+        self.days
+            .iter()
+            .filter(|day| self.today.is_none_or(|today| day.date > today))
+            .take(FORECAST_DAYS)
     }
 }
 
@@ -255,7 +285,7 @@ impl Report {
         self.aqi.is_some()
             && self.weather.as_ref().is_some_and(|forecast| {
                 forecast.current.is_some()
-                    && forecast.days.len() == FORECAST_DAYS
+                    && forecast.upcoming_days().count() == FORECAST_DAYS
                     && forecast.has_hourly_temperatures()
             })
     }
@@ -284,6 +314,9 @@ impl CachedReport {
     }
 
     pub(super) fn refresh_delay(&self, now: SystemTime) -> Duration {
+        if self.complete && !self.report.is_complete() {
+            return Duration::ZERO;
+        }
         let Ok(age) = now.duration_since(self.fetched_at) else {
             return Duration::ZERO;
         };
@@ -308,6 +341,7 @@ fn cache_file(home: &Path, query: &str) -> PathBuf {
 
 pub(super) fn fetch(query: &str, known: Option<Place>) -> Result<Report> {
     let client = Client::builder()
+        .connect_timeout(SHORT_TIMEOUT)
         .timeout(FORECAST_TIMEOUT)
         .build()
         .context("Could not initialize the weather connection.")?;
@@ -340,20 +374,22 @@ fn fetch_at(client: &Client, place: Place, forecast: &str, air_quality: &str) ->
                 ("initial_hours", 0),
             ])
     };
-    let forecast_response =
-        get_json::<ForecastResponse>(forecast_request(FORECAST_DAYS), "Open-Meteo forecast")
-            .or_else(|error| {
-                if error.downcast_ref::<reqwest::Error>().is_some_and(|cause| {
-                    cause.is_timeout() || cause.status() == Some(StatusCode::GATEWAY_TIMEOUT)
-                }) {
-                    get_json(
-                        forecast_request(1).timeout(SHORT_TIMEOUT),
-                        "Open-Meteo one-day forecast",
-                    )
-                } else {
-                    Err(error)
-                }
-            });
+    let forecast_response = get_json::<ForecastResponse>(
+        forecast_request(FORECAST_DAYS_WITH_TODAY),
+        "Open-Meteo forecast",
+    )
+    .or_else(|error| {
+        if error.downcast_ref::<reqwest::Error>().is_some_and(|cause| {
+            cause.is_timeout() || cause.status() == Some(StatusCode::GATEWAY_TIMEOUT)
+        }) {
+            get_json(
+                forecast_request(1).timeout(SHORT_TIMEOUT),
+                "Open-Meteo one-day forecast",
+            )
+        } else {
+            Err(error)
+        }
+    });
     let weather = forecast_response.and_then(|response| {
         response
             .weather()
@@ -464,7 +500,7 @@ mod tests {
                 },
                 "daily":{
                     "time":["2026-12-28","2026-12-29","2026-12-30","2026-12-31","2027-01-01",
-                            "2027-01-02","2027-01-03","2027-01-04","2027-01-05","2027-01-06"],
+                            "2027-01-02","2027-01-03","2027-01-04","2027-01-05","2027-01-06","2027-01-07"],
                     "temperature_2m_max":[15,null,12],
                     "temperature_2m_min":[8,7,4],
                     "weather_code":[2,45,63],
@@ -472,11 +508,15 @@ mod tests {
                     "sunset":["2026-12-28T15:58",null]
                 }
             }"#;
+            let refreshed_forecast = forecast.replace("12.5", "14.5");
             for (path, status, response) in [
                 ("/forecast", "200 OK", forecast),
                 ("/air", "200 OK", r#"{"current":{"us_aqi":42}}"#),
-                ("/forecast", "200 OK", forecast),
+                ("/forecast", "503 Service Unavailable", "{}"),
+                ("/forecast", "200 OK", &refreshed_forecast),
+                ("/air", "503 Service Unavailable", "{}"),
                 ("/air", "200 OK", r#"{"current":{"us_aqi":null}}"#),
+                ("/forecast", "503 Service Unavailable", "{}"),
                 ("/forecast", "503 Service Unavailable", "{}"),
                 ("/air", "200 OK", r#"{"current":{"us_aqi":52}}"#),
                 ("/forecast", "403 Forbidden", "{}"),
@@ -490,7 +530,7 @@ mod tests {
                     assert!(request.contains("current=us_aqi"));
                 } else {
                     assert!(
-                        request.contains("timezone=auto") && request.contains("forecast_days=10")
+                        request.contains("timezone=auto") && request.contains("forecast_days=11&")
                     );
                     assert!(request.contains("hourly=temperature_2m"));
                     assert!(request.contains("forecast_hours=24"));
@@ -513,14 +553,15 @@ mod tests {
         let air = format!("{base}/air");
         let mut utilities = super::super::Utilities::default();
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
-        for expected in [Some(42.), None] {
+        let refreshed_at = now + REFRESH_INTERVAL;
+        for (aqi, temperature, fetched_at) in [(Some(42.), 12.5, now), (None, 14.5, refreshed_at)] {
             let report = fetch_at(&client, place.clone(), &forecast, &air).unwrap();
-            assert_eq!(report.aqi, expected);
+            assert_eq!(report.aqi, aqi);
             let weather = report.weather.as_ref().unwrap();
             let current = weather.current.as_ref().unwrap();
-            assert_eq!(current.temperature_2m, Some(12.5));
+            assert_eq!(current.temperature_2m, Some(temperature));
             assert_eq!(current.wind_speed_10m, Some(16.));
-            assert_eq!(weather.days.len(), FORECAST_DAYS);
+            assert_eq!(weather.days.len(), FORECAST_DAYS_WITH_TODAY);
             assert_eq!(weather.today, Some(weather.days[0].date));
             assert_eq!(weather.time.unwrap().to_string(), "14:15:00");
             assert_eq!(weather.hourly[0], Some(9.1));
@@ -540,18 +581,27 @@ mod tests {
             assert_eq!(weather.days[1].low, Some(7.));
             assert_eq!(weather.days[2].high, Some(12.));
             assert_eq!(weather.days[2].weather_code, Some(63));
-            assert_eq!(weather.days[9].date.to_string(), "2027-01-06");
-            utilities.record_weather(report, now);
+            let mut upcoming = weather.upcoming_days();
+            assert_eq!(upcoming.clone().count(), FORECAST_DAYS);
+            assert_eq!(upcoming.next().unwrap().date.to_string(), "2026-12-29");
+            assert_eq!(upcoming.last().unwrap().date.to_string(), "2027-01-07");
+            let cached = utilities.record_weather(report, fetched_at);
+            assert_eq!(cached.updated_at, fetched_at);
+            assert_eq!(cached.complete, aqi.is_some());
+            assert!(utilities.weather_error.is_none());
         }
         let air_only = fetch_at(&client, place.clone(), &forecast, &air).unwrap();
         assert!(air_only.weather.is_none());
-        let refreshed_at = now + RETRY_INTERVAL;
-        utilities.record_weather(air_only, refreshed_at);
+        let retried_at = refreshed_at + RETRY_INTERVAL;
+        utilities.record_weather(air_only, retried_at);
         let combined = utilities.report.unwrap();
         assert_eq!(combined.report.aqi, Some(52.));
-        assert_eq!(combined.report.weather.unwrap().days.len(), FORECAST_DAYS);
-        assert_eq!(combined.updated_at, now);
-        assert_eq!(combined.fetched_at, refreshed_at);
+        assert_eq!(
+            combined.report.weather.unwrap().upcoming_days().count(),
+            FORECAST_DAYS
+        );
+        assert_eq!(combined.updated_at, refreshed_at);
+        assert_eq!(combined.fetched_at, retried_at);
         assert!(!combined.complete);
         assert!(utilities.weather_error.is_some());
         let Err(error) = fetch_at(&client, place, &forecast, &air) else {
@@ -572,7 +622,11 @@ mod tests {
             r#"{
                 "current":{"time":"2026-12-28T14:15","temperature_2m":12.5},
                 "hourly":{"time":["2026-12-28T00:00"],"temperature_2m":[9.1]},
-                "daily":{"time":["2026-12-28"],"sunrise":["2026-12-28T08:04"]}
+                "daily":{
+                    "time":["2026-12-28","2026-12-29","2026-12-30","2026-12-31","2027-01-01",
+                            "2027-01-02","2027-01-03","2027-01-04","2027-01-05","2027-01-06","2027-01-07"],
+                    "sunrise":["2026-12-28T08:04"]
+                }
             }"#,
         )
         .unwrap()
@@ -613,6 +667,13 @@ mod tests {
         assert_eq!(forecast.hourly[0], Some(9.1));
         assert!(CachedReport::load(&cache_file(cache.path(), "Tokyo")).is_none());
 
+        let mut legacy = cached.clone();
+        legacy.report.weather.as_mut().unwrap().days.truncate(10);
+        legacy.save(&path);
+        let reloaded = CachedReport::load(&path).unwrap();
+        assert!(reloaded.refresh_delay(fetched_at).is_zero());
+        assert_eq!(reloaded.report.weather.unwrap().upcoming_days().count(), 9);
+
         cached.complete = false;
         cached.save(&path);
         let reloaded = CachedReport::load(&path).unwrap();
@@ -629,12 +690,14 @@ mod tests {
         let server = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", server.local_addr().unwrap());
         let worker = std::thread::spawn(move || {
-            let (stalled, _) = server.accept().unwrap();
-            assert!(request_line(&stalled).contains("forecast_days=10&"));
+            let (first, _) = server.accept().unwrap();
+            assert!(request_line(&first).contains("forecast_days=11&"));
+            let (second, _) = server.accept().unwrap();
+            assert!(request_line(&second).contains("forecast_days=11&"));
 
-            // Keep the first connection open until the client times out and retries.
+            // Keep both connections open until the client times out and falls back.
             let (fallback, _) = server.accept().unwrap();
-            drop(stalled);
+            drop((first, second));
             assert!(request_line(&fallback).contains("forecast_days=1&"));
             respond(
                 fallback,
@@ -661,6 +724,7 @@ mod tests {
         .unwrap();
         let weather = report.weather.unwrap();
         assert_eq!(weather.days.len(), 1);
+        assert!(weather.upcoming_days().next().is_none());
         assert_eq!(weather.current.unwrap().temperature_2m, Some(12.5));
         assert_eq!(report.aqi, Some(42.));
         worker.join().unwrap();

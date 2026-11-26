@@ -7,7 +7,7 @@ mod weather_chart;
 mod weather_tile;
 
 use super::{Dashboard, HISTORY, Section, append, home::Kind, monitor::graph, theme::*};
-use futures_lite::StreamExt;
+use futures_lite::{StreamExt, future};
 use gpui::{Context, IntoElement, Styled, Task, prelude::*};
 use jiff::{Timestamp, Zoned, tz::TimeZone};
 use std::{
@@ -52,13 +52,19 @@ pub(super) struct Utilities {
     frame_time_history: VecDeque<f32>,
     fps_error: Option<String>,
     weather_query: String,
-    weather_task: Option<Task<()>>,
+    weather_task: Option<WeatherTask>,
+    weather_refreshing: bool,
     report: Option<weather::CachedReport>,
     weather_error: Option<String>,
     notices: VecDeque<notifications::Notice>,
     pub(super) notification_apps: BTreeMap<String, String>,
     notification_task: Option<Task<()>>,
     notification_status: notifications::Status,
+}
+
+struct WeatherTask {
+    refresh: async_channel::Sender<()>,
+    _task: Task<()>,
 }
 
 impl Utilities {
@@ -257,6 +263,7 @@ impl Dashboard {
         if self.utilities.weather_query != query {
             self.utilities.weather_query = query.into();
             self.utilities.weather_task = None;
+            self.utilities.weather_refreshing = false;
             self.utilities.report = None;
             self.utilities.weather_error = None;
         }
@@ -272,7 +279,8 @@ impl Dashboard {
             .report
             .as_ref()
             .map(|cached| cached.refresh_delay(SystemTime::now()));
-        self.utilities.weather_task = Some(cx.spawn(async move |this, cx| {
+        let (refresh, requests) = async_channel::bounded(1);
+        let task = cx.spawn(async move |this, cx| {
             let cache_path = weather::cache_path(&query);
             let mut delay = cached_delay.unwrap_or_default();
             if let (None, Some(path)) = (cached_delay, cache_path.clone())
@@ -293,14 +301,27 @@ impl Dashboard {
                 }
             }
             loop {
-                if !delay.is_zero() {
+                if future::or(requests.recv(), async {
                     cx.background_executor().timer(delay).await;
+                    Ok(())
+                })
+                .await
+                .is_err()
+                {
+                    break;
                 }
-                let Ok(Some(known_place)) = this.update(cx, |this, _| {
+                let Ok(Some(known_place)) = this.update(cx, |this, cx| {
                     if !this.home.contains(Kind::Weather) {
                         // Let in-flight refreshes finish, but start no new requests while hidden.
                         this.utilities.weather_task = None;
+                        this.utilities.weather_refreshing = false;
                         return None;
+                    }
+                    if !this.utilities.weather_refreshing {
+                        this.utilities.weather_refreshing = true;
+                        if this.home.shows(Kind::Weather) {
+                            cx.notify();
+                        }
                     }
                     Some(
                         this.utilities
@@ -314,6 +335,7 @@ impl Dashboard {
                 let query = query.clone();
                 let result = blocking::unblock(move || weather::fetch(&query, known_place)).await;
                 let Ok(cached) = this.update(cx, |this, cx| {
+                    this.utilities.weather_refreshing = false;
                     let cached = match result {
                         Ok(report) => Some(
                             this.utilities
@@ -345,7 +367,21 @@ impl Dashboard {
                     }
                 }
             }
-        }));
+        });
+        self.utilities.weather_task = Some(WeatherTask {
+            refresh,
+            _task: task,
+        });
+    }
+
+    fn refresh_weather(&mut self, cx: &mut Context<Self>) {
+        if !self.utilities.weather_refreshing
+            && let Some(task) = &self.utilities.weather_task
+            && task.refresh.try_send(()).is_ok()
+        {
+            self.utilities.weather_refreshing = true;
+            cx.notify();
+        }
     }
 
     fn sync_notifications(&mut self, cx: &mut Context<Self>) {

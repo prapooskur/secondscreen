@@ -95,7 +95,9 @@ impl Dashboard {
             Kind::Discord => self.discord_widget(cx).into_any_element(),
             Kind::WorldClock => self.world_clock(theme, height).into_any_element(),
             Kind::Calendar => self.calendar(theme, width, height, cx).into_any_element(),
-            Kind::Weather => self.weather_widget(theme, width, height).into_any_element(),
+            Kind::Weather => self
+                .weather_widget(theme, width, height, cx)
+                .into_any_element(),
             Kind::Notifications => self.notification_widget(theme).into_any_element(),
             Kind::Fps if self.home.fps_setup == Some(tile.widget.id) => self
                 .fps_setup_menu(tile.widget.id, theme, cx)

@@ -83,7 +83,7 @@ The starter dashboard shows live CPU and memory usage. Select **Add cards** dire
 
 In the chart editor, use **Add metric** to select up to four readings. **Separate plots** puts them side by side when space allows. **Shared graph** overlays them with color-coded values. Readings with the same units share a scale, and mixed units use independent scales. Hover over a reading for its full label and scale.
 
-A single card fills the widget body. The grid places cards in Setup order and uses open gaps, so compact bars and gauges can stack beside taller charts. Scroll inside the widget to reach additional readings. Charts show the last 60 samples.
+Cards expand to fill the widget body, and shorter bars and gauges can stack beside charts. Scroll inside the widget when the cards need more room. Charts show the last 60 samples.
 
 The picker includes CPU and per-core load, memory, GPU load and VRAM where available, Linux hardware-monitor channels, download and upload speeds, and individual drives. **All visible drives** follows your Storage visibility settings and fills in drives that have no individual entry on that tile. Pick an individual drive to include it in a multi-metric chart. Each System monitor saves its own readings, display styles, order, and top-bar setting. Older layouts carry their active sensor selections into the new setup.
 

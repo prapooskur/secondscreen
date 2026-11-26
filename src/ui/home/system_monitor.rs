@@ -22,6 +22,9 @@ mod setup;
 pub(super) use setup::MonitorSetup;
 
 const GAP: f32 = 8.;
+const CARD_INSET: f32 = 8.;
+const CARD_GAP: f32 = 4.;
+const DETAIL_HEIGHT: f32 = 13.;
 
 struct Card<'a> {
     readings: Vec<Reading<'a>>,
@@ -32,21 +35,20 @@ struct Card<'a> {
 impl Card<'_> {
     fn width(&self) -> f32 {
         match self.display {
-            MonitorDisplay::Bar => 128.,
-            MonitorDisplay::Gauge => 136.,
+            MonitorDisplay::Bar | MonitorDisplay::Gauge => 128.,
             MonitorDisplay::Chart
                 if self.layout == ChartLayout::Separate && self.readings.len() > 1 =>
             {
-                16. + self.readings.len() as f32 * 108. + (self.readings.len() - 1) as f32 * GAP
+                plots::separate_width(self.readings.len())
             }
             MonitorDisplay::Chart if self.readings.len() > 1 => 232.,
-            MonitorDisplay::Chart => 168.,
+            MonitorDisplay::Chart => 144.,
         }
     }
 
     fn height(&self, width: f32) -> f32 {
         let detail = if self.readings[0].detail.is_some() {
-            17.
+            DETAIL_HEIGHT + CARD_GAP
         } else {
             0.
         };
@@ -161,58 +163,7 @@ impl Dashboard {
         } else {
             0.
         };
-        if let [card] = cards.as_slice() {
-            let content = match card.display {
-                MonitorDisplay::Chart => plots::chart_card((id, 0), theme, card, width, 0., true),
-                display => meter_card(
-                    0,
-                    theme,
-                    &card.readings[0],
-                    display,
-                    Some((width, height - header)),
-                ),
-            };
-            return widget.child(readings.child(content)).into_any_element();
-        }
-        let mut positions = layout::place_cards(
-            width,
-            cards.iter().map(|card| {
-                let width = card.width().min(width);
-                (width, card.height(width))
-            }),
-        );
-        // Charts can grow into free space after the smaller cards have found their positions.
-        for (index, card) in cards.iter().enumerate() {
-            if card.display != MonitorDisplay::Chart {
-                continue;
-            }
-            let position = positions[index];
-            let right = positions
-                .iter()
-                .copied()
-                .filter(|other| {
-                    other.x >= position.right() && other.with_gap().shares_rows(position.with_gap())
-                })
-                .map(|other| other.x - GAP)
-                .fold(width, f32::min);
-            positions[index].width = right - position.x;
-        }
-        for (index, card) in cards.iter().enumerate() {
-            if card.display != MonitorDisplay::Chart {
-                continue;
-            }
-            let position = positions[index];
-            let bottom = positions
-                .iter()
-                .copied()
-                .filter(|other| {
-                    other.y >= position.bottom()
-                        && other.with_gap().shares_columns(position.with_gap())
-                })
-                .map(|other| other.y - GAP)
-                .fold(height - header, f32::min);
-            positions[index].height += (bottom - position.bottom()).clamp(0., 64.);
-        }
+        let positions = layout::place_cards(width, height - header, &cards);
         let content_height = positions
             .iter()
             .map(|position| position.bottom())
@@ -245,12 +196,17 @@ impl Dashboard {
                                         theme,
                                         card,
                                         position.width,
-                                        (position.height - card.height(position.width)).max(0.),
-                                        false,
+                                        position.height,
+                                        single,
                                     ),
-                                    display => {
-                                        meter_card(index, theme, &card.readings[0], display, None)
-                                    }
+                                    display => meter_card(
+                                        index,
+                                        theme,
+                                        &card.readings[0],
+                                        display,
+                                        position,
+                                        single,
+                                    ),
                                 };
                                 element
                                     .absolute()
@@ -447,22 +403,20 @@ impl Reading<'_> {
     }
 }
 
-fn card_frame(index: usize, theme: Theme, accent: Color, full: bool) -> gpui::Stateful<Div> {
-    let frame = col()
+fn card_frame(index: usize, theme: Theme, accent: Color, single: bool) -> gpui::Stateful<Div> {
+    col()
         .id(("monitor-reading", index))
+        .flex_none()
         .overflow_hidden()
-        .gap(r(4.));
-    if full {
-        frame.flex_1()
-    } else {
-        frame
-            .flex_none()
-            .p(r(7.))
-            .rounded(r(6.))
-            .border_1()
-            .border_color(theme.color(accent).opacity(0.24))
-            .bg(theme.color(BACK).opacity(0.48))
-    }
+        .gap(r(CARD_GAP))
+        .p(r(if single { CARD_INSET } else { CARD_INSET - 1. }))
+        .when(!single, |frame| {
+            frame
+                .rounded(r(6.))
+                .border(r(1.))
+                .border_color(theme.color(accent).opacity(0.24))
+                .bg(theme.color(BACK).opacity(0.48))
+        })
 }
 
 impl Reading<'_> {
@@ -492,21 +446,30 @@ fn meter_card(
     theme: Theme,
     reading: &Reading<'_>,
     display: MonitorDisplay,
-    size: Option<(f32, f32)>,
+    position: layout::Placement,
+    single: bool,
 ) -> gpui::Stateful<Div> {
-    let full = size.is_some();
-    let accent = if display == MonitorDisplay::Gauge {
-        VIOLET
-    } else {
-        BLUE
-    };
+    let is_gauge = display == MonitorDisplay::Gauge;
+    let accent = if is_gauge { VIOLET } else { BLUE };
+    let width = (position.width - 2. * CARD_INSET).max(0.);
+    let detail = reading.detail.as_deref();
+    let height = position.height
+        - 2. * CARD_INSET
+        - if detail.is_some() {
+            DETAIL_HEIGHT + CARD_GAP
+        } else {
+            0.
+        };
+    let scale = ((height - 44.) / 64.)
+        .min((width - 96.) / 128.)
+        .clamp(0., 1.);
     let range = reading.range();
     let normalized = reading
         .value
         .map(|n| (n - range.0) / (range.1 - range.0) * 100.);
     let tooltip = reading.tooltip(range);
     let value = reading.value_text();
-    let (number, unit) = if display == MonitorDisplay::Gauge {
+    let (number, unit) = if is_gauge {
         value
             .split_once(' ')
             .map_or((value.as_str(), None), |(number, unit)| {
@@ -517,66 +480,66 @@ fn meter_card(
     };
     let name = theme
         .label(reading.name.to_owned())
-        .text_size(r(if full { 15. } else { 11. }))
-        .line_height(r(if full { 20. } else { 15. }))
+        .text_size(r(11. + 4. * scale))
+        .line_height(r(15. + 5. * scale))
         .truncate();
     let value = mono(number.to_owned())
-        .text_size(r(if full { 26. } else { 13. }))
-        .line_height(r(if full { 34. } else { 17. }))
+        .text_size(r(13. + 13. * scale))
+        .line_height(r(17. + 17. * scale))
         .text_color(theme.color(accent))
         .truncate();
-    let card = card_frame(index, theme, accent, full)
-        .tooltip(move |_, cx| cx.new(|_| Tooltip(tooltip.clone())).into());
-    let card = if display == MonitorDisplay::Gauge {
-        let diameter = size.map_or(43., |(width, height)| {
-            (width * 0.53).min(height - 32.).max(32.)
-        });
-        card.child(
-            row()
-                .gap(r(5.))
-                .when(full, |row| row.flex_1().gap(r(12.)).px(r(GAP)))
-                .child(gauge(theme, normalized, accent, diameter))
-                .child(
-                    col()
-                        .flex_1()
-                        .child(name)
-                        .child(value)
-                        .children(unit.map(|unit| {
-                            theme
-                                .quiet(unit.to_owned())
-                                .text_size(r(10.))
-                                .line_height(r(12.))
-                                .truncate()
-                        })),
-                ),
-        )
-    } else {
-        card.when(full, |card| card.justify_center().gap(r(GAP)))
+    let body = if is_gauge {
+        let diameter = (width * 0.44).min(height);
+        row()
+            .flex_1()
+            .gap(r(5. + 7. * scale))
+            .child(gauge(theme, normalized, accent, diameter))
             .child(
-                row()
-                    .justify_between()
-                    .gap(r(3.))
-                    .when(full, |row| row.px(r(GAP)))
-                    .child(name.flex_1())
-                    .child(value.flex_none()),
+                col()
+                    .flex_1()
+                    .child(name)
+                    .child(value)
+                    .children(unit.map(|unit| {
+                        theme
+                            .quiet(unit.to_owned())
+                            .text_size(r(10. + 2. * scale))
+                            .line_height(r(12. + 3. * scale))
+                            .truncate()
+                    })),
             )
+    } else {
+        let labels = if height >= 64. {
+            col().child(name).child(value)
+        } else {
+            row()
+                .justify_between()
+                .gap(r(3.))
+                .child(name.flex_1().min_w_0())
+                .child(value.flex_none().max_w(r(width)))
+        };
+        col()
+            .flex_1()
+            .justify_center()
+            .gap(r(CARD_GAP + 4. * scale))
+            .child(labels)
             .child(monitoring_bar(
                 theme,
                 normalized.unwrap_or_default(),
                 accent,
-                size.map_or(5., |(_, height)| (height * 0.1).clamp(6., 24.)),
+                5. + 19. * scale,
             ))
     };
-    card.children(reading.detail.as_ref().map(|detail| {
-        reading_detail(theme, detail).when(full, |detail| detail.px(r(GAP)).pb(r(4.)))
-    }))
+    card_frame(index, theme, accent, single)
+        .tooltip(move |_, cx| cx.new(|_| Tooltip(tooltip.clone())).into())
+        .child(body)
+        .children(detail.map(|detail| reading_detail(theme, detail)))
 }
 
 fn reading_detail(theme: Theme, detail: &str) -> Div {
     theme
         .quiet(detail.to_owned())
         .text_size(r(10.))
-        .line_height(r(13.))
+        .line_height(r(DETAIL_HEIGHT))
         .flex_none()
         .truncate()
 }
