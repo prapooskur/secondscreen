@@ -1,17 +1,21 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, Context, Div, Entity, IntoElement, PathPromptOptions, RenderImage, Stateful, Task, Window,
-    div, prelude::*,
+    App, Context, Div, Entity, IntoElement, KeyDownEvent, MouseButton, PathPromptOptions, Pixels,
+    Point, RenderImage, Stateful, Task, Window, div, prelude::*, px,
 };
 
 use super::{
     Dashboard, Tooltip,
-    home::{Badge, MAX_PROFILES, Profile, ProfileDetails, ProfilePreset, import_profile_image},
+    home::{
+        Badge, MAX_PROFILES, Profile, ProfileDetails, ProfilePreset, import_profile_image,
+        moved_profile_index,
+    },
     icons::{Icon, ProfileIcon, icon},
     overlay::Overlay,
     text_input::{TextInput, field},
     theme::*,
+    touch::{DragTarget, offer_drag},
 };
 
 #[derive(Default)]
@@ -27,6 +31,33 @@ pub(super) struct ProfileEditor {
 struct ProfileCreation {
     preset: usize,
     return_to_editor: bool,
+}
+
+struct ProfileDrag(usize);
+
+struct ProfileDragPreview {
+    name: String,
+    cursor_offset: Point<Pixels>,
+}
+
+impl Render for ProfileDragPreview {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::current(cx);
+        row()
+            .ml(self.cursor_offset.x + px(9.))
+            .mt(self.cursor_offset.y + px(9.))
+            .h(r(28.))
+            .max_w(r(180.))
+            .px(r(8.))
+            .gap(r(5.))
+            .rounded(r(7.))
+            .border_1()
+            .border_color(theme.color(TEAL))
+            .bg(theme.color(PANEL))
+            .shadow_md()
+            .child(icon(Icon::Grip, theme.color(TEAL), 15.))
+            .child(theme.label(self.name.clone()).min_w_0().truncate())
+    }
 }
 
 struct Draft {
@@ -117,6 +148,9 @@ impl Dashboard {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if cx.stop_active_drag(window) {
+            return true;
+        }
         if self.profile_editor.creation.is_some() {
             self.finish_profile_creation(window, cx);
         } else if self.profile_editor.cancel_delete() {
@@ -315,7 +349,7 @@ impl Dashboard {
         };
 
         col()
-            .w(r(158.))
+            .w(r(188.))
             .max_w(gpui::relative(0.34))
             .flex_none()
             .gap(r(8.))
@@ -335,6 +369,24 @@ impl Dashboard {
                         } else {
                             name.clone()
                         };
+                        let grip = profile_grip(theme, index, &name, profiles.len() > 1);
+                        let label = row()
+                            .id(format!("profile-label-{tooltip}"))
+                            .h_full()
+                            .flex_1()
+                            .gap(r(6.))
+                            .child(
+                                row()
+                                    .size(r(24.))
+                                    .flex_none()
+                                    .justify_center()
+                                    .child(profile.button_content(index, theme, 18.)),
+                            )
+                            .child(col().flex_1().truncate().child(name))
+                            .when(index == active, |label| label.child(theme.dot(TEAL)))
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| Tooltip(tooltip.clone().into())).into()
+                            });
                         editor_button(
                             theme,
                             theme
@@ -343,21 +395,26 @@ impl Dashboard {
                                     (index == selected).then_some(TEAL),
                                 )
                                 .h(r(38.))
-                                .px(r(7.))
+                                .pl(r(7.))
+                                .pr(r(3.))
                                 .gap(r(6.))
                                 .justify_start()
-                                .child(
-                                    row()
-                                        .size(r(24.))
-                                        .flex_none()
-                                        .justify_center()
-                                        .child(profile.button_content(index, theme, 18.)),
-                                )
-                                .child(col().flex_1().truncate().child(name))
-                                .when(index == active, |button| button.child(theme.dot(TEAL)))
-                                .tooltip(move |_, cx| {
-                                    cx.new(|_| Tooltip(tooltip.clone().into())).into()
-                                }),
+                                .child(label)
+                                .child(grip)
+                                .drag_over(move |mut style, drag: &ProfileDrag, _, _| {
+                                    if drag.0 != index {
+                                        style.border_color = Some(theme.color(TEAL));
+                                        style.background =
+                                            Some(theme.color(TEAL).opacity(0.17).into());
+                                    }
+                                    style
+                                })
+                                .on_drop(cx.listener(move |this, drag: &ProfileDrag, _, cx| {
+                                    this.reorder_profile(drag.0, index, cx);
+                                }))
+                                .on_key_down(cx.listener(move |this, event, window, cx| {
+                                    this.reorder_profile_with_key(index, event, window, cx);
+                                })),
                             cx,
                             move |this, _, cx| {
                                 this.profile_editor.select(index);
@@ -367,6 +424,46 @@ impl Dashboard {
                     })),
             )
             .child(add)
+    }
+
+    fn reorder_profile(&mut self, from: usize, to: usize, cx: &mut Context<Self>) -> bool {
+        if !self.move_profile(from, to, cx) {
+            return false;
+        }
+        let editor = &mut self.profile_editor;
+        let draft = editor.drafts.remove(from);
+        editor.drafts.insert(to, draft);
+        editor.selected = editor
+            .selected
+            .map(|index| moved_profile_index(index, from, to));
+        true
+    }
+
+    fn reorder_profile_with_key(
+        &mut self,
+        index: usize,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let step = match event.keystroke.key.as_str() {
+            "up" => -1,
+            "down" => 1,
+            _ => return,
+        };
+        if cx.has_active_drag() || event.keystroke.modifiers.modified() {
+            return;
+        }
+        cx.stop_propagation();
+        if let Some(to) = index.checked_add_signed(step)
+            && self.reorder_profile(index, to, cx)
+        {
+            if step < 0 {
+                window.focus_prev(cx);
+            } else {
+                window.focus_next(cx);
+            }
+        }
     }
 
     fn profile_form(
@@ -467,8 +564,8 @@ impl Dashboard {
         let import = if picking {
             disabled(import)
         } else {
-            editor_button(theme, import, cx, move |this, _, cx| {
-                this.choose_profile_image(index, cx);
+            editor_button(theme, import, cx, |this, _, cx| {
+                this.choose_profile_image(cx);
             })
         };
         let presets = ProfileIcon::ALL
@@ -646,7 +743,7 @@ impl Dashboard {
         cx.notify();
     }
 
-    fn choose_profile_image(&mut self, index: usize, cx: &mut Context<Self>) {
+    fn choose_profile_image(&mut self, cx: &mut Context<Self>) {
         let result = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -667,14 +764,14 @@ impl Dashboard {
             let _ = this.update(cx, |this, cx| {
                 this.profile_editor.picker = None;
                 match imported {
-                    Ok(Some((badge, image))) => {
+                    Ok(Some((badge, image))) if let Some(index) = this.profile_editor.selected => {
                         this.choose_profile_badge(index, Some(badge), cx);
                         this.profile_editor.drafts[index]
                             .as_mut()
                             .unwrap()
                             .imported_image = Some(image);
                     }
-                    Ok(None) => {}
+                    Ok(_) => {}
                     Err(error) => this.set_error(format!("{error:#}"), cx),
                 }
                 cx.notify();
@@ -700,6 +797,32 @@ impl Dashboard {
     }
 }
 
+fn profile_grip(theme: Theme, index: usize, name: &str, enabled: bool) -> Stateful<Div> {
+    let grip = row()
+        .id(("profile-drag-handle", index))
+        .w(r(30.))
+        .h_full()
+        .flex_none()
+        .justify_center()
+        .rounded(r(6.))
+        .child(icon(Icon::Grip, theme.color(MUTED), 18.));
+    if !enabled {
+        return grip.opacity(0.4);
+    }
+    let name = name.to_owned();
+    grip.cursor_grab()
+        .hover(move |it| it.bg(theme.color(HOVER)))
+        .tooltip(|_, cx| cx.new(|_| Tooltip("Drag to reorder".into())).into())
+        .on_mouse_move(|_, _, _| offer_drag(DragTarget::Free))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_drag(ProfileDrag(index), move |_, cursor_offset, _, cx| {
+            cx.new(|_| ProfileDragPreview {
+                name: name.clone(),
+                cursor_offset,
+            })
+        })
+}
+
 fn editor_button(
     theme: Theme,
     button: Stateful<Div>,
@@ -708,6 +831,8 @@ fn editor_button(
 ) -> Stateful<Div> {
     let view = cx.entity();
     theme.bind(button, move |window, cx| {
-        view.update(cx, |this, cx| action(this, window, cx))
+        if !cx.has_active_drag() {
+            view.update(cx, |this, cx| action(this, window, cx));
+        }
     })
 }

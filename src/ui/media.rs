@@ -1,3 +1,7 @@
+mod lyrics;
+
+pub(super) use lyrics::MediaLyrics;
+
 use std::{
     io::{Cursor, Read},
     sync::Arc,
@@ -9,7 +13,7 @@ use image::{Frame, ImageBuffer, Rgba, imageops};
 use crate::model::{Artwork, MediaAction, MediaState, Playback, Player, Track};
 use gpui::{
     App, Asset, Context, Div, FontWeight, Global, Img, ImgResourceLoader, IntoElement, ObjectFit,
-    RenderImage, SharedString, Styled, Window, div, img, prelude::*,
+    RenderImage, Role, SharedString, Styled, Toggled, Window, div, img, prelude::*,
 };
 
 use super::{
@@ -30,6 +34,9 @@ const MIN_SCRUBBER_WIDTH: f32 = 196.;
 const MIN_TRACK_HEIGHT: f32 = 28.;
 const MIN_MEDIA_TAB_WIDTH: f32 = 70.;
 const MEDIA_TAB_PADDING: f32 = 6.;
+const LYRICS_TOGGLE_HEIGHT: f32 = 28.;
+const LYRICS_TOGGLE_WIDTH: f32 = 84.;
+const ARTWORK_GAP: f32 = 6.;
 
 pub(super) struct MediaLayout {
     pub(super) show_progress: bool,
@@ -56,6 +63,10 @@ impl MediaLayout {
             inline_progress,
             track_height: height - CONTROL_GAP - controls_height,
         }
+    }
+
+    pub(super) fn lyrics_height(&self) -> Option<f32> {
+        (self.track_height >= LYRICS_TOGGLE_HEIGHT).then_some(self.track_height)
     }
 }
 
@@ -225,7 +236,57 @@ impl Dashboard {
         let theme = Theme::current(cx);
         let layout = MediaLayout::new(width, height);
         let track = player.track.as_ref();
-        let cover = layout.track_height.min(width * 0.36).min(136.);
+        let track_height = layout.track_height;
+        let show_toggle = layout.lyrics_height().is_some() && self.lyrics_for(player).is_some();
+        let artwork_height = track_height
+            - if show_toggle {
+                LYRICS_TOGGLE_HEIGHT + ARTWORK_GAP
+            } else {
+                0.
+            };
+        let cover = artwork_height.min(width * 0.36).min(136.);
+        let artwork = (cover >= MIN_TRACK_HEIGHT)
+            .then(|| album_art(theme, track.and_then(|track| track.artwork.clone()), cover));
+        let artwork_column = (artwork.is_some() || show_toggle).then(|| {
+            col()
+                .flex_none()
+                .items_center()
+                .gap(r(ARTWORK_GAP))
+                .children(artwork)
+                .children(
+                    show_toggle
+                        .then(|| self.lyrics_toggle(theme, cover.max(LYRICS_TOGGLE_WIDTH), cx)),
+                )
+        });
+        let details = if show_toggle && self.media_lyrics.enabled {
+            self.media_lyrics_panel(theme, track_height)
+        } else {
+            col()
+                .gap(r(3.))
+                .child(
+                    div()
+                        .text_size(r(if width >= 340. { 22. } else { 17. }))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .truncate()
+                        .child(
+                            track.map_or_else(|| player.name.clone(), |track| track.title.clone()),
+                        ),
+                )
+                .when_some(track.filter(|_| track_height >= 48.), |it, track| {
+                    it.child(
+                        theme
+                            .quiet(if track.artist.is_empty() {
+                                player.name.clone()
+                            } else {
+                                track.artist.clone()
+                            })
+                            .truncate(),
+                    )
+                    .when(track_height >= 84. && !track.album.is_empty(), |it| {
+                        it.child(theme.quiet(track.album.clone()).truncate())
+                    })
+                })
+        };
         let progress = layout.show_progress.then(|| {
             self.media_progress(player, cx)
                 .when(layout.inline_progress, |it| it.flex_1())
@@ -252,58 +313,42 @@ impl Dashboard {
                     .min_h_0()
                     .flex_1()
                     .gap(r(12.))
-                    .when(cover >= MIN_TRACK_HEIGHT, |it| {
-                        it.child(album_art(
-                            theme,
-                            track.and_then(|track| track.artwork.clone()),
-                            cover,
-                        ))
-                    })
-                    .child(
-                        col()
-                            .flex_1()
-                            .gap(r(3.))
-                            .child(
-                                div()
-                                    .text_size(r(if width >= 340. { 22. } else { 17. }))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .truncate()
-                                    .child(track.map_or_else(
-                                        || player.name.clone(),
-                                        |track| track.title.clone(),
-                                    )),
-                            )
-                            .when_some(
-                                track.filter(|_| layout.track_height >= 48.),
-                                |it, track| {
-                                    it.child(
-                                        theme
-                                            .quiet(if track.artist.is_empty() {
-                                                player.name.clone()
-                                            } else {
-                                                track.artist.clone()
-                                            })
-                                            .truncate(),
-                                    )
-                                    .when(
-                                        layout.track_height >= 84. && !track.album.is_empty(),
-                                        |it| it.child(theme.quiet(track.album.clone()).truncate()),
-                                    )
-                                },
-                            ),
-                    ),
+                    .children(artwork_column)
+                    .child(details.flex_1()),
             )
             .child(controls.flex_none())
     }
 
-    fn media_progress(&self, player: &Player, cx: &Context<Self>) -> Div {
-        let theme = Theme::current(cx);
-        let track = player.track.as_ref();
-        let length = track.and_then(|track| track.duration);
-        let slider_id = seek_id(player, track);
-        let now = Instant::now();
-        let current = self
-            .pending_seek
+    fn lyrics_toggle(&self, theme: Theme, width: f32, cx: &Context<Self>) -> impl IntoElement {
+        let enabled = self.media_lyrics.enabled;
+        let view = cx.entity();
+        theme.bind(
+            theme
+                .button("lyrics-toggle", enabled.then_some(PINK))
+                .w(r(width))
+                .h(r(LYRICS_TOGGLE_HEIGHT))
+                .px(r(6.))
+                .gap(r(6.))
+                .role(Role::Switch)
+                .aria_label("Lyrics")
+                .aria_toggled(if enabled {
+                    Toggled::True
+                } else {
+                    Toggled::False
+                })
+                .child("Lyrics")
+                .child(theme.quiet(if enabled { "On" } else { "Off" })),
+            move |_, cx| {
+                view.update(cx, |this, cx| {
+                    this.media_lyrics.enabled = !this.media_lyrics.enabled;
+                    cx.notify();
+                });
+            },
+        )
+    }
+
+    fn displayed_media_position(&self, player: &Player, now: Instant) -> Option<i64> {
+        self.pending_seek
             .as_ref()
             .filter(|seek| seek.matches(player))
             .map(|seek| seek.displayed_position(player, now))
@@ -314,7 +359,15 @@ impl Dashboard {
                 } else {
                     position.reported
                 })
-            });
+            })
+    }
+
+    fn media_progress(&self, player: &Player, cx: &Context<Self>) -> Div {
+        let theme = Theme::current(cx);
+        let track = player.track.as_ref();
+        let length = track.and_then(|track| track.duration);
+        let slider_id = seek_id(player, track);
+        let current = self.displayed_media_position(player, Instant::now());
         let progress = current
             .zip(length)
             .map_or(0., |(at, total)| (at as f32 / total as f32).clamp(0., 1.));

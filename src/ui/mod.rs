@@ -97,6 +97,7 @@ pub struct Dashboard {
     audio: AudioState,
     audio_kind: AudioKind,
     media: MediaState,
+    media_lyrics: media::MediaLyrics,
     player: Option<String>,
     pending_seek: Option<media::PendingSeek>,
     discord: DiscordState,
@@ -198,6 +199,7 @@ impl Dashboard {
             audio: AudioState::default(),
             audio_kind: AudioKind::Playback,
             media: MediaState::default(),
+            media_lyrics: media::MediaLyrics::default(),
             player: None,
             pending_seek: None,
             discord: DiscordState::default(),
@@ -289,8 +291,10 @@ impl Dashboard {
                             .iter()
                             .zip(&state.players)
                             .any(|(previous, next)| !previous.same_details(next)));
-                let refresh_progress = show_media
-                    && self.home.shows_media_progress()
+                let refresh_position = show_media
+                    && (self.home.shows_media_progress()
+                        || (self.media_lyrics.enabled
+                            && self.home.media_lyrics_height().is_some()))
                     && self.current_player().is_some_and(|player| {
                         state
                             .players
@@ -318,9 +322,12 @@ impl Dashboard {
                 }
                 let had_seek = self.pending_seek.is_some();
                 self.update_seek();
-                if details_changed || (show_media && had_seek && self.pending_seek.is_none()) {
+                if details_changed
+                    || (show_media && had_seek && self.pending_seek.is_none())
+                    || self.media_lyric_changed(cx)
+                {
                     Refresh::Immediate
-                } else if refresh_progress {
+                } else if refresh_position {
                     Refresh::Periodic
                 } else {
                     Refresh::None
@@ -527,6 +534,7 @@ impl Render for Dashboard {
             window.is_fullscreen(),
             cx,
         );
+        self.animate_lyrics_scroll(window, cx);
         self.sync_home_assistant(cx);
         let storage_active =
             self.home.shows(Kind::SystemMonitor) || self.showing_settings(Section::Storage);

@@ -14,6 +14,11 @@ mod config;
     target_os = "linux",
     any(feature = "ui-gpui", feature = "ui-gpui-fast")
 ))]
+mod lyrics;
+#[cfg(all(
+    target_os = "linux",
+    any(feature = "ui-gpui", feature = "ui-gpui-fast")
+))]
 mod model;
 #[cfg(all(
     target_os = "linux",

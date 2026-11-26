@@ -19,7 +19,7 @@ use self::layout::{Layout, MAX_COLUMNS, MIN_ROWS, Placement, VISIBLE_ROWS, Widge
 pub(super) use self::presets::ProfilePreset;
 use self::profiles::Profiles;
 pub(super) use self::profiles::{
-    Badge, MAX_PROFILES, Profile, ProfileDetails, import_profile_image,
+    Badge, MAX_PROFILES, Profile, ProfileDetails, import_profile_image, moved_profile_index,
 };
 use self::system_monitor::MonitorSetup;
 use super::{
@@ -51,6 +51,7 @@ pub(super) struct Home {
     scroll: ScrollHandle,
     visible: [bool; Kind::ALL.len()],
     media_progress_visible: bool,
+    media_lyrics_height: Option<f32>,
 }
 
 struct Resize {
@@ -132,6 +133,7 @@ impl Home {
             scroll: ScrollHandle::new(),
             visible: [false; Kind::ALL.len()],
             media_progress_visible: false,
+            media_lyrics_height: None,
         }
     }
 
@@ -148,6 +150,10 @@ impl Home {
 
     pub(super) fn shows_media_progress(&self) -> bool {
         self.media_progress_visible
+    }
+
+    pub(super) fn media_lyrics_height(&self) -> Option<f32> {
+        self.media_lyrics_height
     }
 
     pub(super) fn active_profile(&self) -> (usize, &Profile) {
@@ -264,6 +270,7 @@ impl Dashboard {
             |tile: &Placement| grid.intersects(*tile, f32::from(offset) / scale, viewport_width);
         self.home.visible.fill(false);
         self.home.media_progress_visible = false;
+        self.home.media_lyrics_height = None;
         for tile in placements.iter().filter(|tile| visible(tile)) {
             let kind = tile.widget.kind;
             self.home.visible[kind as usize] = true;
@@ -272,8 +279,9 @@ impl Dashboard {
                 let body_height =
                     grid.span_height(usize::from(tile.rows)) - self.media_tabs_height();
                 let inset = 2. * (widget_padding(body_height) + 1.);
-                self.home.media_progress_visible =
-                    MediaLayout::new(width - inset, body_height - inset).show_progress;
+                let layout = MediaLayout::new(width - inset, body_height - inset);
+                self.home.media_progress_visible = layout.show_progress;
+                self.home.media_lyrics_height = layout.lyrics_height();
             } else if kind == Kind::Viewer {
                 self.ensure_viewer(tile.widget.id, cx);
             }
@@ -283,6 +291,7 @@ impl Dashboard {
                 viewer.read(cx).hide();
             }
         }
+        self.sync_media_lyrics(cx);
         self.sync_utilities(cx);
 
         let content = if self.home.catalog {

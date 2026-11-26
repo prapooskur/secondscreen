@@ -1,4 +1,6 @@
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
+
+use crate::lyrics::SyncedLyrics;
 
 #[derive(Clone, Default)]
 pub struct Metrics {
@@ -115,6 +117,7 @@ pub struct Track {
     pub album: String,
     pub duration: Option<i64>,
     pub artwork: Option<Artwork>,
+    pub lyrics: Option<Arc<SyncedLyrics>>,
 }
 
 #[derive(Clone)]
@@ -175,6 +178,7 @@ pub struct PlaybackPosition {
     pub reported: i64,
     sampled_at: Instant,
     anchor: (i64, Instant),
+    discontinuity: bool,
 }
 
 const MAX_POSITION_LEAD: f64 = 3_000_000.;
@@ -185,6 +189,7 @@ impl PlaybackPosition {
             reported,
             sampled_at,
             anchor: (reported, sampled_at),
+            discontinuity: false,
         }
     }
 
@@ -196,6 +201,10 @@ impl PlaybackPosition {
         self.anchor = (position, at);
     }
 
+    pub fn mark_discontinuity(&mut self) {
+        self.discontinuity = true;
+    }
+
     fn projected(self, now: Instant, rate: f64) -> i64 {
         let (position, at) = self.anchor;
         let advance = now.saturating_duration_since(at).as_secs_f64() * rate * 1_000_000.;
@@ -203,6 +212,9 @@ impl PlaybackPosition {
     }
 
     pub fn follow(&mut self, previous: Self, rate: f64) {
+        if self.discontinuity {
+            return;
+        }
         let toward = rate.signum() as i64;
         let reported_delta = (self.reported - previous.reported) * toward;
         let projected = previous.projected(self.sampled_at, rate);
@@ -342,6 +354,17 @@ mod tests {
         seek.follow(old, 2.);
         assert_eq!(seek.at(at + Duration::from_millis(500), 2.), 5_000_000);
         assert_eq!(seek.at(at + Duration::from_secs(12), 2.), 10_000_000);
+    }
+
+    #[test]
+    fn an_explicit_seek_resets_the_clock_even_for_a_small_jump() {
+        let start = Instant::now();
+        let previous = PlaybackPosition::new(5_600_000, start);
+        let at = start + Duration::from_millis(200);
+        let mut seek = PlaybackPosition::new(6_450_000, at);
+        seek.mark_discontinuity();
+        seek.follow(previous, 1.);
+        assert_eq!(seek.at(at, 1.), 6_450_000);
     }
 
     #[test]

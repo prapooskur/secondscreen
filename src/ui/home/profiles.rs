@@ -124,6 +124,16 @@ impl Profiles {
         Some(index)
     }
 
+    fn move_item(&mut self, from: usize, to: usize) -> bool {
+        if from == to || from.max(to) >= self.items.len() {
+            return false;
+        }
+        let profile = self.items.remove(from);
+        self.items.insert(to, profile);
+        self.active = moved_profile_index(self.active, from, to);
+        true
+    }
+
     fn remove(&mut self, index: usize) -> Option<Profile> {
         if self.items.len() <= 1 || index >= self.items.len() {
             return None;
@@ -139,6 +149,18 @@ impl Profiles {
 
     pub fn write(&self, path: &Path) -> Result<()> {
         config::write_json(path, self).context("Could not save the Home profiles")
+    }
+}
+
+pub(in crate::ui) fn moved_profile_index(index: usize, from: usize, to: usize) -> usize {
+    if index == from {
+        to
+    } else if from < index && index <= to {
+        index - 1
+    } else if to <= index && index < from {
+        index + 1
+    } else {
+        index
     }
 }
 
@@ -382,6 +404,23 @@ impl Dashboard {
         }
     }
 
+    pub(in crate::ui) fn move_profile(
+        &mut self,
+        from: usize,
+        to: usize,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.home.profiles.move_item(from, to) {
+            return false;
+        }
+        self.error = None;
+        if self.save_home(cx) {
+            return true;
+        }
+        self.home.profiles.move_item(to, from);
+        false
+    }
+
     pub(in crate::ui) fn delete_profile(
         &mut self,
         index: usize,
@@ -576,6 +615,46 @@ mod tests {
         assert_eq!(profile_label(Some("👩‍💻 Work"), 0), "👩‍💻");
         assert_eq!(profile_label(Some(" "), 1), "2");
         assert_eq!(profile_label(None, 4), "5");
+    }
+
+    #[test]
+    fn reorders_profiles_and_persists_the_active_profile() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut profiles = Profiles::default();
+        let weather = profiles.add(ProfilePreset::BLANK).unwrap();
+        let studio = profiles.add(ProfilePreset::BLANK).unwrap();
+        profiles.items[0].details.name = Some("Desk".into());
+        profiles.items[weather].details.name = Some("Weather".into());
+        profiles.items[studio].details.name = Some("Studio".into());
+        profiles.items[studio].details.badge = Some(Badge::Preset(ProfileIcon::Music));
+        profiles.items[studio].layout.add(Kind::Viewer);
+        profiles.active = studio;
+
+        assert!(!profiles.move_item(0, 0));
+        assert!(!profiles.move_item(studio, profiles.items.len()));
+        assert!(profiles.move_item(0, studio));
+        assert_eq!(profiles.active, weather);
+        assert!(profiles.move_item(studio, 0));
+        assert_eq!(profiles.active, studio);
+        assert!(profiles.move_item(studio, 0));
+        assert_eq!(profiles.active, 0);
+        assert!(profiles.move_item(studio, weather));
+        profiles.write(file.path()).unwrap();
+
+        let saved = Profiles::read(file.path()).unwrap();
+        let names: Vec<_> = saved
+            .items
+            .iter()
+            .enumerate()
+            .map(|(i, p)| p.name(i))
+            .collect();
+        assert_eq!(names, ["Studio", "Weather", "Desk"]);
+        assert_eq!(saved.active, 0);
+        assert_eq!(
+            saved.items[0].details.badge,
+            Some(Badge::Preset(ProfileIcon::Music))
+        );
+        assert_eq!(saved.items[0].layout.widgets[0].kind, Kind::Viewer);
     }
 
     #[test]

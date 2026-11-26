@@ -3,16 +3,19 @@ use async_channel::Sender;
 use futures_lite::{StreamExt, future};
 use std::{
     collections::HashMap,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use zbus::{
     MatchRule, Message, MessageStream,
     blocking::{Connection, Proxy, connection::Builder, fdo::DBusProxy},
     message::Type,
+    names::OwnedUniqueName,
     zvariant::{OwnedObjectPath, OwnedValue, Value},
 };
 
 use super::Integration;
+use crate::lyrics::SyncedLyrics;
 use crate::model::{
     Artwork, MediaAction, MediaState, Playback, PlaybackPosition, Player, Track, Update,
 };
@@ -40,6 +43,7 @@ pub(super) struct Media {
 struct Signals {
     owners: MessageStream,
     players: MessageStream,
+    seeked_sender: Option<OwnedUniqueName>,
 }
 
 impl Signals {
@@ -58,6 +62,7 @@ impl Signals {
         Ok(Self {
             owners: MessageStream::for_match_rule(owners, connection, None).await?,
             players: MessageStream::for_match_rule(players, connection, None).await?,
+            seeked_sender: None,
         })
     }
 
@@ -65,7 +70,16 @@ impl Signals {
         loop {
             let message = future::or(self.owners.next(), self.players.next()).await;
             match message {
-                Some(Ok(message)) if media_event(&message) => return true,
+                Some(Ok(message)) if media_event(&message) => {
+                    let header = message.header();
+                    if header
+                        .member()
+                        .is_some_and(|member| member.as_str() == "Seeked")
+                    {
+                        self.seeked_sender = header.sender().map(|name| name.to_owned().into());
+                    }
+                    return true;
+                }
                 Some(Ok(_)) => {}
                 _ => return false,
             }
@@ -125,12 +139,27 @@ impl Media {
                 }
             };
         }
+        let seeked_sender = self
+            .signals
+            .as_mut()
+            .and_then(|signals| signals.seeked_sender.take());
         let bus = DBusProxy::new(&connection)?;
         let mut players: Vec<_> = bus
             .list_names()?
             .into_iter()
             .filter(|name| name.as_str().starts_with(PREFIX))
-            .filter_map(|name| read_player(&connection, name.as_str()).ok())
+            .filter_map(|name| {
+                let mut player = read_player(&connection, name.as_str()).ok()?;
+                if let Some(position) = &mut player.position
+                    && seeked_sender.as_ref().is_some_and(|sender| {
+                        bus.get_name_owner((&name).into())
+                            .is_ok_and(|owner| &owner == sender)
+                    })
+                {
+                    position.mark_discontinuity();
+                }
+                Some(player)
+            })
             .collect();
 
         players.sort_by(|a, b| {
@@ -388,6 +417,9 @@ fn metadata(value: OwnedValue) -> Option<Track> {
             .and_then(integer)
             .filter(|duration| *duration > 0),
         artwork,
+        lyrics: string(&values, "xesam:asText")
+            .and_then(SyncedLyrics::parse)
+            .map(Arc::new),
     })
 }
 
