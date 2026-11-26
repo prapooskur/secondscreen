@@ -21,7 +21,7 @@ const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_IMAGE_SIDE: u32 = 8192;
 const MAX_RENDER_SIDE: u32 = 4096;
 const IMAGE_FILE: &str = "background-image";
-const DEFAULT_INTERVAL_MINUTES: NonZeroU32 = NonZeroU32::new(10).unwrap();
+const DEFAULT_INTERVAL_MINUTES: NonZeroU32 = NonZeroU32::new(6 * 60).unwrap();
 
 struct Wallpaper {
     path: PathBuf,

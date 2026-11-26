@@ -57,7 +57,7 @@ In **Settings → General**, enable **Start at login** to open Second Screen whe
 
 Use **Launch display** in **Settings → General** to choose a connected output on Sway or KDE Plasma 6 on Wayland. The dashboard moves to that display and returns to it when it reconnects or the system wakes from sleep, preserving the selected fullscreen or windowed mode. If the display is disconnected at launch, the desktop chooses an output until the selected display returns. On GNOME, the desktop chooses the display.
 
-In **Settings → General → Background image**, select **Choose folder…** to cycle through its PNG, JPEG, WebP, and GIF images in filename order. Rotation defaults to 10 minutes. Enter a positive whole number of minutes and select **Save** to change it. **Choose image…** switches to a single image, and **Reset** restores the default background.
+In **Settings → General → Background image**, select **Choose folder…** to cycle through its PNG, JPEG, WebP, and GIF images in filename order. Rotation defaults to 6 hours (360 minutes). Enter a positive whole number of minutes and select **Save** to change it. **Choose image…** switches to a single image, and **Reset** restores the default background.
 
 The same app can also be built with GPUI Fast:
 
