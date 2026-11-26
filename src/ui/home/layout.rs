@@ -153,7 +153,7 @@ impl Layout {
             self.quick_controls = None;
         } else if let Some(actions) = &mut self.quick_controls {
             let mut unique = HashSet::new();
-            actions.retain(|action| unique.insert(*action));
+            actions.retain(|action| unique.insert(action.key().to_owned()));
         }
     }
 
@@ -312,8 +312,32 @@ mod tests {
         layout.normalize();
         assert_eq!(layout.quick_actions(), QuickAction::DEFAULT);
 
-        let order = [QuickAction::SwitchTheme, QuickAction::PlayPause];
-        layout.quick_controls = Some(vec![order[0], order[1], order[0]]);
+        use crate::platform::desktop_apps::DesktopApp;
+
+        let editor = DesktopApp {
+            id: "org.example.Editor.desktop".into(),
+            name: "Editor".into(),
+            icon: Some("/usr/share/pixmaps/editor.png".into()),
+        };
+        let order = [
+            QuickAction::SwitchTheme,
+            QuickAction::LaunchApp(editor.clone()),
+            QuickAction::PlayPause,
+            QuickAction::LaunchApp(DesktopApp {
+                id: "org.example.Browser.desktop".into(),
+                name: "Browser".into(),
+                icon: None,
+            }),
+        ];
+        let mut actions = order.to_vec();
+        actions.extend([
+            QuickAction::SwitchTheme,
+            QuickAction::LaunchApp(DesktopApp {
+                name: "New Editor".into(),
+                ..editor
+            }),
+        ]);
+        layout.quick_controls = Some(actions);
         let mut saved: Layout =
             serde_json::from_str(&serde_json::to_string(&layout).unwrap()).unwrap();
         saved.normalize();

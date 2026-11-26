@@ -2,6 +2,7 @@ mod app_icons;
 mod audio;
 pub mod autostart;
 pub mod calendar;
+pub mod desktop_apps;
 mod discord;
 pub mod launch_display;
 mod media;

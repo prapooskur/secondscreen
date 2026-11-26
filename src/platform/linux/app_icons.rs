@@ -75,25 +75,25 @@ impl AppIcons {
             let key = name.trim_end_matches(".desktop").to_lowercase();
             self.desktop_icons
                 .get(&key)
-                .and_then(|icon| self.lookup(icon))
-                .or_else(|| self.lookup(name))
-                .or_else(|| self.lookup(&key))
+                .and_then(|icon| lookup(icon, &self.theme))
+                .or_else(|| lookup(name, &self.theme))
+                .or_else(|| lookup(&key, &self.theme))
         });
         self.cache.insert(names, icon.clone());
         icon
     }
+}
 
-    fn lookup(&self, name: &str) -> Option<PathBuf> {
-        let path = Path::new(name);
-        if path.is_absolute() {
-            return path.is_file().then(|| path.to_owned());
-        }
-        freedesktop_icons::lookup(name)
-            .with_theme(&self.theme)
-            .with_size(48)
-            .with_cache()
-            .find()
+pub(super) fn lookup(name: &str, theme: &str) -> Option<PathBuf> {
+    let path = Path::new(name);
+    if path.is_absolute() {
+        return path.is_file().then(|| path.to_owned());
     }
+    freedesktop_icons::lookup(name)
+        .with_theme(theme)
+        .with_size(48)
+        .with_cache()
+        .find()
 }
 
 fn index_desktop(path: &Path, contents: &str, icons: &mut BTreeMap<String, String>) {

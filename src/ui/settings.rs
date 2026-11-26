@@ -5,12 +5,12 @@ use std::{
     process::{Command, Stdio},
 };
 
-use gpui::{Context, Entity, IntoElement, SharedString, Styled, Window, div, prelude::*};
+use gpui::{Context, Entity, IntoElement, SharedString, Styled, Task, Window, div, prelude::*};
 
 use crate::{
     config::{DISCORD_REDIRECT_URI, DiscordCredentials, Preferences, ThemePreference, WidgetStyle},
     model::{AudioChannel, AudioKind, DiscordAction},
-    platform::{autostart, in_flatpak, launch_display},
+    platform::{autostart, desktop_apps::DesktopApp, in_flatpak, launch_display},
 };
 
 use super::{
@@ -81,6 +81,7 @@ impl Section {
 pub(super) struct SettingsView {
     pub(super) section: Section,
     pub(super) quick_controls_setup: bool,
+    pub(super) quick_app_picker: Option<QuickAppPicker>,
     start_at_login: bool,
     start_at_login_pending: bool,
     pub(super) background_interval_field: Option<Entity<TextInput>>,
@@ -96,6 +97,7 @@ impl SettingsView {
         Self {
             section: Section::default(),
             quick_controls_setup: false,
+            quick_app_picker: None,
             start_at_login: false,
             start_at_login_pending: false,
             background_interval_field: None,
@@ -106,6 +108,12 @@ impl SettingsView {
             launch_options_copy: LaunchOptionsCopy::Ready,
         }
     }
+}
+
+pub(super) struct QuickAppPicker {
+    pub search: Entity<TextInput>,
+    pub apps: Option<Vec<DesktopApp>>,
+    pub _load: Task<()>,
 }
 
 enum LaunchOptionsCopy {
@@ -164,6 +172,7 @@ impl Dashboard {
         }
         self.settings.section = section;
         self.settings.quick_controls_setup = false;
+        self.settings.quick_app_picker = None;
         self.show_overlay(Overlay::Settings, window, cx);
     }
 
@@ -180,6 +189,7 @@ impl Dashboard {
     pub(super) fn reset_settings(&mut self) {
         self.gesture.borrow_mut().take();
         self.settings.quick_controls_setup = false;
+        self.settings.quick_app_picker = None;
         self.home_assistant.close_settings();
         self.settings.background_interval_field = None;
         self.settings.widget_fields = None;

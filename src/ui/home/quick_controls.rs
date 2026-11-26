@@ -1,6 +1,6 @@
 mod setup;
 
-use gpui::{Context, Div, Stateful, Styled, prelude::*};
+use gpui::{AnyElement, Context, Div, ObjectFit, SharedString, Stateful, Styled, img, prelude::*};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -8,6 +8,10 @@ use crate::{
     model::{
         AudioAction, AudioChannel, AudioKind, DiscordAction, DiscordState, MediaAction,
         NORMAL_VOLUME_PERCENT, Playback, Player,
+    },
+    platform::{
+        desktop_apps::{self, DesktopApp},
+        in_flatpak,
     },
     viewer::DISCORD_HOME,
 };
@@ -24,7 +28,7 @@ const MIN_SIDE: f32 = 34.;
 const MAX_SIDE: f32 = 64.;
 const VOLUME_STEP: i16 = 5;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum QuickAction {
     PreviousTrack,
@@ -46,6 +50,7 @@ pub(super) enum QuickAction {
     PreviousProfile,
     NextProfile,
     IntegrationStatus,
+    LaunchApp(DesktopApp),
 }
 
 impl QuickAction {
@@ -74,7 +79,21 @@ impl QuickAction {
         Self::IntegrationStatus,
     ];
 
-    fn presentation(self) -> (&'static str, Icon) {
+    pub(super) fn key(&self) -> &str {
+        match self {
+            Self::LaunchApp(app) => &app.id,
+            _ => self.presentation().0,
+        }
+    }
+
+    fn label(&self) -> SharedString {
+        match self {
+            Self::LaunchApp(app) => format!("Launch {}", app.name).into(),
+            _ => self.presentation().0.into(),
+        }
+    }
+
+    fn presentation(&self) -> (&'static str, Icon) {
         match self {
             Self::PreviousTrack => ("Previous track", Icon::Previous),
             Self::PlayPause => ("Play / pause", Icon::Play),
@@ -95,7 +114,21 @@ impl QuickAction {
             Self::PreviousProfile => ("Previous profile", Icon::Left),
             Self::NextProfile => ("Next profile", Icon::Chevron),
             Self::IntegrationStatus => ("Integration status", Icon::Activity),
+            Self::LaunchApp(_) => ("Launch app", Icon::Grid),
         }
+    }
+
+    fn icon(&self, symbol: Icon, theme: Theme, color: Color, side: f32) -> AnyElement {
+        if let Self::LaunchApp(app) = self
+            && let Some(path) = &app.icon
+        {
+            return img(path.clone())
+                .size(r(side))
+                .object_fit(ObjectFit::Contain)
+                .with_fallback(move || icon(symbol, theme.color(color), side).into_any_element())
+                .into_any_element();
+        }
+        icon(symbol, theme.color(color), side).into_any_element()
     }
 }
 
@@ -110,29 +143,29 @@ enum Action {
     DiscordDeafen,
     Theme(ThemePreference),
     Profile(usize),
+    LaunchApp(DesktopApp),
 }
 
-struct Control {
-    kind: QuickAction,
-    label: gpui::SharedString,
+struct Control<'a> {
+    kind: &'a QuickAction,
+    label: SharedString,
     symbol: Icon,
     action: Option<Action>,
     accent: Option<Color>,
 }
 
-impl Control {
-    fn new(kind: QuickAction, action: Option<Action>) -> Self {
-        let (label, symbol) = kind.presentation();
+impl<'a> Control<'a> {
+    fn new(kind: &'a QuickAction, action: Option<Action>) -> Self {
         Self {
             kind,
-            label: label.into(),
-            symbol,
+            label: kind.label(),
+            symbol: kind.presentation().1,
             action,
             accent: None,
         }
     }
 
-    fn displayed_as(mut self, label: impl Into<gpui::SharedString>, symbol: Icon) -> Self {
+    fn displayed_as(mut self, label: impl Into<SharedString>, symbol: Icon) -> Self {
         self.label = label.into();
         self.symbol = symbol;
         self
@@ -147,12 +180,13 @@ impl Control {
         let label = self.label;
         let icon_side: f32 = if side >= 48. { 24. } else { 18. };
         let button = theme
-            .button(("quick-control", self.kind as usize), self.accent)
+            .button(format!("quick-control-{}", self.kind.key()), self.accent)
             .size(r(side))
             .px_0()
-            .child(icon(
+            .child(self.kind.icon(
                 self.symbol,
-                theme.color(self.accent.unwrap_or(TEXT)),
+                theme,
+                self.accent.unwrap_or(TEXT),
                 icon_side.min(side * 0.6),
             ))
             .tooltip(move |_, cx| cx.new(|_| Tooltip(label.clone())).into());
@@ -178,6 +212,22 @@ impl Control {
             }
             Action::Profile(index) => {
                 view.update(cx, |this, cx| this.switch_profile(*index, window, cx))
+            }
+            Action::LaunchApp(app) => {
+                let app = app.clone();
+                view.update(cx, |_, cx| {
+                    cx.spawn(async move |this, cx| {
+                        if let Err(error) =
+                            blocking::unblock(move || desktop_apps::launch(&app)).await
+                        {
+                            let _ = this.update(cx, |this, cx| {
+                                this.set_error(format!("{error:#}"), cx);
+                                cx.notify();
+                            });
+                        }
+                    })
+                    .detach();
+                });
             }
         })
     }
@@ -213,7 +263,7 @@ impl Dashboard {
             .children(actions.chunks(columns).map(|line| {
                 row().gap(r(GAP)).flex_none().children(
                     line.iter()
-                        .map(|&action| self.quick_control(action, theme).button(side, theme, cx)),
+                        .map(|action| self.quick_control(action, theme).button(side, theme, cx)),
                 )
             }));
 
@@ -227,7 +277,7 @@ impl Dashboard {
         )
     }
 
-    fn quick_control(&self, kind: QuickAction, theme: Theme) -> Control {
+    fn quick_control<'a>(&self, kind: &'a QuickAction, theme: Theme) -> Control<'a> {
         use QuickAction::*;
 
         let player = self.current_player();
@@ -266,7 +316,7 @@ impl Dashboard {
                 .accented(playing.then_some(TEAL))
             }
             VolumeDown | VolumeUp => {
-                let up = kind == VolumeUp;
+                let up = *kind == VolumeUp;
                 let device = default_device(AudioKind::Output).filter(|channel| {
                     channel.volume.is_some_and(|volume| {
                         if up {
@@ -285,7 +335,7 @@ impl Dashboard {
                 )
             }
             SpeakerMute | MicrophoneMute => {
-                let output = kind == SpeakerMute;
+                let output = *kind == SpeakerMute;
                 let device = default_device(if output {
                     AudioKind::Output
                 } else {
@@ -320,7 +370,7 @@ impl Dashboard {
                 }
             }
             SwitchOutput | SwitchMicrophone => {
-                let direction = if kind == SwitchOutput {
+                let direction = if *kind == SwitchOutput {
                     AudioKind::Output
                 } else {
                     AudioKind::Input
@@ -369,11 +419,18 @@ impl Dashboard {
             }
             PreviousProfile | NextProfile => {
                 let len = self.home.profiles.items.len();
-                let step = if kind == NextProfile { 1 } else { len - 1 };
+                let step = if *kind == NextProfile { 1 } else { len - 1 };
                 let index = (self.home.profiles.active + step) % len;
                 Control::new(kind, (len > 1).then_some(Action::Profile(index)))
             }
             IntegrationStatus => Control::new(kind, Some(Action::Settings(Section::Integrations))),
+            LaunchApp(app) => {
+                if in_flatpak() {
+                    Control::new(kind, None).displayed_as(desktop_apps::UNAVAILABLE, Icon::Grid)
+                } else {
+                    Control::new(kind, Some(Action::LaunchApp(app.clone())))
+                }
+            }
         }
     }
 

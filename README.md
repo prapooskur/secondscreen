@@ -7,7 +7,7 @@ The app opens to a single resizable widget grid. Use **Edit layout** in the righ
 - **System monitor** brings hardware sensors, RAM, storage, and network traffic together with AIDA64-style gauges, segmented usage bars, and live charts. It shows drive capacity and attributed filesystem usage, plus download and upload rates across active network interfaces with a one-minute history. Find it on the default dashboard or under **Edit layout → Add widget → System monitor**.
 - **Now playing** shows track details, album art, and playback controls. Tap a player tab to switch apps, and swipe across the tabs if more apps are offscreen. Tap or drag the seek bar to jump within a track. Make the widget wider or taller if the seek bar is hidden.
 - **Audio** adjusts device volume and mute and lets you set the default output or microphone. Add **App mixer** to adjust playback and recording streams using app icons, mute buttons, and volume sliders. Hover over an icon to see the app and stream names.
-- **Quick controls** puts playback, audio, Discord voice, and dashboard shortcuts in a customizable grid. The icons reflow as you resize the tile. Scroll inside it when space is tight.
+- **Quick controls** puts playback, audio, Discord voice, app launchers, and dashboard shortcuts in a customizable grid. The icons reflow as you resize the tile. Scroll inside it when space is tight.
 - **Discord** shows a green ring around each speaker’s avatar and a **LIVE** badge when the desktop client reports a Go Live stream. The widget also provides controls to connect, mute, deafen, and leave a call.
 - **Home Assistant** shows the state of a selected entity and lets you control it from the dashboard.
 - **Viewer** displays web pages, iframes, YouTube, Twitch, and local media inside the grid. Discord voice channel links open in Discord.
@@ -69,13 +69,17 @@ cargo run --release --locked --no-default-features --features ui-gpui-fast
 
 Choose **Edit layout** to add widgets from the catalog and show widget names and controls at the top. Use **×** to remove a widget or the arrows to change its order. Drag a widget’s bottom-right corner to resize. Use the width and height controls for single steps, or focus the corner and press the arrow keys. Choose **Done** to return to Home.
 
-Use the left rail to switch profiles. **+** creates an empty profile and selects it, up to five total. The existing Home layout becomes profile 1. Each profile saves its own layout and widget options.
+Use the left rail to switch profiles. Select **+** on the rail or **New profile** in **Profiles**, choose a preset, then select **Create profile**. The new profile becomes active. You can save up to five profiles, each with its own editable layout and widget options. The existing Home layout becomes profile 1.
+
+Choose **Blank** to start with an empty layout, or pick **Everyday** for weather, local time, and playback, **PC Vitals** for system and network metrics, **Gaming** for FPS and Discord, **Music & Audio** for playback and mixing, **Workday** for calendars and notifications, **Stream Companion** for Twitch live and chat, or **Control Deck** for touch shortcuts. The layouts draw on the [Xeneon Edge iCUE widget examples](https://www.corsair.com/us/en/explorer/gamer/monitors/what-can-i-use-the-xeneon-edge-for/).
 
 Select the pencil on the left rail to open **Profiles**. Select any profile to rename it and preview its icon. Use the first character of the profile name, choose from 24 built-in SVGs, or import an SVG or PNG. Unnamed profiles use their number as the text badge. Select **Save changes** to update the profile. **Set active** switches the dashboard to the selected profile. **Delete profile** removes the selected profile and its layout after confirmation. At least one profile stays on the dashboard.
 
 Home fits four grid rows and up to five columns in the visible area. Widgets can span two to four visible rows. When the grid extends to the right, swipe across it on a touchscreen, scroll horizontally with a trackpad, use **Shift** + mouse wheel, or use the arrows in the right-hand rail. The app keeps each widget’s requested size when space is limited and saves the layout in `${XDG_CONFIG_HOME:-~/.config}/secondscreen/home.json`.
 
 On the **Quick controls** tile, choose **Setup** in **Edit layout**. Use **+** to add an action, the up and down arrows to set its position, or **×** to remove it. Buttons fill each row from left to right. Each profile saves its own selection and order.
+
+Choose **Launch app…** in **Available actions** to add a shortcut for an installed app. Tap its shortcut on the tile to open the app. App launch shortcuts require a native package.
 
 ## Configure System monitor
 
