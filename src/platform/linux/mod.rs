@@ -20,7 +20,7 @@ use std::{
 use crate::{
     config::DiscordCredentials,
     model::Update,
-    monitor::{Monitor, storage},
+    monitor::{Monitor, Sources, storage},
     platform::Controls,
 };
 
@@ -30,29 +30,7 @@ pub fn start(
     updates: Sender<Update>,
     discord_credentials: Option<DiscordCredentials>,
 ) -> std::io::Result<Controls> {
-    let monitor_tx = updates.clone();
-    let monitor_thread = thread::Builder::new().name("system-monitor".into());
-    monitor_thread.spawn(move || {
-        let mut monitor = match Monitor::new() {
-            Ok(monitor) => monitor,
-            Err(error) => {
-                log::error!("Could not initialize system monitoring: {error}");
-                let _ = monitor_tx.send_blocking(Update::ActionError(
-                    "System monitoring is unavailable.".into(),
-                ));
-                return;
-            }
-        };
-        loop {
-            if monitor_tx
-                .send_blocking(Update::Metrics(monitor.sample()))
-                .is_err()
-            {
-                break;
-            }
-            thread::sleep(Duration::from_secs(1));
-        }
-    })?;
+    let monitor = monitor_worker(updates.clone())?;
     let storage = storage_worker(updates.clone())?;
     let audio = worker("audio-mixer", updates.clone(), audio::Mixer::default)?;
     let media = worker("media-player", updates.clone(), media::Media::default)?;
@@ -60,11 +38,53 @@ pub fn start(
         discord::Discord::new(discord_credentials)
     })?;
     Ok(Controls {
+        monitor,
         storage,
         audio,
         media,
         discord,
     })
+}
+
+fn monitor_worker(updates: Sender<Update>) -> std::io::Result<mpsc::Sender<Option<Sources>>> {
+    let (commands, receiver) = mpsc::channel();
+    thread::Builder::new()
+        .name("system-monitor".into())
+        .spawn(move || {
+            while let Ok(request) = receiver.recv() {
+                let Some(mut sources) = request else { continue };
+                let mut monitor = match Monitor::new() {
+                    Ok(monitor) => monitor,
+                    Err(error) => {
+                        log::error!("Could not initialize system monitoring: {error}");
+                        let _ = updates.send_blocking(Update::ActionError(
+                            "System monitoring is unavailable.".into(),
+                        ));
+                        return;
+                    }
+                };
+                'sampling: loop {
+                    if updates
+                        .send_blocking(Update::Metrics(monitor.sample(sources)))
+                        .is_err()
+                    {
+                        return;
+                    }
+                    let deadline = Instant::now() + Duration::from_secs(1);
+                    loop {
+                        match receiver
+                            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                        {
+                            Ok(Some(next)) => sources = next,
+                            Ok(None) => break 'sampling,
+                            Err(RecvTimeoutError::Timeout) => break,
+                            Err(RecvTimeoutError::Disconnected) => return,
+                        }
+                    }
+                }
+            }
+        })?;
+    Ok(commands)
 }
 
 fn storage_worker(updates: Sender<Update>) -> std::io::Result<mpsc::Sender<bool>> {

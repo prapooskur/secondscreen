@@ -63,9 +63,36 @@ struct ErrorNotice {
 }
 
 #[derive(Default)]
+struct Series {
+    samples: VecDeque<f32>,
+    seen: bool,
+}
+
+#[derive(Default)]
+struct SeriesHistory(HashMap<String, Series>);
+
+impl SeriesHistory {
+    fn record<'a>(&mut self, readings: impl Iterator<Item = (&'a str, Option<f32>)>) {
+        for (id, value) in readings {
+            let series = match self.0.get_mut(id) {
+                Some(existing) => existing,
+                None => self.0.entry(id.to_owned()).or_default(),
+            };
+            append(&mut series.samples, value);
+            series.seen = true;
+        }
+        self.0.retain(|_, series| std::mem::take(&mut series.seen));
+    }
+
+    fn get(&self, id: &str) -> Option<&VecDeque<f32>> {
+        self.0.get(id).map(|series| &series.samples)
+    }
+}
+
+#[derive(Default)]
 struct History {
-    sensors: HashMap<String, VecDeque<f32>>,
-    drives: HashMap<String, VecDeque<f32>>,
+    sensors: SeriesHistory,
+    drives: SeriesHistory,
     download: VecDeque<f32>,
     upload: VecDeque<f32>,
 }
@@ -91,6 +118,7 @@ pub struct Dashboard {
     profile_editor: profile_editor::ProfileEditor,
     settings: settings::SettingsView,
     metrics: Metrics,
+    monitor_sources: Option<crate::monitor::Sources>,
     history: History,
     storage: Vec<DiskUsage>,
     storage_active: bool,
@@ -194,6 +222,7 @@ impl Dashboard {
             profile_editor: profile_editor::ProfileEditor::default(),
             settings: settings::SettingsView::new(),
             metrics: Metrics::default(),
+            monitor_sources: None,
             history: History::default(),
             storage: Vec::new(),
             storage_active: false,
@@ -223,21 +252,22 @@ impl Dashboard {
 
     fn apply(&mut self, update: Update, cx: &mut Context<Self>) -> Refresh {
         match update {
+            Update::Metrics(_) if self.monitor_sources.is_none() => Refresh::None,
             Update::Metrics(metrics) => {
-                let redraw = self.home.shows(Kind::SystemMonitor);
-                let mut previous = std::mem::take(&mut self.history.sensors);
-                for sensor in &metrics.sensors {
-                    let mut samples = previous.remove(&sensor.id).unwrap_or_default();
-                    append(&mut samples, sensor.value);
-                    self.history.sensors.insert(sensor.id.clone(), samples);
-                }
+                let header_changed = self.metrics.cpu_name != metrics.cpu_name
+                    || self.metrics.host != metrics.host
+                    || self.metrics.uptime.map(|s| s / 60) != metrics.uptime.map(|s| s / 60);
+                let redraw = self.home.monitor_values_visible
+                    || (self.home.shows(Kind::SystemMonitor) && header_changed);
+                self.history
+                    .sensors
+                    .record(metrics.sensors.iter().map(|s| (s.id.as_str(), s.value)));
                 if self.storage_active {
-                    let mut previous = std::mem::take(&mut self.history.drives);
-                    for disk in &self.storage {
-                        let mut samples = previous.remove(&disk.id).unwrap_or_default();
-                        append(&mut samples, monitor::drive_load(disk));
-                        self.history.drives.insert(disk.id.clone(), samples);
-                    }
+                    self.history.drives.record(
+                        self.storage
+                            .iter()
+                            .map(|disk| (disk.id.as_str(), monitor::drive_load(disk))),
+                    );
                 }
                 append(
                     &mut self.history.download,
@@ -362,6 +392,7 @@ impl Dashboard {
                     (DiscordState::Connected(_), _) | (_, DiscordState::Connected(_)) => true,
                     _ => false,
                 };
+                discord::release_departed_avatars(&state, cx);
                 self.discord = state;
                 if self.home.shows(Kind::Discord)
                     || (self.home.shows(Kind::QuickControls) && voice_controls_changed)
@@ -539,12 +570,22 @@ impl Render for Dashboard {
         );
         self.animate_lyrics_scroll(window, cx);
         self.sync_home_assistant(cx);
-        let storage_active =
-            self.home.shows(Kind::SystemMonitor) || self.showing_settings(Section::Storage);
+        let sources = self.home.monitor_sources();
+        if self.monitor_sources != sources {
+            self.monitor_sources = sources;
+            if sources.is_none() {
+                self.metrics = Metrics::default();
+                self.history = History::default();
+            }
+            let _ = self.controls.monitor.send(sources);
+        }
+        let storage_active = (self.home.shows(Kind::SystemMonitor)
+            && sources.is_some_and(|s| s.storage))
+            || self.showing_settings(Section::Storage);
         if storage_active != self.storage_active {
             self.storage_active = storage_active;
             if !storage_active {
-                self.history.drives.clear();
+                self.history.drives = SeriesHistory::default();
             }
             let _ = self.controls.storage.send(storage_active);
         }
@@ -602,4 +643,22 @@ impl Render for Tooltip {
 
 fn percent(used: u64, total: u64) -> Option<f32> {
     (total > 0).then(|| (100.0 * used as f64 / total as f64) as f32)
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    #[test]
+    fn readings_keep_their_history_across_reordering_and_reset_after_removal() {
+        let mut history = SeriesHistory::default();
+        history.record([("a", Some(1.)), ("b", Some(2.))].into_iter());
+        history.record([("b", None), ("a", Some(3.))].into_iter());
+        assert_eq!(history.get("a").unwrap(), &[1., 3.]);
+        assert!(history.get("b").unwrap().is_empty());
+        history.record([("b", Some(2.))].into_iter());
+        assert!(history.get("a").is_none());
+        history.record([("a", Some(7.))].into_iter());
+        assert_eq!(history.get("a").unwrap(), &[7.]);
+    }
 }

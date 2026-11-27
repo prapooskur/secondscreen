@@ -27,7 +27,7 @@ const EVENT_BATCH: Duration = Duration::from_millis(50);
 #[derive(Default)]
 pub(super) struct Mixer {
     channels: Vec<AudioChannel>,
-    icons: AppIcons,
+    icons: Option<AppIcons>,
     subscription: Option<Subscription>,
     retry_subscription_at: Option<Instant>,
 }
@@ -187,7 +187,9 @@ impl Mixer {
         ] {
             channels.extend(pulse_channels(kind)?.into_iter().filter_map(|channel| {
                 let icon = if matches!(kind, AudioKind::Playback | AudioKind::Recording) {
-                    self.icons.resolve(&channel.properties)
+                    self.icons
+                        .get_or_insert_with(AppIcons::default)
+                        .resolve(&channel.properties)
                 } else {
                     None
                 };

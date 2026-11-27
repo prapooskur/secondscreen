@@ -4,7 +4,10 @@ use gpui::{
     AnyElement, Context, Div, FontWeight, IntoElement, SharedString, Styled, div, prelude::*,
 };
 
-use crate::model::{DiskUsage, Sensor};
+use crate::{
+    model::{DiskUsage, Sensor},
+    monitor::Sources,
+};
 
 use super::{
     super::{
@@ -13,6 +16,7 @@ use super::{
         monitor::{capacity, drive_load, gauge, gib, monitoring_bar, rate, uptime},
         theme::*,
     },
+    Home, Kind, Profiles,
     options::{ChartLayout, MAX_PLOTS, MonitorDisplay, MonitorOptions, MonitorSource},
 };
 
@@ -70,6 +74,44 @@ struct Reading<'a> {
     maximum: Option<f32>,
 }
 
+impl Home {
+    pub(in crate::ui) fn monitor_sources(&self) -> Option<Sources> {
+        if self.monitor_setup.is_some() && self.shows(Kind::SystemMonitor) {
+            return Some(Sources::ALL);
+        }
+        self.configured_monitor_sources
+            .get_or_init(|| self.profiles.monitor_sources())
+            .or_else(|| self.shows(Kind::SystemMonitor).then(Sources::default))
+    }
+}
+
+impl Profiles {
+    fn monitor_sources(&self) -> Option<Sources> {
+        // Keep configured charts warm across profile switches and horizontal scrolling.
+        let mut sources = Sources::default();
+        let mut active = false;
+        for profile in &self.items {
+            for options in profile.layout.monitors.values() {
+                for source in options.readings.iter().flat_map(|card| card.sources()) {
+                    active = true;
+                    match source {
+                        MonitorSource::Sensor(key) => {
+                            sources.per_core |= key.starts_with("cpu:");
+                            sources.gpu |= key == "gpu" || key.starts_with("gpu:");
+                            sources.hardware |= key.starts_with("hwmon:");
+                        }
+                        MonitorSource::Download | MonitorSource::Upload => sources.network = true,
+                        MonitorSource::Drive(_) | MonitorSource::VisibleDrives => {
+                            sources.storage = true
+                        }
+                    }
+                }
+            }
+        }
+        active.then_some(sources)
+    }
+}
+
 impl Dashboard {
     pub(super) fn system_monitor_widget(
         &self,
@@ -99,12 +141,7 @@ impl Dashboard {
             if selected.source == MonitorSource::VisibleDrives {
                 cards.extend(self.visible_disks().into_iter().filter_map(|disk| {
                     let individually_selected = options.readings.iter().any(|item| {
-                        let comparisons = item
-                            .chart
-                            .additional
-                            .iter()
-                            .filter(|_| item.display == MonitorDisplay::Chart);
-                        std::iter::once(&item.source).chain(comparisons).any(
+                        item.sources().any(
                             |source| matches!(source, MonitorSource::Drive(id) if id == &disk.id),
                         )
                     });
@@ -115,14 +152,8 @@ impl Dashboard {
                     })
                 }));
             } else {
-                let comparisons = selected
-                    .chart
-                    .additional
-                    .iter()
-                    .filter(|_| selected.display == MonitorDisplay::Chart)
-                    .take(MAX_PLOTS - 1);
-                let readings = std::iter::once(&selected.source)
-                    .chain(comparisons)
+                let readings = selected
+                    .sources()
                     .filter_map(|source| self.monitor_reading(source))
                     .collect::<Vec<_>>();
                 if !readings.is_empty() {
@@ -555,5 +586,46 @@ fn format_value(value: f32, unit: &str) -> String {
         "GiB" | "W" | "°C" => format!("{value:.1} {unit}"),
         "" => format!("{value:.0}"),
         _ => format!("{value:.0} {unit}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::options::MonitorReading;
+    use super::*;
+
+    #[test]
+    fn sampling_follows_configured_readings_across_profiles() {
+        let mut profiles = Profiles::default();
+        assert_eq!(profiles.monitor_sources(), Some(Sources::default()));
+        profiles.items.extend(Profiles::default().items);
+        let monitor = profiles.items[1]
+            .layout
+            .monitors
+            .values_mut()
+            .next()
+            .unwrap();
+        let mut chart = MonitorReading::new(MonitorSource::Download, MonitorDisplay::Chart);
+        chart.chart.additional = vec![
+            MonitorSource::Sensor("gpu".into()),
+            MonitorSource::Drive("disk".into()),
+        ];
+        let mut bar =
+            MonitorReading::new(MonitorSource::Sensor("cpu:1".into()), MonitorDisplay::Bar);
+        bar.chart
+            .additional
+            .push(MonitorSource::Sensor("hwmon:unused".into()));
+        monitor.readings = vec![chart, bar];
+        assert_eq!(
+            profiles.monitor_sources(),
+            Some(Sources {
+                hardware: false,
+                ..Sources::ALL
+            })
+        );
+        for profile in &mut profiles.items {
+            profile.layout.monitors.clear();
+        }
+        assert_eq!(profiles.monitor_sources(), None);
     }
 }

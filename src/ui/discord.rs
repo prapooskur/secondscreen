@@ -1,9 +1,14 @@
-use gpui::{Context, Div, FontWeight, IntoElement, ObjectFit, Stateful, Styled, div, prelude::*};
+use std::{collections::HashSet, sync::Arc};
+
+use gpui::{
+    App, Asset, Context, Div, FontWeight, Global, Img, IntoElement, ObjectFit, RenderImage,
+    Stateful, Styled, Window, div, img, prelude::*,
+};
 
 use super::{
     Dashboard, Tooltip,
     icons::{Icon, icon},
-    media::remote_image,
+    media::load_image,
     settings::Section,
     theme::*,
 };
@@ -178,6 +183,62 @@ impl Dashboard {
     }
 }
 
+#[derive(Default)]
+struct CachedAvatars(HashSet<String>);
+impl Global for CachedAvatars {}
+
+struct Avatar;
+impl Asset for Avatar {
+    type Source = String;
+    type Output = Option<Arc<RenderImage>>;
+
+    fn load(url: String, _: &mut App) -> impl Future<Output = Self::Output> + Send + 'static {
+        blocking::unblock(move || load_image(&url, 64).ok().map(Arc::new))
+    }
+}
+
+fn avatar_image(url: String) -> Img {
+    img(move |window: &mut Window, cx: &mut App| {
+        let cached = &mut cx.default_global::<CachedAvatars>().0;
+        if !cached.contains(&url) {
+            cached.insert(url.clone());
+        }
+        window.use_asset::<Avatar>(&url, cx).flatten().map(Ok)
+    })
+}
+
+pub(super) fn release_departed_avatars(state: &DiscordState, cx: &mut App) {
+    if cx
+        .try_global::<CachedAvatars>()
+        .is_none_or(|cache| cache.0.is_empty())
+    {
+        return;
+    }
+    let mut active = HashSet::new();
+    if let DiscordState::Connected(voice) = state
+        && let Some(channel) = &voice.channel
+    {
+        active.extend(
+            channel
+                .members
+                .iter()
+                .filter_map(|m| m.avatar_url.as_deref()),
+        );
+    }
+    let departed: Vec<_> = cx
+        .global_mut::<CachedAvatars>()
+        .0
+        .extract_if(|url| !active.contains(url.as_str()))
+        .collect();
+    for url in departed {
+        let image = cx.fetch_asset::<Avatar>(&url).flatten();
+        cx.remove_asset::<Avatar>(&url);
+        if let Some(image) = image {
+            cx.drop_image(image, None);
+        }
+    }
+}
+
 fn member_row(theme: Theme, index: usize, member: &VoiceMember) -> Div {
     let initial = member
         .name
@@ -199,7 +260,7 @@ fn member_row(theme: Theme, index: usize, member: &VoiceMember) -> Div {
         .child(initial)
         .when_some(member.avatar_url.clone(), |it, url| {
             it.child(
-                remote_image(url)
+                avatar_image(url)
                     .absolute()
                     .inset_0()
                     .size_full()

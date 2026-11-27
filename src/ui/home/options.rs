@@ -39,6 +39,16 @@ pub(super) struct MonitorReading {
 }
 
 impl MonitorReading {
+    pub(super) fn sources(&self) -> impl Iterator<Item = &MonitorSource> {
+        std::iter::once(&self.source).chain(
+            self.chart
+                .additional
+                .iter()
+                .filter(|_| self.display == MonitorDisplay::Chart)
+                .take(MAX_PLOTS - 1),
+        )
+    }
+
     pub(super) fn new(source: MonitorSource, display: MonitorDisplay) -> Self {
         Self {
             source,

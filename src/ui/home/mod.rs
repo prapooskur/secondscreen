@@ -6,7 +6,7 @@ mod quick_controls;
 mod system_monitor;
 mod widgets;
 
-use std::path::PathBuf;
+use std::{cell::OnceCell, path::PathBuf};
 
 use gpui::{
     AnyElement, Context, DispatchPhase, HitboxBehavior, IntoElement, MouseButton, MouseMoveEvent,
@@ -50,6 +50,8 @@ pub(super) struct Home {
     resizing: Option<Resize>,
     scroll: ScrollHandle,
     visible: [bool; Kind::ALL.len()],
+    pub(super) monitor_values_visible: bool,
+    configured_monitor_sources: OnceCell<Option<crate::monitor::Sources>>,
     media_progress_visible: bool,
     media_lyrics_height: Option<f32>,
 }
@@ -132,6 +134,8 @@ impl Home {
             resizing: None,
             scroll: ScrollHandle::new(),
             visible: [false; Kind::ALL.len()],
+            monitor_values_visible: false,
+            configured_monitor_sources: OnceCell::new(),
             media_progress_visible: false,
             media_lyrics_height: None,
         }
@@ -269,6 +273,7 @@ impl Dashboard {
         let visible =
             |tile: &Placement| grid.intersects(*tile, f32::from(offset) / scale, viewport_width);
         self.home.visible.fill(false);
+        self.home.monitor_values_visible = false;
         self.home.media_progress_visible = false;
         self.home.media_lyrics_height = None;
         for tile in placements.iter().filter(|tile| visible(tile)) {
@@ -282,6 +287,18 @@ impl Dashboard {
                 let layout = MediaLayout::new(width - inset, body_height - inset);
                 self.home.media_progress_visible = layout.show_progress;
                 self.home.media_lyrics_height = layout.lyrics_height();
+            } else if kind == Kind::SystemMonitor {
+                self.home.monitor_values_visible |= self
+                    .home
+                    .monitor_setup
+                    .as_ref()
+                    .is_some_and(|setup| setup.id == tile.widget.id)
+                    || self
+                        .home
+                        .layout()
+                        .monitors
+                        .get(&tile.widget.id)
+                        .is_some_and(|options| !options.readings.is_empty());
             } else if kind == Kind::Viewer {
                 self.ensure_viewer(tile.widget.id, cx);
             }
@@ -1097,6 +1114,7 @@ impl Dashboard {
     }
 
     fn save_home(&mut self, cx: &mut Context<Self>) -> bool {
+        self.home.configured_monitor_sources.take();
         let result = self
             .home
             .path

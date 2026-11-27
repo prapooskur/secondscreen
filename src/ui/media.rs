@@ -12,7 +12,7 @@ use image::{Frame, ImageBuffer, Rgba, imageops};
 
 use crate::model::{Artwork, MediaAction, MediaState, Playback, Player, Track};
 use gpui::{
-    App, Asset, Context, Div, FontWeight, Global, Img, ImgResourceLoader, IntoElement, ObjectFit,
+    App, Asset, Context, Div, FontWeight, Global, ImgResourceLoader, IntoElement, ObjectFit,
     RenderImage, Role, SharedString, Styled, Toggled, Window, div, img, prelude::*,
 };
 
@@ -708,7 +708,9 @@ impl Asset for AlbumThumbnail {
                 let load = ImgResourceLoader::load(path.into(), cx);
                 Box::pin(async move { load.await.ok() })
             }
-            Artwork::Remote(url) => Box::pin(RemoteImage::load(url, cx)),
+            Artwork::Remote(url) => Box::pin(blocking::unblock(move || {
+                load_image(&url, MAX_ALBUM_SIDE).ok().map(Arc::new)
+            })),
         };
         async move {
             let image = load.await.filter(|image| image.frame_count() > 0)?;
@@ -744,23 +746,7 @@ fn thumbnail(image: Arc<RenderImage>, pixels: u32) -> Option<Arc<RenderImage>> {
     Some(Arc::new(RenderImage::new(frames)))
 }
 
-pub(super) fn remote_image(url: String) -> Img {
-    img(move |window: &mut gpui::Window, cx: &mut App| {
-        window.use_asset::<RemoteImage>(&url, cx).flatten().map(Ok)
-    })
-}
-
-struct RemoteImage;
-impl Asset for RemoteImage {
-    type Source = String;
-    type Output = Option<Arc<RenderImage>>;
-
-    fn load(url: String, _: &mut App) -> impl Future<Output = Self::Output> + Send + 'static {
-        blocking::unblock(move || load_image(&url).ok().map(Arc::new))
-    }
-}
-
-fn load_image(url: &str) -> anyhow::Result<RenderImage> {
+pub(super) fn load_image(url: &str, max_side: u32) -> anyhow::Result<RenderImage> {
     const MAX: u64 = 8 * 1024 * 1024;
     let response = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(5))
@@ -771,13 +757,21 @@ fn load_image(url: &str) -> anyhow::Result<RenderImage> {
     let mut bytes = Vec::new();
     response.take(MAX + 1).read_to_end(&mut bytes)?;
     anyhow::ensure!(bytes.len() as u64 <= MAX, "Image download is too large.");
+    decode_remote_image(bytes, max_side)
+}
+
+fn decode_remote_image(bytes: Vec<u8>, max_side: u32) -> anyhow::Result<RenderImage> {
     let mut reader = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(4096);
     limits.max_image_height = Some(4096);
     limits.max_alloc = Some(64 * 1024 * 1024);
     reader.limits(limits);
-    let mut image = reader.decode()?.thumbnail(768, 768).into_rgba8();
+    let mut image = reader.decode()?;
+    if image.width().max(image.height()) > max_side {
+        image = image.thumbnail(max_side, max_side);
+    }
+    let mut image = image.into_rgba8();
     for pixel in image.pixels_mut() {
         pixel.0.swap(0, 2);
     }
@@ -838,6 +832,18 @@ mod tests {
         assert!(seek.confirmed(&player));
         seek.previous_position = Some(122_000_000);
         assert!(!seek.confirmed(&player));
+    }
+
+    #[test]
+    fn remote_images_only_shrink_to_the_requested_limit() {
+        for (width, height, limit, expected) in [(64, 64, 768, (64, 64)), (128, 64, 64, (64, 32))] {
+            let image = image::DynamicImage::new_rgba8(width, height);
+            let mut png = Cursor::new(Vec::new());
+            image.write_to(&mut png, image::ImageFormat::Png).unwrap();
+            let decoded = decode_remote_image(png.into_inner(), limit).unwrap();
+            let size = decoded.size(0);
+            assert_eq!((u32::from(size.width), u32::from(size.height)), expected);
+        }
     }
 
     #[test]
